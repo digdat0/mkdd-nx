@@ -117,24 +117,33 @@ Rumble works on controllers with HD Rumble and on GameCube controllers.
 
 ### Options menu (-)
 
-The game pauses while the menu is open (and while the Switch is in the HOME menu or asleep).
+The game pauses while the menu is open (and while the Switch is in the HOME menu or asleep). It
+also opens by itself when a controller in use disconnects; reconnect it and close the menu.
 
 | Option | |
 |---|---|
 | Display | 4:3, or 16:9: wider game camera, race HUD at the screen edges, menus 4:3 in the middle |
-| Color | Accurate / Vivid / Custom brightness, contrast, saturation (hold Y on that page to preview); saved to `config/color.ini` |
 | HD textures | On / Off when `hd-textures.bin` is in the app folder (see [HD textures](#hd-textures)), else NO PACK |
 | Controllers | the system controller screen |
-| Rumble | Off / Low / High |
 | Button mapping | pick a GameCube button, press the Switch button for it |
+| Advanced | the page below |
 | Debugging | the page below |
 | Exit game | |
+
+**Advanced**
+
+| Option | |
+|---|---|
+| Color | Accurate / Vivid / Custom brightness, contrast, saturation (hold Y on that page to preview); saved to `config/color.ini` |
+| Rumble | Off / Low / High |
+| Field of view | Normal / Wide / Wider race camera, kept separately for 4:3 (default Normal) and 16:9 (default Wider); the row changes the current display mode's |
+| Texture filtering | Normal / 2x / 4x / 8x / 16x anisotropic filtering: sharper roads and walls at a distance (most visible with HD textures, which have mipmaps) |
+| Border | Off / On: checkered border art in the side bars during races in 4:3 (menus keep black bars) |
 
 **Debugging**
 
 | Option | |
 |---|---|
-| Field of view | Normal / Wide / Wider race camera, kept separately for 4:3 (default Normal) and 16:9 (default Wider); the row changes the current display mode's |
 | Show FPS | Off / FPS / FPS + times: ms per game frame of the game thread (GAME), the graphics thread (GX) and the render thread (RENDER); 16.7 is the 60 fps budget |
 | Unlock all | every character, kart, cup and mode while it is on; never written to your save, so your own progress stays as it is |
 | Logging | debug logs on the SD card, for bug reports |

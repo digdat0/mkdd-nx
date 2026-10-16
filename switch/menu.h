@@ -14,6 +14,8 @@ typedef struct {
     int logging;       /* 0 disabled, 1 game, 2 game + audio, 3 audio */
     bool hd_textures;  /* use the HD texture file (HD_FILE) when there is one */
     int fov[2];        /* race camera field of view for 4:3 / 16:9: 0 normal (the game's), 1 wide, 2 wider */
+    int aniso;         /* texture filtering: 0 normal, 1-4 anisotropic 2x / 4x / 8x / 16x */
+    bool border;       /* 4:3: checkered border art in the side bars during races */
     uint64_t map[GC_COUNT]; /* Switch buttons (HidNpadButton_*) that press each GameCube button */
 } Settings;
 
@@ -50,5 +52,9 @@ void menu_draw(int w, int h, float fps, const char *perf);
 void menu_font_load(void);
 /* Start-up / message screen in the menu's style: logo, two lines, progress bar (< 0: none). */
 void menu_loading(int w, int h, const char *line1, const char *line2, float progress);
+/* The 4:3 border art in the side bars beside a w x h screen's 4:3 picture (after render_present). */
+void menu_border(int w, int h);
+/* Open the menu (game paused) on its main page, with notice as the hint until the cursor moves. */
+void menu_open(const char *notice);
 /* 5x7 bitmap ("0"/"1" x 35, rows top first) for c, or NULL. */
 const char *font_glyph(char c);

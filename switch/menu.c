@@ -51,6 +51,8 @@ static void defaults(void) {
     g_set.hd_textures = true;
     g_set.fov[0] = 0; /* 4:3: the game's view */
     g_set.fov[1] = 2; /* 16:9: wider */
+    g_set.aniso = 0;
+    g_set.border = false;
     memcpy(g_set.map, DEFAULT_MAP, sizeof g_set.map);
 }
 
@@ -81,6 +83,8 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "hd_textures")) g_set.hd_textures = atoi(v) != 0;
         else if (!strcmp(k, "fov_4_3")) g_set.fov[0] = atoi(v) < 0 ? 0 : atoi(v) > 2 ? 2 : atoi(v);
         else if (!strcmp(k, "fov_16_9")) g_set.fov[1] = atoi(v) < 0 ? 0 : atoi(v) > 2 ? 2 : atoi(v);
+        else if (!strcmp(k, "aniso")) g_set.aniso = atoi(v) < 0 ? 0 : atoi(v) > 4 ? 4 : atoi(v);
+        else if (!strcmp(k, "border")) g_set.border = atoi(v) != 0;
         else
             for (int i = 0; i < GC_COUNT; i++)
                 if (!strcmp(k, GC_KEYS[i])) g_set.map[i] = strtoull(v, NULL, 16) & mappable();
@@ -94,8 +98,9 @@ void settings_load(const char *path) {
 void settings_save(void) {
     FILE *f = fopen(s_path, "w");
     if (!f) return;
-    fprintf(f, "display=%d\nshow_fps=%d\nlogging=%d\nrumble=%d\nunlock_all=%d\nhd_textures=%d\nfov_4_3=%d\nfov_16_9=%d\n", g_set.wide,
-            g_set.show_fps, g_set.logging, g_set.rumble, g_set.unlock_all, g_set.hd_textures, g_set.fov[0], g_set.fov[1]);
+    fprintf(f, "display=%d\nshow_fps=%d\nlogging=%d\nrumble=%d\nunlock_all=%d\nhd_textures=%d\nfov_4_3=%d\nfov_16_9=%d\naniso=%d\nborder=%d\n",
+            g_set.wide, g_set.show_fps, g_set.logging, g_set.rumble, g_set.unlock_all, g_set.hd_textures, g_set.fov[0],
+            g_set.fov[1], g_set.aniso, g_set.border);
     for (int i = 0; i < GC_COUNT; i++) fprintf(f, "%s=%llx\n", GC_KEYS[i], (unsigned long long)g_set.map[i]);
     fclose(f);
 }
@@ -154,10 +159,13 @@ void color_adjust(float adj[3]) {
 }
 
 /* ---- menu state ---- */
-enum { PAGE_MAIN, PAGE_MAP, PAGE_EXIT, PAGE_COLOR, PAGE_DEBUG, PAGE_COUNT };
-enum { M_WIDE, M_COLOR, M_HD, M_CTRL, M_RUMBLE, M_MAP, M_DEBUG, M_EXIT, M_COUNT };
+/* Main page: what most players change. Advanced: picture and feel. Debugging: diagnostics. */
+enum { PAGE_MAIN, PAGE_MAP, PAGE_EXIT, PAGE_COLOR, PAGE_DEBUG, PAGE_ADV, PAGE_COUNT };
+enum { M_WIDE, M_HD, M_CTRL, M_MAP, M_ADV, M_DEBUG, M_EXIT, M_COUNT };
+enum { A_COLOR, A_RUMBLE, A_FOV, A_ANISO, A_BORDER, A_BACK, A_COUNT };
 static const char *FOV_NAMES[3] = {"NORMAL", "WIDE", "WIDER"};
-enum { D_FOV, D_FPS, D_UNLOCK, D_LOG, D_BACK, D_COUNT };
+static const char *ANISO_NAMES[5] = {"NORMAL", "2X", "4X", "8X", "16X"};
+enum { D_FPS, D_UNLOCK, D_LOG, D_BACK, D_COUNT };
 static const char *FPS_NAMES[3] = {"OFF", "FPS", "FPS + TIMES"};
 static const char *RUMBLE_NAMES[3] = {"OFF", "LOW", "HIGH"};
 static bool s_want_controllers;
@@ -169,6 +177,7 @@ static int s_page, s_sel[PAGE_COUNT];
 static int s_capture = -1;      /* GameCube button waiting for a new Switch button */
 static bool s_capture_armed;    /* all buttons were released since the capture started */
 static bool s_release_wait;     /* menu closed: keep the game's pad neutral until buttons are released */
+static char s_notice[64];       /* menu_open's reason, shown as the main page's hint until the cursor moves */
 
 static void map_name(uint64_t m, char *out, size_t n) {
     out[0] = 0;
@@ -186,8 +195,19 @@ static int page_rows(int page) {
     case PAGE_MAP: return P_COUNT;
     case PAGE_COLOR: return K_COUNT;
     case PAGE_DEBUG: return D_COUNT;
+    case PAGE_ADV: return A_COUNT;
     default: return 1;
     }
+}
+
+/* B goes back one page: colour to advanced, everything else to the main page. */
+static int page_parent(int page) { return page == PAGE_COLOR ? PAGE_ADV : PAGE_MAIN; }
+
+void menu_open(const char *notice) {
+    if (s_capture >= 0) return;
+    s_open = true;
+    s_page = PAGE_MAIN;
+    snprintf(s_notice, sizeof s_notice, "%s", notice ? notice : "");
 }
 
 bool menu_input(uint64_t down, uint64_t held, bool *quit) {
@@ -220,12 +240,13 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
     int *sel = &s_sel[s_page];
     if (down & UP) *sel = (*sel + count - 1) % count;
     if (down & DOWN) *sel = (*sel + 1) % count;
+    if (down & (UP | DOWN)) s_notice[0] = 0;
     bool ok = down & HidNpadButton_A, side = down & SIDE;
     bool left = down & (HidNpadButton_Left | HidNpadButton_StickLLeft);
     s_preview = s_page == PAGE_COLOR && (held & HidNpadButton_Y);
     if (down & (HidNpadButton_Minus | HidNpadButton_B)) {
-        if (s_page == PAGE_MAIN || (down & HidNpadButton_Minus)) { s_open = false; s_release_wait = true; s_preview = false; }
-        else s_page = PAGE_MAIN;
+        if (s_page == PAGE_MAIN || (down & HidNpadButton_Minus)) { s_open = false; s_release_wait = true; s_preview = false; s_notice[0] = 0; }
+        else s_page = page_parent(s_page);
         color_save();
         return true;
     }
@@ -249,14 +270,13 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
             g_color.bright = g_color.contrast = g_color.sat = 0;
             s_color_dirty = true;
         } else if (*sel == K_BACK && ok) {
-            s_page = PAGE_MAIN;
+            s_page = PAGE_ADV;
             color_save();
         }
         return true;
     }
     if (s_page == PAGE_DEBUG && (ok || side)) {
         switch (*sel) {
-        case D_FOV: g_set.fov[g_set.wide] = (g_set.fov[g_set.wide] + (left ? 2 : 1)) % 3; settings_save(); break;
         case D_FPS: g_set.show_fps = (g_set.show_fps + (left ? 2 : 1)) % 3; settings_save(); break;
         case D_UNLOCK: g_set.unlock_all = !g_set.unlock_all; cheats_set(g_set.unlock_all); settings_save(); break;
         case D_LOG:
@@ -269,17 +289,27 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         }
         return true;
     }
-    if (s_page == PAGE_MAIN && (ok || side)) {
+    if (s_page == PAGE_ADV && (ok || side)) {
         switch (*sel) {
-        case M_WIDE: g_set.wide = !g_set.wide; settings_save(); break;
-        case M_CTRL: if (ok) { s_want_controllers = true; s_open = false; s_release_wait = true; } break;
-        case M_RUMBLE: g_set.rumble = (g_set.rumble + (left ? 2 : 1)) % 3; settings_save(); break;
-        case M_COLOR:
+        case A_COLOR:
             if (ok) { s_page = PAGE_COLOR; s_sel[PAGE_COLOR] = 0; }
             else { g_color.mode = (g_color.mode + (left ? COLOR_MODES - 1 : 1)) % COLOR_MODES; s_color_dirty = true; color_save(); }
             break;
-        case M_MAP: if (ok) { s_page = PAGE_MAP; s_sel[PAGE_MAP] = 0; } break;
+        case A_RUMBLE: g_set.rumble = (g_set.rumble + (left ? 2 : 1)) % 3; settings_save(); break;
+        case A_FOV: g_set.fov[g_set.wide] = (g_set.fov[g_set.wide] + (left ? 2 : 1)) % 3; settings_save(); break;
+        case A_ANISO: g_set.aniso = (g_set.aniso + (left ? 4 : 1)) % 5; settings_save(); break;
+        case A_BORDER: g_set.border = !g_set.border; settings_save(); break;
+        case A_BACK: if (ok) s_page = PAGE_MAIN; break;
+        }
+        return true;
+    }
+    if (s_page == PAGE_MAIN && (ok || side)) {
+        switch (*sel) {
+        case M_WIDE: g_set.wide = !g_set.wide; settings_save(); break;
         case M_HD: g_set.hd_textures = !g_set.hd_textures; settings_save(); break;
+        case M_CTRL: if (ok) { s_want_controllers = true; s_open = false; s_release_wait = true; } break;
+        case M_MAP: if (ok) { s_page = PAGE_MAP; s_sel[PAGE_MAP] = 0; } break;
+        case M_ADV: if (ok) { s_page = PAGE_ADV; s_sel[PAGE_ADV] = 0; } break;
         case M_DEBUG: if (ok) { s_page = PAGE_DEBUG; s_sel[PAGE_DEBUG] = 0; } break;
         case M_EXIT: if (ok) s_page = PAGE_EXIT; break;
         }
@@ -648,32 +678,33 @@ void menu_draw(int w, int h, float fps, const char *perf) {
     if ((s_open || s_capture >= 0) && !s_preview) {
         int rows = page_rows(s_page);
         if (s_page == PAGE_EXIT) rows = 2;
-        float pw = 820 * k, top = 100 * k, foot = 56 * k;
+        float pw = 984 * k, top = 100 * k, foot = 56 * k;
         float rh = 58 * k, maxh = (float)h - 40 * k;
         if (top + rh * (float)rows + foot > maxh) rh = (maxh - top - foot) / (float)rows;
         float ph = top + rh * (float)rows + foot, x = ((float)w - pw) / 2, y = ((float)h - ph) / 2;
         if (s_page != PAGE_COLOR) rect(0, 0, (float)w, (float)h, 0x00000070u); /* colour page: the image undimmed */
         const char *title = s_page == PAGE_MAP ? "BUTTON MAPPING" : s_page == PAGE_EXIT ? "EXIT THE GAME?"
-                            : s_page == PAGE_COLOR ? "COLOR" : s_page == PAGE_DEBUG ? "DEBUGGING" : "OPTIONS";
+                            : s_page == PAGE_COLOR ? "COLOR" : s_page == PAGE_DEBUG ? "DEBUGGING"
+                            : s_page == PAGE_ADV ? "ADVANCED" : "OPTIONS";
         panel(x, y, pw, ph, k, title);
         float ry = y + top;
         const char *hint = NULL;
         if (s_page == PAGE_MAIN) {
-            static const char *labels[M_COUNT] = {"DISPLAY", "COLOR", "HD TEXTURES", "CONTROLLERS", "RUMBLE", "BUTTON MAPPING", "DEBUGGING", "EXIT GAME"};
-            const char *values[M_COUNT] = {g_set.wide ? "16:9" : "4:3", COLOR_NAMES[g_color.mode],
-                                           !hdtex_available() ? "NO PACK" : g_set.hd_textures ? "ON" : "OFF", NULL,
-                                           RUMBLE_NAMES[g_set.rumble % 3], NULL, NULL, NULL};
-            static const bool more[M_COUNT] = {false, false, false, true, false, true, true, false};
+            static const char *labels[M_COUNT] = {"DISPLAY", "HD TEXTURES", "CONTROLLERS", "BUTTON MAPPING", "ADVANCED", "DEBUGGING", "EXIT GAME"};
+            const char *values[M_COUNT] = {g_set.wide ? "16:9" : "4:3", !hdtex_available() ? "NO PACK" : g_set.hd_textures ? "ON" : "OFF",
+                                           NULL, NULL, NULL, NULL, NULL};
+            static const bool more[M_COUNT] = {false, false, true, true, true, true, false};
             char hd_hint[64];
             if (!hdtex_available()) snprintf(hd_hint, sizeof hd_hint, "PUT HD-TEXTURES.BIN IN THE MKDD-NX FOLDER");
             else if (!g_set.hd_textures) snprintf(hd_hint, sizeof hd_hint, "COMMUNITY HD TEXTURE PACK");
             else snprintf(hd_hint, sizeof hd_hint, "COMMUNITY HD TEXTURE PACK: %u IN USE", render_hd_in_use());
             for (int i = 0; i < M_COUNT; i++, ry += rh) mrow(x, ry, pw, rh, k, s_sel[PAGE_MAIN] == i, labels[i], values[i], more[i]);
-            hint = s_sel[PAGE_MAIN] == M_WIDE    ? "16:9: WIDER VIEW, RACE HUD AT THE SCREEN EDGES"
-                   : s_sel[PAGE_MAIN] == M_COLOR ? "A: ADJUST   LEFT/RIGHT: ACCURATE, VIVID, CUSTOM"
+            hint = s_notice[0]                   ? s_notice
+                   : s_sel[PAGE_MAIN] == M_WIDE  ? "16:9: WIDER VIEW, RACE HUD AT THE SCREEN EDGES"
                    : s_sel[PAGE_MAIN] == M_HD    ? hd_hint
                    : s_sel[PAGE_MAIN] == M_CTRL  ? "PAIR CONTROLLERS, SET THE PLAYER ORDER, SINGLE JOY-CONS"
-                   : s_sel[PAGE_MAIN] == M_DEBUG ? "FIELD OF VIEW, FPS AND FRAME TIMES, UNLOCK ALL, LOGS"
+                   : s_sel[PAGE_MAIN] == M_ADV   ? "COLOR, RUMBLE, FIELD OF VIEW, TEXTURE FILTERING, BORDER"
+                   : s_sel[PAGE_MAIN] == M_DEBUG ? "FPS AND FRAME TIMES, UNLOCK ALL, LOGS"
                                                  : "GAME PAUSED   A: SELECT   B OR -: CLOSE";
             /* "Oct 15 2026 14:08:52" -> "BUILD 1408" (the name of the build's saved .elf), in the
              * title band's top right */
@@ -682,13 +713,24 @@ void menu_draw(int w, int h, float fps, const char *perf) {
             snprintf(build, sizeof build, "BUILD %.2s%.2s", b + 12, b + 15);
             float bs = 22 * k;
             mtext(x + pw - mtext_w(build, bs) - 24 * k, y + 10 * k + (60 * k - bs) / 2, bs, C_VAL_T, C_VAL_B, build);
+        } else if (s_page == PAGE_ADV) {
+            static const char *labels[A_COUNT] = {"COLOR", "RUMBLE", "FIELD OF VIEW", "TEXTURE FILTERING", "BORDER", "BACK"};
+            const char *values[A_COUNT] = {COLOR_NAMES[g_color.mode], RUMBLE_NAMES[g_set.rumble % 3], FOV_NAMES[g_set.fov[g_set.wide] % 3],
+                                           ANISO_NAMES[g_set.aniso % 5], g_set.border ? "ON" : "OFF", NULL};
+            static const bool more[A_COUNT] = {true, false, false, false, false, false};
+            for (int i = 0; i < A_COUNT; i++, ry += rh) mrow(x, ry, pw, rh, k, s_sel[PAGE_ADV] == i, labels[i], values[i], more[i]);
+            hint = s_sel[PAGE_ADV] == A_COLOR    ? "A: ADJUST   LEFT/RIGHT: ACCURATE, VIVID, CUSTOM"
+                   : s_sel[PAGE_ADV] == A_RUMBLE ? "CONTROLLER VIBRATION"
+                   : s_sel[PAGE_ADV] == A_FOV    ? (g_set.wide ? "RACE CAMERA IN 16:9, DEFAULT WIDER" : "RACE CAMERA IN 4:3, DEFAULT NORMAL")
+                   : s_sel[PAGE_ADV] == A_ANISO  ? "SHARPER TEXTURES AT ANGLES: ROADS AND WALLS IN THE DISTANCE"
+                   : s_sel[PAGE_ADV] == A_BORDER ? "4:3: CHECKERED BORDER BESIDE THE RACE"
+                                                 : "B: BACK";
         } else if (s_page == PAGE_DEBUG) {
-            static const char *labels[D_COUNT] = {"FIELD OF VIEW", "SHOW FPS", "UNLOCK ALL", "LOGGING", "BACK"};
-            const char *values[D_COUNT] = {FOV_NAMES[g_set.fov[g_set.wide] % 3], FPS_NAMES[g_set.show_fps % 3], g_set.unlock_all ? "ON" : "OFF",
+            static const char *labels[D_COUNT] = {"SHOW FPS", "UNLOCK ALL", "LOGGING", "BACK"};
+            const char *values[D_COUNT] = {FPS_NAMES[g_set.show_fps % 3], g_set.unlock_all ? "ON" : "OFF",
                                            LOG_NAMES[g_set.logging & 3], NULL};
             for (int i = 0; i < D_COUNT; i++, ry += rh) mrow(x, ry, pw, rh, k, s_sel[PAGE_DEBUG] == i, labels[i], values[i], false);
-            hint = s_sel[PAGE_DEBUG] == D_FOV      ? (g_set.wide ? "RACE CAMERA IN 16:9 (DEFAULT WIDER)" : "RACE CAMERA IN 4:3 (DEFAULT NORMAL)")
-                   : s_sel[PAGE_DEBUG] == D_FPS    ? "TIMES: MS PER FRAME OF GAME, GRAPHICS AND RENDER THREADS"
+            hint = s_sel[PAGE_DEBUG] == D_FPS      ? "TIMES: MS PER FRAME OF GAME, GRAPHICS AND RENDER THREADS"
                    : s_sel[PAGE_DEBUG] == D_UNLOCK ? "ALL CHARACTERS, KARTS, CUPS: NEVER WRITTEN TO YOUR SAVE"
                    : s_sel[PAGE_DEBUG] == D_LOG    ? "DEBUG LOGS ON THE SD CARD, FOR BUG REPORTS"
                                                    : "B: BACK";
@@ -736,6 +778,37 @@ void menu_draw(int w, int h, float fps, const char *perf) {
 }
 
 /* ---- start-up screen ---- */
+/* Checkered columns two squares deep at the screen edge and beside the picture, navy and stars
+ * between: the loading screen's look, in the side bars of a 4:3 race. */
+void menu_border(int w, int h) {
+    float pw = (float)h * 4.0f / 3.0f, bar = ((float)w - pw) / 2;
+    if (bar < 8 || !init_gl()) return;
+    begin(w, h);
+    float k = (float)h / 720.0f, fh = (float)h;
+    int rows = (int)(fh / (14 * k) + 0.5f);
+    float ch = fh / (float)rows, cw = ch;
+    for (int side = 0; side < 2; side++) {
+        float x0 = side ? (float)w - bar : 0;
+        grad(x0, 0, bar, fh, 0x0A1650FFu, 0x1C3A9AFFu);
+        uint32_t seed = 777u + (uint32_t)side * 31u;
+        for (int i = 0; i < 10; i++) {
+            seed = seed * 1103515245u + 12345u;
+            float sx = x0 + 2 * cw + (float)(seed >> 8 & 1023) / 1023.0f * (bar - 4 * cw);
+            seed = seed * 1103515245u + 12345u;
+            float sy = (float)(seed >> 8 & 1023) / 1023.0f * fh;
+            seed = seed * 1103515245u + 12345u;
+            star(sx, sy, (10 + (float)(seed >> 8 & 7)) * k, 0x2A4AA8FFu);
+        }
+        /* outer edge and inner edge (next to the picture) */
+        float cols[2] = {side ? (float)w - 2 * cw : 0, side ? x0 : bar - 2 * cw};
+        for (int c2 = 0; c2 < 2; c2++)
+            for (int y = 0; y < rows; y++)
+                for (int x = 0; x < 2; x++)
+                    rect(cols[c2] + (float)x * cw, (float)y * ch, cw, ch, (x + y) & 1 ? 0x101010FFu : 0xFFFFFFFFu);
+    }
+    end();
+}
+
 #define TITLE_A "MARIO KART: "
 #define TITLE_B "DOUBLE DASH!!"
 #define TITLE_C "NX"

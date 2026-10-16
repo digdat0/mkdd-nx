@@ -3291,8 +3291,10 @@ static void race_hud_call(Ctx *c, uint8_t *M, uint32_t fn, uint32_t self, uint32
     ctx_set_gpr(c, 1, old);
     if (one) hud_zone(0);
 }
+volatile uint32_t g_race_frames;
 static uint64_t i_draw__6Race2DFv(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
+    g_race_frames++;
     aspect_refresh(c, M); /* once per race frame */
     race_hud_call(c, M, 0x80145CB0u, (uint32_t)a0, 1);
     return 0;

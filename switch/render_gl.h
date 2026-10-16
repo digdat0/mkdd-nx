@@ -13,6 +13,8 @@ void render_set_hud43(bool on);
 /* HD texture replacements (hdtex.h) on or off: takes effect next frame, every texture reloads. Stays
  * off without a texture file or BC7 support. */
 void render_set_hd(bool on);
+/* Anisotropic filtering level (1 = off, up to 16; clamped to what the GPU supports). */
+void render_set_aniso(float level);
 /* Textures currently showing an HD replacement. */
 unsigned render_hd_in_use(void);
 /* GPU memory of those (BC7 data). */

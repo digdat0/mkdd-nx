@@ -175,6 +175,10 @@ static PadState s_src[NSRC];
 static const HidNpadIdType SRC_ID[NSRC] = {HidNpadIdType_Handheld, HidNpadIdType_No1, HidNpadIdType_No2,
                                           HidNpadIdType_No3, HidNpadIdType_No4};
 static int s_player_src[4] = {-1, -1, -1, -1}; /* source of each player, -1 = none */
+static int s_pad_quiet; /* frames to ignore disconnects for (the controller screen reassigns players) */
+/* runtime/native.c: Race2D::draw calls (the race HUD, once per race frame). Declared here, not in
+ * native.h, which every generated file includes. */
+extern volatile uint32_t g_race_frames;
 static u32 s_player_style[4];
 static bool s_quit;
 static float s_fps;
@@ -308,13 +312,22 @@ static void update_pads(void) {
     for (int p = 0; p < 4; p++) {
         u32 st = src_of[p] >= 0 ? padGetStyleSet(&s_src[src_of[p]]) : 0;
         if (src_of[p] != s_player_src[p] || st != s_player_style[p]) {
-            if (src_of[p] < 0) rt_log("pad: player %d disconnected (was %s)", p + 1, style_name(s_player_style[p]));
+            if (src_of[p] < 0) {
+                rt_log("pad: player %d disconnected (was %s)", p + 1, style_name(s_player_style[p]));
+                /* a controller in use dropped: pause on the menu (always; reconnect, then close it) */
+                if (s_player_src[p] >= 0 && !s_pad_quiet) {
+                    char note[64];
+                    snprintf(note, sizeof note, "PLAYER %d CONTROLLER DISCONNECTED", p + 1);
+                    menu_open(note);
+                }
+            }
             else rt_log("pad: player %d connected: %s (source %d)", p + 1, style_name(st), src_of[p]);
             s_player_src[p] = src_of[p];
             s_player_style[p] = st;
         }
     }
 
+    if (s_pad_quiet) s_pad_quiet--;
     /* The - menu belongs to player 1 (a single right Joy-Con: press its stick and +). */
     PadState *p1 = s_player_src[0] >= 0 ? &s_src[s_player_src[0]] : &s_src[0];
     u64 down1 = padGetButtonsDown(p1), held1 = padGetButtons(p1);
@@ -499,6 +512,7 @@ int main(int argc, char **argv) {
             HidLaControllerSupportResultInfo res;
             Result rc = hidLaShowControllerSupport(&res, &arg);
             rt_log("pad: controller screen closed (%#x), %d players", rc, R_SUCCEEDED(rc) ? res.player_count : -1);
+            s_pad_quiet = 60;
         }
         /* SequenceApp::msScene (r13 0x803D1420 - 0x7740): 0 = SceneTitle, the "press start"
          * screen. Its artwork is one 4:3 picture that 16:9 only stretched, so it stays 4:3. */
@@ -508,6 +522,8 @@ int main(int argc, char **argv) {
         g_fov_scale = FOV_SCALE[g_set.fov[g_set.wide] % 3];
         render_set_hud43(wide);
         render_set_hd(g_set.hd_textures);
+        static const float ANISO[5] = {1, 2, 4, 8, 16};
+        render_set_aniso(ANISO[g_set.aniso % 5]);
         u64 r0 = armGetSystemTick();
         bool got = render_update(1);
         t_render += armTicksToNs(armGetSystemTick() - r0);
@@ -545,6 +561,14 @@ int main(int argc, char **argv) {
             float adj[3];
             color_adjust(adj);
             render_present(w, h, adj, wide);
+            /* 4:3 border art only while a race is on screen (Race2D::draw ran within the last
+             * half second; kept while the menu pauses the game) */
+            static uint32_t race_seen;
+            static u64 race_tick;
+            if (g_race_frames != race_seen) { race_seen = g_race_frames; race_tick = armGetSystemTick(); }
+            static bool racing;
+            if (!menu_is_open()) racing = race_tick && armTicksToNs(armGetSystemTick() - race_tick) < 500000000ull;
+            if (g_set.border && !wide && racing) menu_border(w, h);
             menu_draw(w, h, s_fps, perf);
         } else screen("BOOTING", NULL, 0.8f);
         u64 s0 = armGetSystemTick();

@@ -366,6 +366,7 @@ static struct {
     GLuint samplers[3][3][2];
     GLuint samplers_mip[3][3]; /* trilinear, for HD replacements */
     bool bptc, hd_on, hd_flush;
+    float aniso_max, aniso;    /* GL_EXT_texture_filter_anisotropic limit (0: none) and the current level */
     uint64_t hd_bytes; /* BC7 data of the HD textures on the GPU */
     GLuint white;
     Target efb_color;
@@ -737,6 +738,12 @@ bool render_init(void) {
         glGetIntegerv(GL_COMPRESSED_TEXTURE_FORMATS, fmts);
         for (GLint i = 0; i < nfmt; i++) R.bptc |= fmts[i] == HD_BC7;
     }
+    for (GLint i = 0; i < next; i++) {
+        const char *e = (const char *)glGetStringi(GL_EXTENSIONS, (GLuint)i);
+        if (e && !strcmp(e, "GL_EXT_texture_filter_anisotropic")) glGetFloatv(0x84FF /* MAX_TEXTURE_MAX_ANISOTROPY */, &R.aniso_max);
+    }
+    R.aniso = 1.0f;
+    rt_log("render: anisotropic filtering up to %.0fx", (double)R.aniso_max);
     rt_log("render: BC7 textures %s (%d compressed formats)", R.bptc ? "supported" : "NOT supported: HD textures off", nfmt);
     static const uint8_t white[4] = {255, 255, 255, 255};
     glGenTextures(1, &R.white);
@@ -1329,6 +1336,18 @@ bool render_update(int scale_in) {
 }
 
 void render_set_hud43(bool on) { R.hud43 = on; }
+/* Anisotropic filtering of the linear samplers (game textures and HD replacements): 1 = off. */
+void render_set_aniso(float level) {
+    if (level > R.aniso_max) level = R.aniso_max;
+    if (level < 1.0f) level = 1.0f;
+    if (level == R.aniso || R.aniso_max < 1.0f) return;
+    R.aniso = level;
+    for (int s = 0; s < 3; s++)
+        for (int t = 0; t < 3; t++) {
+            glSamplerParameterf(R.samplers[s][t][1], 0x84FE /* TEXTURE_MAX_ANISOTROPY */, level);
+            glSamplerParameterf(R.samplers_mip[s][t], 0x84FE, level);
+        }
+}
 void render_set_hd(bool on) {
     on = on && R.bptc && hdtex_available();
     if (on != R.hd_on) { R.hd_on = on; R.hd_flush = true; }
