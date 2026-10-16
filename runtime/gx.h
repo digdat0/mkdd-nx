@@ -106,8 +106,15 @@ typedef struct GxTexture {
     uint8_t *tlut;         /* 512 bytes of TMEM palette, or NULL */
     uint8_t wrap_s, wrap_t; /* 0 clamp, 1 repeat, 2 mirror */
     bool linear;
+    uint8_t subst;         /* gx_subst_register id of a texture the front end draws its own way, or 0 */
     volatile int refs;
 } GxTexture;
+
+/* Textures the front end replaces (the pause screen's controller picture and button icons),
+ * recognised by format, size and an FNV-1a hash of their bytes. Register before the game runs. */
+void gx_subst_register(unsigned id, uint32_t fmt, uint32_t w, uint32_t h, uint64_t hash);
+/* Bytes of a GX texture of this format and size (0: unknown format). */
+size_t gx_tex_size(uint32_t fmt, uint32_t w, uint32_t h);
 
 typedef enum { GXEV_DRAW_DONE, GXEV_TOKEN, GXEV_TOKEN_INT } GxEventKind;
 typedef struct { GxEventKind kind; uint16_t token; } GxEvent;
@@ -138,7 +145,7 @@ unsigned gx_texture_decode_compact(const GxTexture *t, uint8_t *out);
 void gx_vertex_unpack(const Frame *f, const Batch *b, uint32_t idx, GpuVertex *out);
 /* CPU reference of the XF vertex shader: GPU-path vertex in -> CPU-path vertex out. */
 void gx_xf_eval(const uint32_t *xf, const GpuVertex *in, GpuVertex *out);
-/* Transform on the CPU instead of in the vertex shader (Switch: sdmc:/switch/MKDD-NX/cpu_xform). */
+/* Transform on the CPU instead of in the vertex shader (Switch: sdmc:/switch/MKDD-NX/config/cpu_xform). */
 extern bool g_gx_cpu_xform;
 extern bool g_gx_cpu_xform_forced; /* set by the renderer when the XF shader is unusable */
 void gx_xf_report(char *out, size_t n); /* MKDD_XFCHECK result */

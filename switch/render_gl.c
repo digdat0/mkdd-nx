@@ -325,7 +325,7 @@ typedef struct { GLuint buf; size_t cap; } Stream;
 /* xb: the frame's XF records and matrices, read by the vertex shader as a texture buffer (unit 8) */
 typedef struct { Stream vb, ib, ub, xb; GLuint vao, xtex; GLsync fence; uint32_t layout; } Slot;
 /* chans: texels stored as 1 (I: R8), 2 (I, A: RG8, see gx_texture_decode_compact) or 4 (RGBA8) bytes */
-typedef struct { GLuint tex; uint8_t wrap_s, wrap_t, chans; bool linear; uint64_t used, key; uint32_t w, h; } GlTexture;
+typedef struct { GLuint tex; uint8_t wrap_s, wrap_t, chans, subst; bool linear; uint64_t used, key; uint32_t w, h; } GlTexture;
 /* Evicted GL textures kept for reuse by a new texture of the same size (glTexSubImage2D): movies
  * and render-to-texture effects make a new texture every frame, and deleting a nouveau texture
  * the GPU used recently waits for the GPU. */
@@ -774,6 +774,9 @@ static void state_reset(void) {
     R.cur_cull = 0;
 }
 
+static unsigned (*s_subst)(unsigned id);
+void render_set_subst(unsigned (*texture)(unsigned id)) { s_subst = texture; }
+
 /* GL texture + sampler for a texture slot key (decoded texture, EFB copy, or white). */
 static void bind_slot(unsigned unit, uint64_t key) {
     if (!key) {
@@ -841,11 +844,14 @@ static void bind_slot(unsigned unit, uint64_t key) {
         gt->wrap_s = t->wrap_s > 2 ? 0 : t->wrap_s;
         gt->wrap_t = t->wrap_t > 2 ? 0 : t->wrap_t;
         gt->linear = t->linear;
+        gt->subst = t->subst;
         gt->key = key;
         u64map_put(&R.textures, key, R.ntex++);
         gx_texture_release(t);
     }
     gt->used = R.tick;
+    GLuint sub = gt->subst && s_subst ? s_subst(gt->subst) : 0;
+    if (sub) { unit_bind(unit, sub, R.samplers[0][0][1]); return; } /* clamped, linear */
     unit_bind(unit, gt->tex, R.samplers[gt->wrap_s][gt->wrap_t][gt->linear]);
 }
 

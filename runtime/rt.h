@@ -36,6 +36,9 @@ bool disc_open(const char *path, char *err, size_t errlen);
 bool disc_present(void);
 void disc_read(uint64_t off, void *out, size_t n);
 uint32_t disc_read_u32(uint64_t off);
+bool disc_find(const char *path, uint64_t *off, uint32_t *size); /* file in the disc's FST */
+/* Replace n bytes at disc offset off in every later read (front-end layout fixes; at most 1024 bytes). */
+void disc_patch(uint64_t off, const void *bytes, size_t n);
 
 /* ---- sched.c ---- */
 #define SCHED_NONE 0u
@@ -131,11 +134,18 @@ typedef struct {
 } PadStatus;
 void pad_set(int port, const PadStatus *s);
 void pad_get_all(PadStatus out[4]);
+/* PADControlMotor: the rumble motor of each port (bit per port, set = running). */
+void pad_motor_set(int port, bool on);
+unsigned pad_motor_mask(void);
+/* Set by the front end while the game is paused (menu open, out of focus): PADRead waits, so the
+ * game's main loop stops at a point where it holds no locks of its own. */
+extern volatile bool g_pad_hold;
 
 /* ---- psmtx.c / cheats.c / memcard.c / thp.c ---- */
 bool psmtx_call(Ctx *c, int which);
 enum { MTX_COPY, MTX_CONCAT, MTX_MULTVEC, VEC_CROSS, VEC_MAG, MTX_INVERSE };
 void cheats_unlock_all(void);
+void cheats_set(bool on); /* on: unlock_all; off: the earned bits back */
 bool cheats_active(void);
 void cheats_tick(void);
 void cheats_before_save(void);

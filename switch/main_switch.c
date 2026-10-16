@@ -19,10 +19,15 @@
 #include "render_gl.h"
 #include "prof_switch.h"
 #include "menu.h"
+#include "pause_art.h"
 const char g_build_stamp[] = __DATE__ " " __TIME__;
 #include "../runtime/native.h"
 
 #define APP_DIR "sdmc:/switch/MKDD-NX"
+/* The app folder holds only the .nro, the disc image and these three folders. */
+#define LOG_DIR APP_DIR "/logs"
+#define CFG_DIR APP_DIR "/config"
+#define SAVE_DIR APP_DIR "/save"
 #define APP_TITLE "MARIO KART DOUBLE DASH"
 
 static SDL_Window *s_window;
@@ -46,7 +51,7 @@ static void image_range(u64 *base, u64 *end) {
 void __libnx_exception_handler(ThreadExceptionDump *ctx) {
     u64 base, end;
     image_range(&base, &end);
-    FILE *f = fopen(APP_DIR "/crash.log", "w");
+    FILE *f = fopen(LOG_DIR "/crash.log", "w");
     if (!f) return;
 #define OFF(v) ((v) >= base && (v) < end ? (v) - base : 0)
     fprintf(f, "MKDD-NX crash\nexception 0x%x, esr 0x%x\nimage: 0x%llx-0x%llx\nlast guest fn: %#010x %s\n", ctx->error_desc,
@@ -76,64 +81,11 @@ void __libnx_exception_handler(ThreadExceptionDump *ctx) {
     fclose(f);
 }
 
-/* ---- loading / message screen: scissored glClear text, works before the renderer ---- */
-static void fill_rect(int x, int y, int w, int h, int fb_h) { glScissor(x, fb_h - y - h, w, h); glClear(GL_COLOR_BUFFER_BIT); }
-static void draw_text(const char *s, int y, int px, int fb_w, int fb_h) {
-    int x = (fb_w - (int)strlen(s) * 6 * px) / 2;
-    for (; *s; s++, x += 6 * px) {
-        const char *g = font_glyph(*s);
-        if (!g) continue;
-        for (int i = 0; i < 35; i++)
-            if (g[i] == '1') fill_rect(x + (i % 5) * px, y + (i / 5) * px, px, px, fb_h);
-    }
-}
-/* Loading-screen logo (switch/logo.S): uploaded once into a texture behind a read framebuffer,
- * then blitted (flipped: the data is top row first). */
-extern const uint8_t mkdd_logo_rgba[];
-#define LOGO_SIZE 512
-static void draw_logo(int x, int y, int size, int fb_h) {
-    static GLuint tex, fbo;
-    if (!fbo) {
-        glGenTextures(1, &tex);
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, LOGO_SIZE, LOGO_SIZE, 0, GL_RGBA, GL_UNSIGNED_BYTE, mkdd_logo_rgba);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glGenFramebuffers(1, &fbo);
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
-        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
-    }
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glBlitFramebuffer(0, 0, LOGO_SIZE, LOGO_SIZE, x, fb_h - y, x + size, fb_h - y - size, GL_COLOR_BUFFER_BIT, GL_LINEAR);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-}
-
+/* ---- loading / message screen (menu.c draws it in the menu's style) ---- */
 static void screen(const char *line1, const char *line2, float progress) {
     int w = 0, h = 0;
     SDL_GL_GetDrawableSize(s_window, &w, &h);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, w, h);
-    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-    glDisable(GL_SCISSOR_TEST);
-    glClearColor(24 / 255.0f, 24 / 255.0f, 32 / 255.0f, 1);
-    glClear(GL_COLOR_BUFFER_BIT);
-    int logo = h * 58 / 100;
-    draw_logo((w - logo) / 2, h * 3 / 100, logo, h);
-    glEnable(GL_SCISSOR_TEST);
-    int px = h / 90 > 2 ? h / 90 : 2, small = px / 2 > 2 ? px / 2 : 2;
-    glClearColor(1, 1, 1, 1);
-    if (line1) draw_text(line1, h * 66 / 100, small, w, h);
-    if (line2) draw_text(line2, h * 73 / 100, small, w, h);
-    if (progress >= 0) {
-        int bw = w / 2, bh = px * 3, bx = (w - bw) / 2, by = h * 82 / 100;
-        glClearColor(10 / 255.0f, 10 / 255.0f, 14 / 255.0f, 1);
-        fill_rect(bx, by, bw, bh, h);
-        glClearColor(240 / 255.0f, 200 / 255.0f, 80 / 255.0f, 1);
-        fill_rect(bx, by, (int)((float)bw * (progress > 1 ? 1 : progress)), bh, h);
-    }
-    glDisable(GL_SCISSOR_TEST);
+    menu_loading(w, h, line1, line2, progress);
     SDL_GL_SwapWindow(s_window);
     SDL_PumpEvents(); /* runs appletMainLoop: HOME during a loading screen must not hang the console */
 }
@@ -211,38 +163,190 @@ static void audio_cb(void *ud, Uint8 *stream, int len) {
     }
 }
 
-/* ---- input: Switch controller -> GameCube pad on port 0 (mapping from the - menu) ---- */
+/* ---- input: up to 4 Switch controllers -> GameCube pads 1-4 ----
+ * Sources in a fixed order (handheld, then controllers 1-4 as the system numbers them); the
+ * connected ones become players 1, 2, ... so handheld + a Pro Controller is a 2-player game.
+ * Full controllers (handheld, Pro, Joy-Con pair) use the mapping from the - menu; a single
+ * Joy-Con held sideways and a GameCube controller (official adapter) have fixed layouts. */
+#define NSRC 5
+static PadState s_src[NSRC];
+static const HidNpadIdType SRC_ID[NSRC] = {HidNpadIdType_Handheld, HidNpadIdType_No1, HidNpadIdType_No2,
+                                          HidNpadIdType_No3, HidNpadIdType_No4};
+static int s_player_src[4] = {-1, -1, -1, -1}; /* source of each player, -1 = none */
+static u32 s_player_style[4];
+static bool s_quit;
+static float s_fps;
+
 static int8_t stick(s32 v) { /* +-32767 -> +-100 (a GameCube stick's usable range) */
     int x = v * 100 / 32767;
     return (int8_t)(x > 127 ? 127 : x < -128 ? -128 : x);
 }
-static bool s_quit;
-static float s_fps;
-static void update_pad(PadState *pad) {
-    padUpdate(pad);
-    u64 b = padGetButtons(pad);
-    PadStatus p = {0};
-    p.connected = true;
-    if (menu_input(padGetButtonsDown(pad), b, &s_quit)) { pad_set(0, &p); return; }
-    HidAnalogStickState l = padGetStickPos(pad, 0), r = padGetStickPos(pad, 1);
+static const char *style_name(u32 st) {
+    if (st & HidNpadStyleTag_NpadHandheld) return "handheld";
+    if (st & HidNpadStyleTag_NpadGc) return "GameCube controller";
+    if (st & HidNpadStyleTag_NpadFullKey) return "Pro Controller";
+    if (st & HidNpadStyleTag_NpadJoyDual) return "Joy-Con pair";
+    if (st & HidNpadStyleTag_NpadJoyLeft) return "left Joy-Con (sideways)";
+    if (st & HidNpadStyleTag_NpadJoyRight) return "right Joy-Con (sideways)";
+    return "controller";
+}
+
+static void input_init(void) {
+    padConfigureInput(4, HidNpadStyleSet_NpadStandard | HidNpadStyleTag_NpadGc);
+    hidSetNpadJoyHoldType(HidNpadJoyHoldType_Horizontal); /* single Joy-Cons are held sideways */
+    for (int i = 0; i < NSRC; i++) padInitialize(&s_src[i], SRC_ID[i]);
+}
+
+/* ---- rumble (PADControlMotor -> HD Rumble of that player's controller) ---- */
+static HidVibrationDeviceHandle s_vib[4][2];
+static int s_vib_n[4];
+static u32 s_vib_style[4];
+static int s_vib_src[4] = {-1, -1, -1, -1};
+static float s_vib_amp[4];
+
+static bool s_vib_gc[4]; /* GameCube controller: its motor takes on/off commands */
+static void rumble_send(int p, float amp) {
+    if (s_vib_n[p] <= 0 || amp == s_vib_amp[p]) return;
+    if (s_vib_gc[p]) {
+        hidSendVibrationGcErmCommand(s_vib[p][0], amp > 0 ? HidVibrationGcErmCommand_Start : HidVibrationGcErmCommand_Stop);
+        s_vib_amp[p] = amp;
+        return;
+    }
+    HidVibrationValue v[2];
+    for (int k = 0; k < 2; k++) v[k] = (HidVibrationValue){amp, 160.0f, amp, 320.0f};
+    hidSendVibrationValues(s_vib[p], v, s_vib_n[p]);
+    s_vib_amp[p] = amp;
+}
+static void rumble_update(bool paused) {
+    static const float AMP[3] = {0.0f, 0.35f, 0.7f};
+    unsigned motors = pad_motor_mask();
+    for (int p = 0; p < 4; p++) {
+        int src = s_player_src[p];
+        u32 st = s_player_style[p];
+        if (src != s_vib_src[p] || st != s_vib_style[p]) { /* (re)attach the player's motors */
+            rumble_send(p, 0.0f);
+            s_vib_n[p] = 0;
+            s_vib_src[p] = src;
+            s_vib_style[p] = st;
+            s_vib_amp[p] = 0.0f;
+            u32 tag = st & HidNpadStyleTag_NpadGc ? HidNpadStyleTag_NpadGc
+                      : st & HidNpadStyleTag_NpadHandheld ? HidNpadStyleTag_NpadHandheld
+                      : st & HidNpadStyleTag_NpadFullKey ? HidNpadStyleTag_NpadFullKey
+                      : st & HidNpadStyleTag_NpadJoyDual ? HidNpadStyleTag_NpadJoyDual
+                      : st & HidNpadStyleTag_NpadJoyLeft ? HidNpadStyleTag_NpadJoyLeft
+                      : st & HidNpadStyleTag_NpadJoyRight ? HidNpadStyleTag_NpadJoyRight : 0;
+            s_vib_gc[p] = tag == HidNpadStyleTag_NpadGc;
+            if (src >= 0 && tag) {
+                int n = tag & (HidNpadStyleTag_NpadJoyLeft | HidNpadStyleTag_NpadJoyRight | HidNpadStyleTag_NpadGc) ? 1 : 2;
+                if (R_SUCCEEDED(hidInitializeVibrationDevices(s_vib[p], n, SRC_ID[src], (HidNpadStyleTag)tag))) s_vib_n[p] = n;
+            }
+        }
+        bool on = !paused && g_set.rumble && (motors >> p & 1);
+        rumble_send(p, on ? AMP[g_set.rumble > 2 ? 2 : g_set.rumble] : 0.0f);
+    }
+}
+
+/* Single Joy-Con held sideways: its four face buttons where a GameCube pad's A (right), B
+ * (bottom), X (top) and Y (left) are; SL = L, SR = R, the top shoulder or the stick = Z. */
+static void map_sideways(u64 b, bool left, bool p1, PadStatus *p) {
+    const u64 A = left ? HidNpadButton_Up : HidNpadButton_B, B = left ? HidNpadButton_Right : HidNpadButton_Y;
+    const u64 X = left ? HidNpadButton_Left : HidNpadButton_A, Y = left ? HidNpadButton_Down : HidNpadButton_X;
+    if (b & A) p->button |= PAD_A;
+    if (b & B) p->button |= PAD_B;
+    if (b & X) p->button |= PAD_X;
+    if (b & Y) p->button |= PAD_Y;
+    if (b & HidNpadButton_AnySL) p->button |= PAD_TRIGGER_L;
+    if (b & HidNpadButton_AnySR) p->button |= PAD_TRIGGER_R;
+    if (b & (HidNpadButton_L | HidNpadButton_R | HidNpadButton_StickL | HidNpadButton_StickR)) p->button |= PAD_TRIGGER_Z;
+    /* Start: + on the right Joy-Con; on the left one - (player 1's - opens the menu, so ZL) */
+    if (b & (HidNpadButton_Plus | HidNpadButton_ZL | (p1 ? 0 : HidNpadButton_Minus))) p->button |= PAD_START;
+}
+
+static void map_full(PadState *pad, u64 b, PadStatus *p) {
     static const uint16_t GC_BITS[GC_COUNT] = {PAD_A, PAD_B, PAD_X, PAD_Y, PAD_TRIGGER_Z, PAD_TRIGGER_L, PAD_TRIGGER_R, PAD_START};
     for (int i = 0; i < GC_COUNT; i++)
-        if (b & g_set.map[i]) p.button |= GC_BITS[i];
-    if (p.button & PAD_TRIGGER_R) p.trigger_r = 255;
-    if (p.button & PAD_TRIGGER_L) p.trigger_l = 255;
-    p.stick_x = stick(l.x);
-    p.stick_y = stick(l.y);
+        if (b & g_set.map[i]) p->button |= GC_BITS[i];
+    HidAnalogStickState r = padGetStickPos(pad, 1);
+    p->substick_x = stick(r.x);
+    p->substick_y = stick(r.y);
     /* D-pad = control stick at full deflection; diagonals on the GameCube's octagonal gate */
     int dx = (b & HidNpadButton_Right ? 1 : 0) - (b & HidNpadButton_Left ? 1 : 0);
     int dy = (b & HidNpadButton_Up ? 1 : 0) - (b & HidNpadButton_Down ? 1 : 0);
     if (dx || dy) {
         int m = dx && dy ? 72 : 100;
-        p.stick_x = (int8_t)(dx * m);
-        p.stick_y = (int8_t)(dy * m);
+        p->stick_x = (int8_t)(dx * m);
+        p->stick_y = (int8_t)(dy * m);
     }
-    p.substick_x = stick(r.x);
-    p.substick_y = stick(r.y);
-    pad_set(0, &p);
+}
+
+/* GameCube controller (official adapter): its own layout, analog L/R. */
+static void map_gc(PadState *pad, u64 b, PadStatus *p) {
+    if (b & HidNpadButton_A) p->button |= PAD_A;
+    if (b & HidNpadButton_B) p->button |= PAD_B;
+    if (b & HidNpadButton_X) p->button |= PAD_X;
+    if (b & HidNpadButton_Y) p->button |= PAD_Y;
+    if (b & HidNpadButton_ZR) p->button |= PAD_TRIGGER_Z;
+    if (b & HidNpadButton_L) p->button |= PAD_TRIGGER_L;
+    if (b & HidNpadButton_R) p->button |= PAD_TRIGGER_R;
+    if (b & HidNpadButton_Plus) p->button |= PAD_START;
+    HidAnalogStickState r = padGetStickPos(pad, 1);
+    p->substick_x = stick(r.x);
+    p->substick_y = stick(r.y);
+    p->trigger_l = (uint8_t)(padGetGcTriggerPos(pad, 0) * 255 / 0x7FFF);
+    p->trigger_r = (uint8_t)(padGetGcTriggerPos(pad, 1) * 255 / 0x7FFF);
+}
+
+static void update_pads(void) {
+    int n = 0, src_of[4] = {-1, -1, -1, -1};
+    for (int i = 0; i < NSRC; i++) {
+        padUpdate(&s_src[i]);
+        if (padIsConnected(&s_src[i]) && n < 4) src_of[n++] = i;
+    }
+    /* connect / disconnect / controller change, logged with the time (rt_log stamps it) */
+    for (int p = 0; p < 4; p++) {
+        u32 st = src_of[p] >= 0 ? padGetStyleSet(&s_src[src_of[p]]) : 0;
+        if (src_of[p] != s_player_src[p] || st != s_player_style[p]) {
+            if (src_of[p] < 0) rt_log("pad: player %d disconnected (was %s)", p + 1, style_name(s_player_style[p]));
+            else rt_log("pad: player %d connected: %s (source %d)", p + 1, style_name(st), src_of[p]);
+            s_player_src[p] = src_of[p];
+            s_player_style[p] = st;
+        }
+    }
+
+    /* The - menu belongs to player 1 (a single right Joy-Con: press its stick and +). */
+    PadState *p1 = s_player_src[0] >= 0 ? &s_src[s_player_src[0]] : &s_src[0];
+    u64 down1 = padGetButtonsDown(p1), held1 = padGetButtons(p1);
+    if ((s_player_style[0] & HidNpadStyleTag_NpadJoyRight) && (held1 & HidNpadButton_StickR) && (down1 & HidNpadButton_Plus))
+        down1 |= HidNpadButton_Minus;
+    bool menu = menu_input(down1, held1, &s_quit);
+    for (int p = 0; p < 4; p++) {
+        PadStatus s = {0};
+        int src = s_player_src[p];
+        s.connected = src >= 0 || p == 0; /* port 1 is always there (the game expects a pad) */
+        if (src >= 0 && !menu) {
+            PadState *pad = &s_src[src];
+            u64 b = padGetButtons(pad);
+            u32 st = s_player_style[p];
+            bool single = (st & (HidNpadStyleTag_NpadJoyLeft | HidNpadStyleTag_NpadJoyRight)) &&
+                          !(st & (HidNpadStyleTag_NpadJoyDual | HidNpadStyleTag_NpadFullKey | HidNpadStyleTag_NpadHandheld));
+            HidAnalogStickState l = padGetStickPos(pad, single && (st & HidNpadStyleTag_NpadJoyRight) ? 1 : 0);
+            s.stick_x = stick(l.x);
+            s.stick_y = stick(l.y);
+            if (st & HidNpadStyleTag_NpadGc) map_gc(pad, b, &s);
+            else if (single) map_sideways(b, (st & HidNpadStyleTag_NpadJoyLeft) != 0, p == 0, &s);
+            else map_full(pad, b, &s);
+            /* Start pressed: the pause screen shows this controller's buttons (pause_art.c) */
+            static bool start_was[4];
+            bool start = s.button & PAD_START;
+            if (start && !start_was[p])
+                g_pause_kind = st & HidNpadStyleTag_NpadGc ? PAUSE_GC
+                               : single ? (st & HidNpadStyleTag_NpadJoyLeft ? PAUSE_LEFT : PAUSE_RIGHT) : PAUSE_FULL;
+            start_was[p] = start;
+            if ((s.button & PAD_TRIGGER_R) && !s.trigger_r) s.trigger_r = 255;
+            if ((s.button & PAD_TRIGGER_L) && !s.trigger_l) s.trigger_l = 255;
+        }
+        pad_set(p, &s);
+    }
 }
 
 static void game_thread(void *arg) {
@@ -255,13 +359,16 @@ int main(int argc, char **argv) {
     (void)argc; (void)argv;
     mkdir("sdmc:/switch", 0777);
     mkdir(APP_DIR, 0777);
+    mkdir(LOG_DIR, 0777);
+    mkdir(CFG_DIR, 0777);
+    mkdir(SAVE_DIR, 0777);
     chdir(APP_DIR);
     s_boot_tick = armGetSystemTick();
     /* Keep the previous session's logs (newlib's rename does not replace an existing file). */
     static const char *const LOGS[][2] = {
-        {APP_DIR "/stderr.log", APP_DIR "/stderr.prev.log"},     {APP_DIR "/crash.log", APP_DIR "/crash.prev.log"},
-        {APP_DIR "/mkdd.log", APP_DIR "/mkdd.prev.log"},         {APP_DIR "/mkdd_trace.log", APP_DIR "/mkdd_trace.prev.log"},
-        {APP_DIR "/mkdd_prof.bin", APP_DIR "/mkdd_prof.prev.bin"},
+        {LOG_DIR "/stderr.log", LOG_DIR "/stderr.prev.log"},     {LOG_DIR "/crash.log", LOG_DIR "/crash.prev.log"},
+        {LOG_DIR "/mkdd.log", LOG_DIR "/mkdd.prev.log"},         {LOG_DIR "/mkdd_trace.log", LOG_DIR "/mkdd_trace.prev.log"},
+        {LOG_DIR "/mkdd_prof.bin", LOG_DIR "/mkdd_prof.prev.bin"},
     };
     for (size_t i = 0; i < sizeof LOGS / sizeof *LOGS; i++) {
         FILE *f = fopen(LOGS[i][0], "rb");
@@ -270,14 +377,14 @@ int main(int argc, char **argv) {
         remove(LOGS[i][1]);
         rename(LOGS[i][0], LOGS[i][1]);
     }
-    FILE *bt = fopen(APP_DIR "/boot.txt", "w");
+    FILE *bt = fopen(LOG_DIR "/boot.txt", "w");
     if (bt) { fprintf(bt, "main() reached, build " __DATE__ " " __TIME__ "\n"); fclose(bt); }
-    freopen(APP_DIR "/stderr.log", "w", stderr);
+    freopen(LOG_DIR "/stderr.log", "w", stderr);
     setvbuf(stderr, NULL, _IOFBF, 64 << 10);
-    diag_set_log_file(APP_DIR "/mkdd.log");
-    memcard_set_path(APP_DIR "/save/slotA.bin");
-    settings_load(APP_DIR "/settings.ini");
-    color_load(APP_DIR "/save/color.ini");
+    diag_set_log_file(LOG_DIR "/mkdd.log");
+    memcard_set_path(SAVE_DIR "/slotA.bin");
+    settings_load(CFG_DIR "/settings.ini");
+    color_load(CFG_DIR "/color.ini");
     if (hosversionAtLeast(7, 0, 0)) appletSetCpuBoostMode(ApmCpuBoostMode_FastLoad);
 
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO);
@@ -296,21 +403,25 @@ int main(int argc, char **argv) {
     if (at != AppletType_Application && at != AppletType_SystemApplication)
         fatal("APPLET MODE IS NOT SUPPORTED", "HOLD R WHILE STARTING A GAME (TITLE TAKEOVER)");
 
-    padConfigureInput(1, HidNpadStyleSet_NpadStandard);
-    PadState pad;
-    padInitializeDefault(&pad);
+    input_init();
 
     char disc[512], err[512];
     screen("LOOKING FOR THE DISC IMAGE", NULL, 0.05f);
     if (!find_disc(disc, sizeof disc)) fatal("NO DISC IMAGE FOUND", "PUT YOUR GM4E01 .ISO IN /SWITCH/MKDD-NX/");
+    if (disc_open(disc, err, sizeof err)) {
+        menu_font_load();  /* the loading screen's letters */
+        pause_art_init();  /* the pause screen's controller picture, drawn as a Switch */
+        render_set_subst(pause_art_texture);
+    }
     screen("STARTING", NULL, 0.3f);
     if (!render_init()) fatal("GRAPHICS INIT FAILED", "SEE MKDD.LOG");
-    render_shader_cache(APP_DIR "/shaders.bin", shader_progress);
+    render_shader_cache(CFG_DIR "/shaders.bin", shader_progress);
     if (!machine_boot(disc, &s_boot, err, sizeof err)) {
         rt_log("boot failed: %s", err);
         fatal("COULD NOT START THE GAME", "WRONG DISC: NEEDS MARIO KART DOUBLE DASH USA (GM4E01)");
     }
-    diag_start_watchdog(APP_DIR "/mkdd_trace.log");
+    diag_start_watchdog(LOG_DIR "/mkdd_trace.log");
+    cheats_set(g_set.unlock_all); /* session only: the save never gets these bits */
 
     SDL_AudioSpec want = {0}, have;
     want.freq = 48000;
@@ -335,15 +446,15 @@ int main(int argc, char **argv) {
         rt_log("apm: handheld profile %s (was %#x)", perf_set ? "raised" : "unchanged", perf_prev);
     }
 
-    update_pad(&pad);
+    update_pads();
     /* An empty file "cpu_xform" in the app folder switches the XF stage back to the decoder (CPU). */
-    g_gx_cpu_xform = access(APP_DIR "/cpu_xform", F_OK) == 0;
+    g_gx_cpu_xform = access(CFG_DIR "/cpu_xform", F_OK) == 0;
     rt_log("xf: vertex transform on the %s", g_gx_cpu_xform ? "CPU (cpu_xform file)" : g_gx_cpu_xform_forced ? "CPU (shader failed)" : "GPU");
     /* Sampling profiler (mkdd_prof.bin, tools/prof_report.py); an empty file "noprof" turns it off. */
-    if (access(APP_DIR "/noprof", F_OK) != 0) {
+    if (access(CFG_DIR "/noprof", F_OK) != 0) {
         u64 ib, ie;
         image_range(&ib, &ie);
-        prof_start(APP_DIR "/mkdd_prof.bin", ib, ie);
+        prof_start(LOG_DIR "/mkdd_prof.bin", ib, ie);
     }
     pthread_start("game", game_thread, NULL, 32u << 20, 1, 0);
     screen("BOOTING", NULL, 0.6f);
@@ -354,6 +465,9 @@ int main(int argc, char **argv) {
     unsigned rendered = 0, total_rendered = 0, fps_frames = 0;
     u64 fps_tick = armGetSystemTick();
     uint64_t t_render = 0, t_swap = 0, t_present = 0;
+    /* performance overlay (- menu, SHOW FPS: FPS + TIMES): per game frame over the last 0.5 s */
+    char perf[96] = "";
+    uint64_t pf_idle = g_guest_idle_ns, pf_gx = g_gx_busy_ns, pf_main = 0, pf_loops = 0;
     while (appletMainLoop()) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
@@ -361,11 +475,33 @@ int main(int argc, char **argv) {
         }
         /* Out of focus (HOME menu) vi stops returning buffers, so a swap would block and the
          * close request never reach appletMainLoop: idle until focus comes back. */
-        if (appletGetFocusState() != AppletFocusState_InFocus) { svcSleepThread(16000000); continue; }
-        update_pad(&pad);
+        if (appletGetFocusState() != AppletFocusState_InFocus) {
+            g_pad_hold = true; /* the game waits in PADRead until we're back */
+            rumble_update(true);
+            svcSleepThread(16000000);
+            continue;
+        }
+        update_pads();
         if (s_quit) break;
-        g_aspect_scale = g_set.wide ? 4.0f / 3.0f : 1.0f;
-        render_set_hud43(g_set.wide);
+        bool paused = menu_is_open();
+        g_pad_hold = paused;
+        rumble_update(paused);
+        if (menu_take_controllers()) {
+            /* the system's controller screen (pairing, player order, single Joy-Cons) */
+            g_pad_hold = true;
+            rumble_update(true);
+            HidLaControllerSupportArg arg;
+            hidLaCreateControllerSupportArg(&arg);
+            arg.hdr.player_count_max = 4;
+            HidLaControllerSupportResultInfo res;
+            Result rc = hidLaShowControllerSupport(&res, &arg);
+            rt_log("pad: controller screen closed (%#x), %d players", rc, R_SUCCEEDED(rc) ? res.player_count : -1);
+        }
+        /* SequenceApp::msScene (r13 0x803D1420 - 0x7740): 0 = SceneTitle, the "press start"
+         * screen. Its artwork is one 4:3 picture that 16:9 only stretched, so it stays 4:3. */
+        bool wide = g_set.wide && m_read_be(0x803C9CE0u, 4) != 0;
+        g_aspect_scale = wide ? 4.0f / 3.0f : 1.0f;
+        render_set_hud43(wide);
         u64 r0 = armGetSystemTick();
         bool got = render_update(1);
         t_render += armTicksToNs(armGetSystemTick() - r0);
@@ -382,6 +518,17 @@ int main(int argc, char **argv) {
         u64 fps_ns = armTicksToNs(armGetSystemTick() - fps_tick);
         if (fps_ns >= 500000000ull) { /* game frames shown per second, updated twice a second */
             s_fps = (float)((double)fps_frames * 1e9 / (double)fps_ns);
+            if (fps_frames) {
+                /* GAME: the game thread's busy time, GX: the graphics thread, RENDER: GL work on
+                 * this thread (submit + present, incl. any wait for the GPU), per game frame */
+                uint64_t idle = g_guest_idle_ns - pf_idle, gx = g_gx_busy_ns - pf_gx;
+                double game = idle < fps_ns ? (double)(fps_ns - idle) : 0.0;
+                snprintf(perf, sizeof perf, "GAME %.1f  GX %.1f  RENDER %.1f MS", game / fps_frames / 1e6,
+                         (double)gx / fps_frames / 1e6, pf_loops ? (double)pf_main / pf_loops / 1e6 : 0.0);
+            }
+            pf_idle = g_guest_idle_ns;
+            pf_gx = g_gx_busy_ns;
+            pf_main = pf_loops = 0;
             fps_frames = 0;
             fps_tick = armGetSystemTick();
         }
@@ -391,11 +538,13 @@ int main(int argc, char **argv) {
         if (total_rendered) {
             float adj[3];
             color_adjust(adj);
-            render_present(w, h, adj, g_set.wide);
-            menu_draw(w, h, s_fps);
+            render_present(w, h, adj, wide);
+            menu_draw(w, h, s_fps, perf);
         } else screen("BOOTING", NULL, 0.8f);
         u64 s0 = armGetSystemTick();
         t_present += armTicksToNs(s0 - p0);
+        pf_main += armTicksToNs(s0 - r0);
+        pf_loops++;
         SDL_GL_SwapWindow(s_window);
         t_swap += armTicksToNs(armGetSystemTick() - s0);
         if (++frames % 300 == 0) {
@@ -420,6 +569,7 @@ int main(int argc, char **argv) {
     }
 out:
     rt_log("exit: %s", s_quit ? "menu EXIT GAME" : "close request");
+    for (int p = 0; p < 4; p++) rumble_send(p, 0.0f);
     prof_stop();
     gx_stop_gpu();
     if (perf_set) apmSetPerformanceConfiguration(ApmPerformanceMode_Normal, perf_prev);

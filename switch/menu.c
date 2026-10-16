@@ -1,6 +1,8 @@
-/* The − menu (settings, button mapping, exit) and the on-screen overlay. Drawn after the game
- * image with one small instanced program: each instance is a rectangle, either solid or a 5x7
- * glyph whose bits come from a uniform, so there are no buffers or textures to manage. */
+/* The - menu (options, colour, controllers, button mapping, debugging, exit) and the on-screen
+ * overlay, styled after the game's own menus: its MarioFont letters (read from the disc, see
+ * ui_font.c), a navy star panel with a red border and a checkered title band. Drawn after the
+ * game image with one small instanced program (see "drawing"); the start-up screen
+ * (menu_loading) uses the same pieces. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +12,7 @@
 
 #include "menu.h"
 #include "render_gl.h"
+#include "ui_font.h"
 #include "../runtime/rt.h"
 
 Settings g_set;
@@ -40,7 +43,9 @@ static uint64_t mappable(void) {
 /* ---- settings.ini ---- */
 static void defaults(void) {
     g_set.wide = false;
-    g_set.show_fps = false;
+    g_set.show_fps = 0;
+    g_set.rumble = 2;
+    g_set.unlock_all = false;
     g_set.logging = 1;
     memcpy(g_set.map, DEFAULT_MAP, sizeof g_set.map);
 }
@@ -65,7 +70,9 @@ void settings_load(const char *path) {
         const char *k = line, *v = eq + 1;
         /* display: 0 = 4:3, otherwise 16:9 (older builds: 1 stretched, 2 wide view; "widescreen" before 0814) */
         if (!strcmp(k, "display") || !strcmp(k, "widescreen")) g_set.wide = atoi(v) != 0;
-        else if (!strcmp(k, "show_fps")) g_set.show_fps = atoi(v) != 0;
+        else if (!strcmp(k, "show_fps")) g_set.show_fps = atoi(v) < 0 ? 0 : atoi(v) > 2 ? 2 : atoi(v);
+        else if (!strcmp(k, "rumble")) g_set.rumble = atoi(v) < 0 ? 0 : atoi(v) > 2 ? 2 : atoi(v);
+        else if (!strcmp(k, "unlock_all")) g_set.unlock_all = atoi(v) != 0;
         else if (!strcmp(k, "logging")) g_set.logging = atoi(v) & 3;
         else
             for (int i = 0; i < GC_COUNT; i++)
@@ -73,13 +80,15 @@ void settings_load(const char *path) {
     }
     fclose(f);
     apply_logging();
-    rt_log("settings: 16:9 %d, fps %d, logging %d", g_set.wide, g_set.show_fps, g_set.logging);
+    rt_log("settings: 16:9 %d, fps %d, logging %d, rumble %d, unlock all %d", g_set.wide, g_set.show_fps, g_set.logging,
+           g_set.rumble, g_set.unlock_all);
 }
 
 void settings_save(void) {
     FILE *f = fopen(s_path, "w");
     if (!f) return;
-    fprintf(f, "display=%d\nshow_fps=%d\nlogging=%d\n", g_set.wide, g_set.show_fps, g_set.logging);
+    fprintf(f, "display=%d\nshow_fps=%d\nlogging=%d\nrumble=%d\nunlock_all=%d\n", g_set.wide, g_set.show_fps,
+            g_set.logging, g_set.rumble, g_set.unlock_all);
     for (int i = 0; i < GC_COUNT; i++) fprintf(f, "%s=%llx\n", GC_KEYS[i], (unsigned long long)g_set.map[i]);
     fclose(f);
 }
@@ -138,13 +147,17 @@ void color_adjust(float adj[3]) {
 }
 
 /* ---- menu state ---- */
-enum { PAGE_MAIN, PAGE_MAP, PAGE_EXIT, PAGE_COLOR };
-enum { M_WIDE, M_FPS, M_COLOR, M_LOG, M_MAP, M_EXIT, M_COUNT };
+enum { PAGE_MAIN, PAGE_MAP, PAGE_EXIT, PAGE_COLOR, PAGE_DEBUG, PAGE_COUNT };
+enum { M_WIDE, M_COLOR, M_CTRL, M_RUMBLE, M_MAP, M_DEBUG, M_EXIT, M_COUNT };
+enum { D_FPS, D_UNLOCK, D_LOG, D_BACK, D_COUNT };
+static const char *FPS_NAMES[3] = {"OFF", "FPS", "FPS + TIMES"};
+static const char *RUMBLE_NAMES[3] = {"OFF", "LOW", "HIGH"};
+static bool s_want_controllers;
 enum { P_RESET = GC_COUNT, P_BACK, P_COUNT };
 enum { K_MODE, K_BRIGHT, K_CONTRAST, K_SAT, K_RESET, K_BACK, K_COUNT };
 static bool s_open;
 static bool s_preview;          /* colour page with Y held: panel hidden to see the whole image */
-static int s_page, s_sel[4];
+static int s_page, s_sel[PAGE_COUNT];
 static int s_capture = -1;      /* GameCube button waiting for a new Switch button */
 static bool s_capture_armed;    /* all buttons were released since the capture started */
 static bool s_release_wait;     /* menu closed: keep the game's pad neutral until buttons are released */
@@ -157,6 +170,16 @@ static void map_name(uint64_t m, char *out, size_t n) {
             snprintf(out + l, n - l, "%s%s", l ? "/" : "", SW_BUTTONS[i].name);
         }
     if (!out[0]) snprintf(out, n, "NONE");
+}
+
+static int page_rows(int page) {
+    switch (page) {
+    case PAGE_MAIN: return M_COUNT;
+    case PAGE_MAP: return P_COUNT;
+    case PAGE_COLOR: return K_COUNT;
+    case PAGE_DEBUG: return D_COUNT;
+    default: return 1;
+    }
 }
 
 bool menu_input(uint64_t down, uint64_t held, bool *quit) {
@@ -185,7 +208,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
     }
     const uint64_t UP = HidNpadButton_Up | HidNpadButton_StickLUp, DOWN = HidNpadButton_Down | HidNpadButton_StickLDown;
     const uint64_t SIDE = HidNpadButton_Left | HidNpadButton_Right | HidNpadButton_StickLLeft | HidNpadButton_StickLRight;
-    int count = s_page == PAGE_MAIN ? M_COUNT : s_page == PAGE_MAP ? P_COUNT : s_page == PAGE_COLOR ? K_COUNT : 1;
+    int count = page_rows(s_page);
     int *sel = &s_sel[s_page];
     if (down & UP) *sel = (*sel + count - 1) % count;
     if (down & DOWN) *sel = (*sel + 1) % count;
@@ -223,22 +246,31 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         }
         return true;
     }
-    if (s_page == PAGE_MAIN && (ok || side)) {
+    if (s_page == PAGE_DEBUG && (ok || side)) {
         switch (*sel) {
-        case M_WIDE: g_set.wide = !g_set.wide; settings_save(); break;
-        case M_FPS: g_set.show_fps = !g_set.show_fps; settings_save(); break;
-        case M_COLOR:
-            if (ok) { s_page = PAGE_COLOR; s_sel[PAGE_COLOR] = 0; }
-            else { g_color.mode = (g_color.mode + (left ? COLOR_MODES - 1 : 1)) % COLOR_MODES; s_color_dirty = true; color_save(); }
-            break;
-        case M_LOG: {
+        case D_FPS: g_set.show_fps = (g_set.show_fps + (left ? 2 : 1)) % 3; settings_save(); break;
+        case D_UNLOCK: g_set.unlock_all = !g_set.unlock_all; cheats_set(g_set.unlock_all); settings_save(); break;
+        case D_LOG:
             /* A / right: next mode, left: previous */
             g_set.logging = (g_set.logging + (left ? 3 : 1)) & 3;
             apply_logging();
             settings_save();
             break;
+        case D_BACK: if (ok) s_page = PAGE_MAIN; break;
         }
+        return true;
+    }
+    if (s_page == PAGE_MAIN && (ok || side)) {
+        switch (*sel) {
+        case M_WIDE: g_set.wide = !g_set.wide; settings_save(); break;
+        case M_CTRL: if (ok) { s_want_controllers = true; s_open = false; s_release_wait = true; } break;
+        case M_RUMBLE: g_set.rumble = (g_set.rumble + (left ? 2 : 1)) % 3; settings_save(); break;
+        case M_COLOR:
+            if (ok) { s_page = PAGE_COLOR; s_sel[PAGE_COLOR] = 0; }
+            else { g_color.mode = (g_color.mode + (left ? COLOR_MODES - 1 : 1)) % COLOR_MODES; s_color_dirty = true; color_save(); }
+            break;
         case M_MAP: if (ok) { s_page = PAGE_MAP; s_sel[PAGE_MAP] = 0; } break;
+        case M_DEBUG: if (ok) { s_page = PAGE_DEBUG; s_sel[PAGE_DEBUG] = 0; } break;
         case M_EXIT: if (ok) s_page = PAGE_EXIT; break;
         }
     } else if (s_page == PAGE_MAP && ok) {
@@ -293,11 +325,15 @@ const char *font_glyph(char c) {
     return NULL;
 }
 
-/* ---- drawing ---- */
+/* ---- drawing ----
+ * One instanced program; each instance is a rectangle with a top and a bottom colour and a
+ * shape: a 5x7 bitmap glyph, a solid box, a MarioFont letter (atlas from the disc), a rounded
+ * box, a star or a right-pointing arrow. No buffers to manage, ~100 instances a frame. */
 #define BATCH 64
+enum { SH_GLYPH, SH_BOX, SH_FONT, SH_ROUND, SH_STAR, SH_ARROW, SH_IMAGE };
 static GLuint s_prog;
-static GLint u_rect, u_col, u_bits, u_screen;
-static float s_rect[BATCH][4], s_col[BATCH][4];
+static GLint u_rect, u_col, u_col2, u_par, u_bits, u_screen, u_atlas;
+static float s_rect[BATCH][4], s_col[BATCH][4], s_col2[BATCH][4], s_par[BATCH][4];
 static GLuint s_bits[BATCH][2];
 static int s_n;
 
@@ -305,10 +341,15 @@ static const char *VS =
     "#version 320 es\n"
     "uniform vec4 u_rect[64];\n"
     "uniform vec4 u_col[64];\n"
+    "uniform vec4 u_col2[64];\n"
+    "uniform vec4 u_par[64];\n"
     "uniform uvec2 u_bits[64];\n"
     "uniform vec2 u_screen;\n"
     "out vec2 v_uv;\n"
     "flat out vec4 v_col;\n"
+    "flat out vec4 v_col2;\n"
+    "flat out vec4 v_par;\n"
+    "flat out vec2 v_size;\n"
     "flat out uvec2 v_bits;\n"
     "void main() {\n"
     "    vec2 c = vec2(float((0x32 >> gl_VertexID) & 1), float((0x2C >> gl_VertexID) & 1));\n"
@@ -316,23 +357,55 @@ static const char *VS =
     "    vec2 p = r.xy + c * r.zw;\n"
     "    gl_Position = vec4(p.x / u_screen.x * 2.0 - 1.0, 1.0 - p.y / u_screen.y * 2.0, 0.0, 1.0);\n"
     "    v_uv = c;\n"
+    "    v_size = r.zw;\n"
     "    v_col = u_col[gl_InstanceID];\n"
+    "    v_col2 = u_col2[gl_InstanceID];\n"
+    "    v_par = u_par[gl_InstanceID];\n"
     "    v_bits = u_bits[gl_InstanceID];\n"
     "}\n";
 static const char *FS =
     "#version 320 es\n"
     "precision highp float;\n"
     "precision highp int;\n"
+    "uniform sampler2D u_atlas;\n"
     "in vec2 v_uv;\n"
     "flat in vec4 v_col;\n"
+    "flat in vec4 v_col2;\n"
+    "flat in vec4 v_par;\n"
+    "flat in vec2 v_size;\n"
     "flat in uvec2 v_bits;\n"
     "out vec4 o;\n"
     "void main() {\n"
-    "    ivec2 cell = clamp(ivec2(v_uv * vec2(5.0, 7.0)), ivec2(0), ivec2(4, 6));\n"
-    "    int bit = cell.y * 5 + cell.x;\n"
-    "    uint w = bit < 32 ? v_bits.x : v_bits.y;\n"
-    "    if (((w >> uint(bit & 31)) & 1u) == 0u) discard;\n"
-    "    o = v_col;\n"
+    "    uint shape = v_bits.y >> 28;\n"
+    "    vec4 c = mix(v_col, v_col2, v_uv.y);\n"
+    "    float a = 1.0;\n"
+    "    if (shape == 0u) {\n" /* 5x7 bitmap glyph */
+    "        ivec2 cell = clamp(ivec2(v_uv * vec2(5.0, 7.0)), ivec2(0), ivec2(4, 6));\n"
+    "        int bit = cell.y * 5 + cell.x;\n"
+    "        uint w = bit < 32 ? v_bits.x : v_bits.y;\n"
+    "        if (((w >> uint(bit & 31)) & 1u) == 0u) discard;\n"
+    "    } else if (shape == 2u) {\n" /* MarioFont letter: R intensity (outline), G alpha */
+    "        vec2 la = texture(u_atlas, mix(v_par.xy, v_par.zw, v_uv)).rg;\n"
+    "        c.rgb *= la.r;\n"
+    "        a = la.g;\n"
+    "    } else if (shape == 3u) {\n" /* rounded box, corner radius v_par.x px */
+    "        vec2 h = v_size * 0.5, q = abs(v_uv * v_size - h) - (h - vec2(v_par.x));\n"
+    "        float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - v_par.x;\n"
+    "        a = clamp(0.5 - d, 0.0, 1.0);\n"
+    "    } else if (shape == 4u) {\n" /* five-pointed star */
+    "        vec2 p = (v_uv - 0.5) * 2.0;\n"
+    "        float ang = atan(p.x, -p.y), k = 6.2831853 / 5.0;\n"
+    "        float f = abs(mod(ang + k * 0.5, k) - k * 0.5) / (k * 0.5);\n"
+    "        float r = mix(1.0, 0.45, f);\n"
+    "        a = clamp((r - length(p)) * v_size.x * 0.5, 0.0, 1.0);\n"
+    "    } else if (shape == 5u) {\n" /* arrow pointing right */
+    "        float d = (1.0 - v_uv.x) - abs(v_uv.y - 0.5) * 2.0;\n"
+        "        a = clamp(d * v_size.x, 0.0, 1.0);\n"
+    "    } else if (shape == 6u) {\n" /* RGBA image (the logo), tinted */
+    "        c *= texture(u_atlas, mix(v_par.xy, v_par.zw, v_uv));\n"
+    "    }\n"
+    "    if (a * c.a < 0.004) discard;\n"
+    "    o = vec4(c.rgb, c.a * a);\n"
     "}\n";
 
 static GLuint shader(GLenum type, const char *src) {
@@ -348,6 +421,8 @@ static GLuint shader(GLenum type, const char *src) {
     }
     return s;
 }
+
+static bool s_font;   /* MarioFont glyphs loaded from the disc */
 
 static bool init_gl(void) {
     static bool tried;
@@ -365,32 +440,57 @@ static bool init_gl(void) {
     s_prog = p;
     u_rect = glGetUniformLocation(p, "u_rect");
     u_col = glGetUniformLocation(p, "u_col");
+    u_col2 = glGetUniformLocation(p, "u_col2");
+    u_par = glGetUniformLocation(p, "u_par");
     u_bits = glGetUniformLocation(p, "u_bits");
     u_screen = glGetUniformLocation(p, "u_screen");
+    u_atlas = glGetUniformLocation(p, "u_atlas");
     return true;
+}
+
+void menu_font_load(void) {
+    static bool tried;
+    if (tried) return;
+    tried = true;
+    s_font = uifont_load();
 }
 
 static void flush(void) {
     if (!s_n) return;
     glUniform4fv(u_rect, s_n, &s_rect[0][0]);
     glUniform4fv(u_col, s_n, &s_col[0][0]);
+    glUniform4fv(u_col2, s_n, &s_col2[0][0]);
+    glUniform4fv(u_par, s_n, &s_par[0][0]);
     glUniform2uiv(u_bits, s_n, &s_bits[0][0]);
     glDrawArraysInstanced(GL_TRIANGLES, 0, 6, s_n);
     s_n = 0;
 }
 
-static void quad(float x, float y, float w, float h, uint32_t rgba, GLuint b0, GLuint b1) {
+static void rgba(float out[4], uint32_t c) {
+    for (int i = 0; i < 4; i++) out[i] = (float)((c >> (24 - 8 * i)) & 0xFF) / 255.0f;
+}
+static void quad(float x, float y, float w, float h, uint32_t top, uint32_t bot, unsigned shape, GLuint b0, GLuint b1,
+                 const float par[4]) {
     if (s_n == BATCH) flush();
     s_rect[s_n][0] = x; s_rect[s_n][1] = y; s_rect[s_n][2] = w; s_rect[s_n][3] = h;
-    for (int i = 0; i < 4; i++) s_col[s_n][i] = (float)((rgba >> (24 - 8 * i)) & 0xFF) / 255.0f;
+    rgba(s_col[s_n], top);
+    rgba(s_col2[s_n], bot);
+    for (int i = 0; i < 4; i++) s_par[s_n][i] = par ? par[i] : 0.0f;
     s_bits[s_n][0] = b0;
-    s_bits[s_n][1] = b1;
+    s_bits[s_n][1] = (b1 & 0x0FFFFFFFu) | (GLuint)shape << 28;
     s_n++;
 }
-static void rect(float x, float y, float w, float h, uint32_t rgba) { quad(x, y, w, h, rgba, 0xFFFFFFFFu, 7u); }
+static void rect(float x, float y, float w, float h, uint32_t rgba_) { quad(x, y, w, h, rgba_, rgba_, SH_BOX, 0, 0, NULL); }
+static void grad(float x, float y, float w, float h, uint32_t top, uint32_t bot) { quad(x, y, w, h, top, bot, SH_BOX, 0, 0, NULL); }
+static void round_box(float x, float y, float w, float h, float r, uint32_t c) {
+    const float par[4] = {r, 0, 0, 0};
+    quad(x, y, w, h, c, c, SH_ROUND, 0, 0, par);
+}
+static void star(float cx, float cy, float r, uint32_t c) { quad(cx - r, cy - r, 2 * r, 2 * r, c, c, SH_STAR, 0, 0, NULL); }
+static void arrow(float x, float y, float w, float h, uint32_t c) { quad(x, y, w, h, c, c, SH_ARROW, 0, 0, NULL); }
 
-/* Text at (x, y) with glyph pixel size px; returns the width. */
-static float text(float x, float y, float px, uint32_t rgba, const char *s) {
+/* 5x7 bitmap text at (x, y) with glyph pixel size px; returns the width. */
+static float text(float x, float y, float px, uint32_t rgba_, const char *s) {
     float x0 = x;
     for (; *s; s++, x += 6 * px) {
         const char *g = font_glyph(*s);
@@ -398,28 +498,102 @@ static float text(float x, float y, float px, uint32_t rgba, const char *s) {
         GLuint b[2] = {0, 0};
         for (int i = 0; i < 35; i++)
             if (g[i] == '1') b[i >> 5] |= 1u << (i & 31);
-        quad(x, y, 5 * px, 7 * px, rgba, b[0], b[1]);
+        quad(x, y, 5 * px, 7 * px, rgba_, rgba_, SH_GLYPH, b[0], b[1], NULL);
     }
     return x - x0;
 }
 static float text_w(const char *s, float px) { return (float)strlen(s) * 6 * px - px; }
 
-#define C_PANEL 0x101018E0u
-#define C_EDGE 0xF0C850FFu
-#define C_TEXT 0xFFFFFFFFu
-#define C_DIM 0xA0A0B0FFu
-#define C_SEL 0x3A3A60FFu
+/* MarioFont text, size = cell height in px, top/bottom gradient (the game's titles: yellow to
+ * orange). Characters the font lacks use the bitmap font. Returns the advance. */
+static float mtext_draw(float x, float y, float size, uint32_t top, uint32_t bot, const char *s, bool draw) {
+    if (!s_font) {
+        float px = size / 9.0f;
+        if (draw) text(x, y + size * 0.12f, px, top, s);
+        return text_w(s, px);
+    }
+    float sc = size / 32.0f, x0 = x;
+    for (; *s; s++) {
+        float uv[4], g0, g1;
+        if (*s == ' ') { x += 11 * sc; continue; }
+        if (uifont_glyph(*s, uv, &g0, &g1)) {
+            if (draw) quad(x - g0 * sc, y, 32 * sc, 32 * sc, top, bot, SH_FONT, 0, 0, uv);
+            x += (g1 - g0 - 2) * sc;
+        } else {
+            const char *g = font_glyph(*s);
+            float px = size / 9.0f;
+            if (g && draw) {
+                GLuint b[2] = {0, 0};
+                for (int i = 0; i < 35; i++)
+                    if (g[i] == '1') b[i >> 5] |= 1u << (i & 31);
+                quad(x, y + size * 0.14f, 5 * px, 7 * px, 0x101010FFu, 0x101010FFu, SH_GLYPH, b[0], b[1], NULL); /* outline */
+                quad(x + px * 0.35f, y + size * 0.14f + px * 0.35f, 5 * px * 0.86f, 7 * px * 0.86f, top, bot, SH_GLYPH, b[0], b[1], NULL);
+            }
+            x += 6 * px;
+        }
+    }
+    return x - x0;
+}
+static float mtext(float x, float y, float size, uint32_t top, uint32_t bot, const char *s) { return mtext_draw(x, y, size, top, bot, s, true); }
+static float mtext_w(const char *s, float size) { return mtext_draw(0, 0, size, 0, 0, s, false); }
 
-static void row(float x, float y, float w, float rh, float px, bool sel, const char *label, const char *value) {
-    if (sel) rect(x, y, w, rh, C_SEL);
-    float ty = y + (rh - 7 * px) / 2;
-    text(x + 3 * px, ty, px, sel ? C_EDGE : C_TEXT, label);
-    if (value) text(x + w - 3 * px - text_w(value, px), ty, px, sel ? C_EDGE : C_TEXT, value);
+/* the game's palette */
+#define C_TITLE_T 0xFFEC40FFu   /* titles and labels: yellow ... */
+#define C_TITLE_B 0xFF8800FFu   /* ... to orange */
+#define C_SEL_T 0xFFFFFFFFu     /* selected label: white to yellow */
+#define C_SEL_B 0xFFD640FFu
+#define C_VAL_T 0xFFFFFFFFu     /* values: white to light blue */
+#define C_VAL_B 0x96D2FFFFu
+#define C_DIM 0xB8C8F0FFu
+
+/* The panel: red border, white rim, navy with darker-blue stars, blue title band with a
+ * checkered edge (the cup / character select screens). */
+static void panel(float x, float y, float w, float h, float k, const char *title) {
+    round_box(x - 8 * k, y - 8 * k, w + 16 * k, h + 16 * k, 22 * k, 0xD61C1CFFu);
+    round_box(x - 3 * k, y - 3 * k, w + 6 * k, h + 6 * k, 18 * k, 0xFFFFFFFFu);
+    round_box(x, y, w, h, 16 * k, 0x102268F8u);
+    /* stars at fixed pseudo-random places */
+    uint32_t seed = 12345;
+    for (int i = 0; i < 26; i++) {
+        seed = seed * 1103515245u + 12345u;
+        float sx = x + 20 * k + (float)(seed >> 8 & 1023) / 1023.0f * (w - 40 * k);
+        seed = seed * 1103515245u + 12345u;
+        float sy = y + 100 * k + (float)(seed >> 8 & 1023) / 1023.0f * (h - 120 * k);
+        seed = seed * 1103515245u + 12345u;
+        star(sx, sy, (8 + (float)(seed >> 8 & 7)) * k, 0x223E96FFu);
+    }
+    float band = 70 * k;
+    grad(x + 6 * k, y + 6 * k, w - 12 * k, band - 6 * k, 0x3C78E6FFu, 0x2457C8FFu);
+    for (float i = 0, n = 0; i + 7 * k <= w - 12 * k; i += 7 * k, n++) {
+        bool odd = (int)n & 1;
+        rect(x + 6 * k + i, y + band, 7 * k, 7 * k, odd ? 0x2457C8FFu : 0xFFFFFFFFu);
+        rect(x + 6 * k + i, y + band + 7 * k, 7 * k, 7 * k, odd ? 0xFFFFFFFFu : 0x2457C8FFu);
+    }
+    float ts = 46 * k;
+    mtext(x + (w - mtext_w(title, ts)) / 2, y + 12 * k, ts, C_TITLE_T, C_TITLE_B, title);
 }
 
-void menu_draw(int w, int h, float fps) {
-    if (!s_open && s_capture < 0 && !g_set.show_fps) return;
-    if (!init_gl()) return;
+/* A menu row: label left, value right; the selected one sits on a blue arrow bar. */
+static void mrow(float x, float y, float w, float rh, float k, bool sel, const char *label, const char *value, bool more) {
+    float ts = rh * 0.7f, ty = y + (rh - ts) * 0.5f;
+    if (sel) {
+        grad(x + 14 * k, y + rh * 0.06f, w - 72 * k, rh * 0.88f, 0x5AA0FFE8u, 0x3C7CF0E8u);
+        arrow(x + w - 58 * k, y + rh * 0.06f, 30 * k, rh * 0.88f, 0x4890F8E8u);
+        arrow(x + 22 * k, y + rh * 0.3f, 14 * k, rh * 0.4f, 0xFFFFFFFFu);
+    }
+    mtext(x + 50 * k, ty, ts, sel ? C_SEL_T : C_TITLE_T, sel ? C_SEL_B : C_TITLE_B, label);
+    if (value) mtext(x + w - 70 * k - mtext_w(value, ts), ty, ts, C_VAL_T, C_VAL_B, value);
+    else if (more) arrow(x + w - 84 * k, y + rh * 0.3f, 16 * k, rh * 0.4f, 0xFFFFFFFFu);
+}
+
+bool menu_is_open(void) { return s_open || s_capture >= 0; }
+bool menu_take_controllers(void) {
+    bool r = s_want_controllers;
+    s_want_controllers = false;
+    return r;
+}
+
+static void begin(int w, int h) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, w, h);
     glDisable(GL_SCISSOR_TEST);
@@ -430,76 +604,192 @@ void menu_draw(int w, int h, float fps) {
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glUseProgram(s_prog);
     glUniform2f(u_screen, (float)w, (float)h);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, s_font ? uifont_texture() : 0);
+    glBindSampler(0, 0);
+    glUniform1i(u_atlas, 0);
     glBindVertexArray(0);
+}
+static void end(void) {
+    flush();
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDisable(GL_BLEND);
+    glUseProgram(0);
+}
+
+void menu_draw(int w, int h, float fps, const char *perf) {
+    if (!s_open && s_capture < 0 && !g_set.show_fps) return;
+    if (!init_gl()) return;
+    menu_font_load();
+    begin(w, h);
     float k = (float)h / 720.0f;
 
     if (g_set.show_fps) {
         char s[32];
         snprintf(s, sizeof s, "%.0f FPS", (double)fps);
-        float px = 3 * k;
-        rect(8 * k, 8 * k, text_w(s, px) + 6 * px, 7 * px + 4 * px, 0x000000A0u);
+        float px = 3 * k, lh = 7 * px + 4 * px;
+        bool times = g_set.show_fps == 2 && perf && perf[0];
+        float bw = text_w(s, px);
+        if (times && text_w(perf, px * 0.6f) > bw) bw = text_w(perf, px * 0.6f);
+        rect(8 * k, 8 * k, bw + 6 * px, times ? lh + 7 * px * 0.6f + 2 * px : lh, 0x000000A0u);
         text(8 * k + 3 * px, 8 * k + 2 * px, px, fps >= 55 ? 0x80FF80FFu : fps >= 40 ? 0xFFE060FFu : 0xFF7060FFu, s);
+        if (times) text(8 * k + 3 * px, 8 * k + lh, px * 0.6f, 0xE0E0E0FFu, perf);
     }
     if ((s_open || s_capture >= 0) && !s_preview) {
-        float px = 4 * k, rh = 13 * px, pw = 820 * k;
-        int rows = s_page == PAGE_MAIN ? M_COUNT : s_page == PAGE_MAP ? P_COUNT : s_page == PAGE_COLOR ? K_COUNT : 2;
-        float ph = rh * (float)(rows + 3), x = ((float)w - pw) / 2, y = ((float)h - ph) / 2;
+        int rows = page_rows(s_page);
+        if (s_page == PAGE_EXIT) rows = 2;
+        float pw = 820 * k, top = 100 * k, foot = 56 * k;
+        float rh = 58 * k, maxh = (float)h - 40 * k;
+        if (top + rh * (float)rows + foot > maxh) rh = (maxh - top - foot) / (float)rows;
+        float ph = top + rh * (float)rows + foot, x = ((float)w - pw) / 2, y = ((float)h - ph) / 2;
         if (s_page != PAGE_COLOR) rect(0, 0, (float)w, (float)h, 0x00000070u); /* colour page: the image undimmed */
-        rect(x - px, y - px, pw + 2 * px, ph + 2 * px, C_EDGE);
-        rect(x, y, pw, ph, 0x101018F4u);
-        const char *title = s_page == PAGE_MAP ? "BUTTON MAPPING" : s_page == PAGE_EXIT ? "EXIT THE GAME?" : s_page == PAGE_COLOR ? "COLOR" : "MKDD-NX OPTIONS";
-        text(x + (pw - text_w(title, px)) / 2, y + (rh - 7 * px) / 2, px, C_EDGE, title);
-        float ry = y + rh * 1.25f;
+        const char *title = s_page == PAGE_MAP ? "BUTTON MAPPING" : s_page == PAGE_EXIT ? "EXIT THE GAME?"
+                            : s_page == PAGE_COLOR ? "COLOR" : s_page == PAGE_DEBUG ? "DEBUGGING" : "OPTIONS";
+        panel(x, y, pw, ph, k, title);
+        float ry = y + top;
+        const char *hint = NULL;
         if (s_page == PAGE_MAIN) {
-            const char *labels[M_COUNT] = {"DISPLAY", "SHOW FPS", "COLOR", "LOGGING", "BUTTON MAPPING", "EXIT GAME"};
-            const char *values[M_COUNT] = {g_set.wide ? "16:9" : "4:3", g_set.show_fps ? "ON" : "OFF", COLOR_NAMES[g_color.mode],
-                                           LOG_NAMES[g_set.logging & 3], ">", NULL};
-            for (int i = 0; i < M_COUNT; i++, ry += rh) row(x + px, ry, pw - 2 * px, rh, px, s_sel[PAGE_MAIN] == i, labels[i], values[i]);
-            const char *hint = s_sel[PAGE_MAIN] == M_WIDE  ? "16:9: WIDER VIEW, RACE HUD AT THE SCREEN EDGES"
-                               : s_sel[PAGE_MAIN] == M_LOG ? "DEBUG LOGS ON THE SD CARD, FOR BUG REPORTS"
-                               : s_sel[PAGE_MAIN] == M_COLOR ? "A: ADJUST   LEFT/RIGHT: ACCURATE, VIVID, CUSTOM"
-                                                           : "A: SELECT   B OR -: CLOSE   (+ PAUSES THE GAME)";
-            text(x + (pw - text_w(hint, px * 0.6f)) / 2, ry + rh * 0.6f, px * 0.6f, C_DIM, hint);
-            /* "Oct 15 2026 14:08:52" -> "BUILD 1408  OCT 15" (the name of the build's saved .elf) */
-            char build[40];
+            static const char *labels[M_COUNT] = {"DISPLAY", "COLOR", "CONTROLLERS", "RUMBLE", "BUTTON MAPPING", "DEBUGGING", "EXIT GAME"};
+            const char *values[M_COUNT] = {g_set.wide ? "16:9" : "4:3", COLOR_NAMES[g_color.mode], NULL,
+                                           RUMBLE_NAMES[g_set.rumble % 3], NULL, NULL, NULL};
+            static const bool more[M_COUNT] = {false, false, true, false, true, true, false};
+            for (int i = 0; i < M_COUNT; i++, ry += rh) mrow(x, ry, pw, rh, k, s_sel[PAGE_MAIN] == i, labels[i], values[i], more[i]);
+            hint = s_sel[PAGE_MAIN] == M_WIDE    ? "16:9: WIDER VIEW, RACE HUD AT THE SCREEN EDGES"
+                   : s_sel[PAGE_MAIN] == M_COLOR ? "A: ADJUST   LEFT/RIGHT: ACCURATE, VIVID, CUSTOM"
+                   : s_sel[PAGE_MAIN] == M_CTRL  ? "PAIR CONTROLLERS, SET THE PLAYER ORDER, SINGLE JOY-CONS"
+                   : s_sel[PAGE_MAIN] == M_DEBUG ? "FPS AND FRAME TIMES, UNLOCK ALL, LOGS"
+                                                 : "GAME PAUSED   A: SELECT   B OR -: CLOSE";
+            /* "Oct 15 2026 14:08:52" -> "BUILD 1408" (the name of the build's saved .elf), in the
+             * title band's top right */
+            char build[16];
             const char *b = g_build_stamp;
-            snprintf(build, sizeof build, "BUILD %.2s%.2s  %.6s", b + 12, b + 15, b);
-            text(x + pw - text_w(build, px * 0.5f) - 2 * px, y + ph - 6 * px, px * 0.5f, C_DIM, build);
+            snprintf(build, sizeof build, "BUILD %.2s%.2s", b + 12, b + 15);
+            float bs = 22 * k;
+            mtext(x + pw - mtext_w(build, bs) - 24 * k, y + 10 * k + (60 * k - bs) / 2, bs, C_VAL_T, C_VAL_B, build);
+        } else if (s_page == PAGE_DEBUG) {
+            static const char *labels[D_COUNT] = {"SHOW FPS", "UNLOCK ALL", "LOGGING", "BACK"};
+            const char *values[D_COUNT] = {FPS_NAMES[g_set.show_fps % 3], g_set.unlock_all ? "ON" : "OFF",
+                                           LOG_NAMES[g_set.logging & 3], NULL};
+            for (int i = 0; i < D_COUNT; i++, ry += rh) mrow(x, ry, pw, rh, k, s_sel[PAGE_DEBUG] == i, labels[i], values[i], false);
+            hint = s_sel[PAGE_DEBUG] == D_FPS      ? "TIMES: MS PER FRAME OF GAME, GRAPHICS AND RENDER THREADS"
+                   : s_sel[PAGE_DEBUG] == D_UNLOCK ? "ALL CHARACTERS, KARTS, CUPS: NEVER WRITTEN TO YOUR SAVE"
+                   : s_sel[PAGE_DEBUG] == D_LOG    ? "DEBUG LOGS ON THE SD CARD, FOR BUG REPORTS"
+                                                   : "B: BACK";
         } else if (s_page == PAGE_COLOR) {
             int v[3];
             color_values(v);
             for (int i = 0; i < K_COUNT; i++, ry += rh) {
-                static const char *labels[K_COUNT] = {"MODE", "BRIGHTNESS", "CONTRAST", "SATURATION", "RESET TO ACCURATE", "BACK"};
+                static const char *labels[K_COUNT] = {"MODE", "BRIGHTNESS", "CONTRAST", "SATURATION", "RESET", "BACK"};
                 char value[16];
                 const char *vp = value;
                 if (i == K_MODE) vp = COLOR_NAMES[g_color.mode];
-                else if (i >= K_BRIGHT && i <= K_SAT) snprintf(value, sizeof value, "< %+d >", v[i == K_BRIGHT ? 0 : i == K_CONTRAST ? 1 : 2]);
+                else if (i >= K_BRIGHT && i <= K_SAT) snprintf(value, sizeof value, "%+d", v[i == K_BRIGHT ? 0 : i == K_CONTRAST ? 1 : 2]);
                 else vp = NULL;
-                row(x + px, ry, pw - 2 * px, rh, px, s_sel[PAGE_COLOR] == i, labels[i], vp);
+                mrow(x, ry, pw, rh, k, s_sel[PAGE_COLOR] == i, labels[i], vp, false);
             }
-            const char *hint = "LEFT/RIGHT: CHANGE   HOLD Y: PREVIEW   B: BACK";
-            text(x + (pw - text_w(hint, px * 0.6f)) / 2, ry + rh * 0.6f, px * 0.6f, C_DIM, hint);
+            hint = "LEFT/RIGHT: CHANGE   HOLD Y: PREVIEW   B: BACK";
         } else if (s_page == PAGE_MAP) {
             for (int i = 0; i < P_COUNT; i++, ry += rh) {
                 char label[32], value[64];
                 if (i < GC_COUNT) {
                     snprintf(label, sizeof label, "GAMECUBE %s", GC_NAMES[i]);
-                    if (s_capture == i) snprintf(value, sizeof value, "PRESS A BUTTON...");
+                    if (s_capture == i) snprintf(value, sizeof value, "PRESS A BUTTON");
                     else map_name(g_set.map[i], value, sizeof value);
-                    row(x + px, ry, pw - 2 * px, rh, px, s_sel[PAGE_MAP] == i, label, value);
+                    mrow(x, ry, pw, rh, k, s_sel[PAGE_MAP] == i, label, value, false);
                 } else {
-                    row(x + px, ry, pw - 2 * px, rh, px, s_sel[PAGE_MAP] == i, i == P_RESET ? "RESET TO DEFAULTS" : "BACK", NULL);
+                    mrow(x, ry, pw, rh, k, s_sel[PAGE_MAP] == i, i == P_RESET ? "RESET TO DEFAULTS" : "BACK", NULL, false);
                 }
             }
-            const char *hint = s_capture >= 0 ? "PRESS THE NEW BUTTON   -: CANCEL" : "A: CHANGE   B: BACK";
-            text(x + (pw - text_w(hint, px * 0.6f)) / 2, ry + rh * 0.6f, px * 0.6f, C_DIM, hint);
+            hint = s_capture >= 0 ? "PRESS THE NEW BUTTON   -: CANCEL" : "A: CHANGE   B: BACK";
         } else {
-            const char *l1 = "UNSAVED RACE PROGRESS IS LOST", *l2 = "A: EXIT   B: BACK";
-            text(x + (pw - text_w(l1, px)) / 2, ry + (rh - 7 * px) / 2, px, C_TEXT, l1);
-            text(x + (pw - text_w(l2, px)) / 2, ry + rh + (rh - 7 * px) / 2, px, C_DIM, l2);
+            const char *l1 = "UNSAVED RACE PROGRESS IS LOST";
+            float ts = rh * 0.6f;
+            mtext(x + (pw - mtext_w(l1, ts)) / 2, ry + (rh - ts) / 2, ts, C_VAL_T, C_VAL_B, l1);
+            ry += rh;
+            const char *l2 = "A: EXIT   B: BACK";
+            mtext(x + (pw - mtext_w(l2, ts)) / 2, ry + (rh - ts) / 2, ts, C_TITLE_T, C_TITLE_B, l2);
+            ry += rh;
+        }
+        if (hint) {
+            float px = 2.4f * k;
+            text(x + (pw - text_w(hint, px)) / 2, y + ph - foot + 14 * k, px, 0xFFFFFFFFu, hint);
         }
     }
+    end();
+}
+
+/* ---- start-up screen ---- */
+extern const uint8_t mkdd_logo_rgba[]; /* switch/logo.S, 512x512 RGBA, top row first */
+#define LOGO_SIZE 512
+
+void menu_loading(int w, int h, const char *line1, const char *line2, float progress) {
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, w, h);
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    if (!init_gl()) return;
+    static GLuint logo;
+    if (!logo) {
+        glGenTextures(1, &logo);
+        glBindTexture(GL_TEXTURE_2D, logo);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, LOGO_SIZE, LOGO_SIZE, 0, GL_RGBA, GL_UNSIGNED_BYTE, mkdd_logo_rgba);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    begin(w, h);
+    float k = (float)h / 720.0f, fw = (float)w, fh = (float)h;
+
+    /* navy sky with the menus' darker-blue stars, a checkered strip along the bottom */
+    grad(0, 0, fw, fh, 0x0A1650FFu, 0x1C3A9AFFu);
+    uint32_t seed = 777;
+    for (int i = 0; i < 40; i++) {
+        seed = seed * 1103515245u + 12345u;
+        float sx = (float)(seed >> 8 & 1023) / 1023.0f * fw;
+        seed = seed * 1103515245u + 12345u;
+        float sy = (float)(seed >> 8 & 1023) / 1023.0f * (fh - 40 * k);
+        seed = seed * 1103515245u + 12345u;
+        star(sx, sy, (10 + (float)(seed >> 8 & 7)) * k, 0x2A4AA8FFu);
+    }
+    float cs = 14 * k;
+    for (float i = 0, n = 0; i < fw; i += cs, n++) {
+        bool odd = (int)n & 1;
+        rect(i, fh - 2 * cs, cs, cs, odd ? 0x101010FFu : 0xFFFFFFFFu);
+        rect(i, fh - cs, cs, cs, odd ? 0xFFFFFFFFu : 0x101010FFu);
+    }
     flush();
-    glDisable(GL_BLEND);
-    glUseProgram(0);
+
+    /* logo */
+    float ls = 400 * k;
+    const float uv[4] = {0, 0, 1, 1};
+    glBindTexture(GL_TEXTURE_2D, logo);
+    quad((fw - ls) / 2, 6 * k, ls, ls, 0xFFFFFFFFu, 0xFFFFFFFFu, SH_IMAGE, 0, 0, uv);
+    flush();
+    glBindTexture(GL_TEXTURE_2D, s_font ? uifont_texture() : 0);
+
+    /* message box: red border, white rim, navy, like the - menu */
+    float bw = 860 * k, bh = 190 * k, bx = (fw - bw) / 2, by = 420 * k;
+    round_box(bx - 8 * k, by - 8 * k, bw + 16 * k, bh + 16 * k, 22 * k, 0xD61C1CFFu);
+    round_box(bx - 3 * k, by - 3 * k, bw + 6 * k, bh + 6 * k, 18 * k, 0xFFFFFFFFu);
+    round_box(bx, by, bw, bh, 16 * k, 0x102268F8u);
+    float ts = 40 * k, ty = by + (progress >= 0 ? 22 * k : 40 * k);
+    const char *lines[2] = {line1, line2};
+    for (int i = 0; i < 2; i++, ty += ts + 14 * k) {
+        if (!lines[i]) continue;
+        float sz = i ? ts * 0.8f : ts, tw = mtext_w(lines[i], sz);
+        if (tw > bw - 40 * k) { sz *= (bw - 40 * k) / tw; tw = mtext_w(lines[i], sz); }
+        mtext((fw - tw) / 2, ty + (ts - sz) / 2, sz, i ? C_VAL_T : C_TITLE_T, i ? C_VAL_B : C_TITLE_B, lines[i]);
+    }
+    if (progress >= 0) {
+        float pw = bw - 120 * k, ph = 26 * k, px = (fw - pw) / 2, py = by + bh - ph - 26 * k;
+        float f = progress > 1 ? 1 : progress;
+        round_box(px - 3 * k, py - 3 * k, pw + 6 * k, ph + 6 * k, ph / 2 + 3 * k, 0xFFFFFFFFu);
+        round_box(px, py, pw, ph, ph / 2, 0x0A1238FFu);
+        const float r[4] = {ph / 2, 0, 0, 0};
+        if (f * pw >= ph) quad(px, py, f * pw, ph, C_TITLE_T, C_TITLE_B, SH_ROUND, 0, 0, r);
+    }
+    end();
 }

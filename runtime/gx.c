@@ -510,6 +510,23 @@ static size_t tex_size(uint32_t fmt, uint32_t w, uint32_t h) {
     if (!block_info(fmt, &bw, &bh, &by)) return 0;
     return (size_t)((w + bw - 1) / bw) * ((h + bh - 1) / bh) * by;
 }
+size_t gx_tex_size(uint32_t fmt, uint32_t w, uint32_t h) { return tex_size(fmt, w, h); }
+
+static struct { uint32_t fmt, w, h; uint64_t hash; uint8_t id; } s_subst[16];
+static unsigned s_nsubst;
+void gx_subst_register(unsigned id, uint32_t fmt, uint32_t w, uint32_t h, uint64_t hash) {
+    if (s_nsubst < 16) s_subst[s_nsubst++] = (__typeof__(s_subst[0])){fmt, w, h, hash, (uint8_t)id};
+}
+/* New textures only (cache misses): the full hash runs only when format and size match. */
+static uint8_t subst_id(uint32_t fmt, uint32_t w, uint32_t h, const uint8_t *data, size_t size) {
+    uint64_t hash = 0;
+    for (unsigned i = 0; i < s_nsubst; i++) {
+        if (s_subst[i].fmt != fmt || s_subst[i].w != w || s_subst[i].h != h) continue;
+        if (!hash) hash = fnv_bytes(FNV_INIT, data, size);
+        if (hash == s_subst[i].hash) return s_subst[i].id;
+    }
+    return 0;
+}
 
 static uint64_t texture_inner(unsigned map) {
     uint32_t mode_r = map < 4 ? 0x80 + map : 0xA0 + map - 4, img0_r = map < 4 ? 0x88 + map : 0xA8 + map - 4;
@@ -550,6 +567,7 @@ static uint64_t texture_inner(unsigned map) {
     t->raw = malloc(size);
     memcpy(t->raw, data, size);
     t->raw_len = size;
+    t->subst = subst_id(fmt, w, h, data, size);
     if (paletted) {
         uint32_t t0 = tlut_addr < TMEM_SIZE - 512 ? tlut_addr : TMEM_SIZE - 512;
         t->tlut = malloc(512);

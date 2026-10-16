@@ -25,7 +25,7 @@ enum {
     H_SET_ALARM, H_SET_PERIODIC_ALARM, H_CANCEL_ALARM,
     H_DVD_INIT, H_DVD_READ_ABS, H_DVD_READ_DISK_ID, H_DVD_INQUIRY, H_DVD_CANCEL_ASYNC, H_DVD_ZERO, H_DVD_CHECK,
     H_DVD_BLOCK_STATUS,
-    H_PAD_ONE, H_PAD_NOP, H_PAD_ZERO, H_PAD_READ, H_SI_PROBE,
+    H_PAD_ONE, H_PAD_NOP, H_PAD_ZERO, H_PAD_READ, H_PAD_MOTOR, H_SI_PROBE,
     H_GX_FIFO_LINK,
     H_AUDIO_NOP, H_DSP_BOOT, H_DSP_SEND, H_DSP_RUNNING_CHECK,
     H_HID2,
@@ -49,7 +49,7 @@ static const struct { const char *name; int id; } BIND[] = {
     {"DVDCancel", H_DVD_ZERO}, {"DVDGetDriveStatus", H_DVD_ZERO}, {"DVDReset", H_DVD_ZERO}, {"DVDResume", H_DVD_ZERO},
     {"DVDCheckDisk", H_DVD_CHECK}, {"DVDGetCommandBlockStatus", H_DVD_BLOCK_STATUS},
     {"PADInit", H_PAD_ONE}, {"PADReset", H_PAD_ONE}, {"PADRecalibrate", H_PAD_ONE},
-    {"PADControlMotor", H_PAD_NOP}, {"PADSetSamplingCallback", H_PAD_ZERO}, {"PADRead", H_PAD_READ},
+    {"PADControlMotor", H_PAD_MOTOR}, {"PADSetSamplingCallback", H_PAD_ZERO}, {"PADRead", H_PAD_READ},
     {"SIProbe", H_SI_PROBE}, {"SIGetType", H_SI_PROBE},
     {"__GXFifoLink", H_GX_FIFO_LINK},
     {"__AI_SRC_INIT", H_AUDIO_NOP}, {"__OSInitAudioSystem", H_AUDIO_NOP}, {"__OSStopAudioSystem", H_AUDIO_NOP},
@@ -314,8 +314,10 @@ bool rt_hle(Ctx *c, uint32_t addr) {
     /* ---- controllers ---- */
     case H_PAD_ONE: ctx_set_gpr(c, 3, 1); break;
     case H_PAD_NOP: break;
+    case H_PAD_MOTOR: pad_motor_set((int)ctx_gpr(c, 3), ctx_gpr(c, 4) == 1); break; /* PAD_MOTOR_RUMBLE */
     case H_PAD_ZERO: ctx_set_gpr(c, 3, 0); break;
     case H_PAD_READ: {
+        while (g_pad_hold) plat_sleep_ns(4000000); /* paused by the front end */
         uint32_t dst = ctx_gpr(c, 3);
         PadStatus p[4];
         pad_get_all(p);

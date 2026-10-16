@@ -72,19 +72,56 @@ Headless PC test build (MSYS2 UCRT64 gcc): `pc/build_pc.sh <gen folder>`, then
 ## Install
 
 Copy `build-switch/sdcard/switch/MKDD-NX/` to `sdmc:/switch/` and put your disc image (`.iso`, `.gcm` or `.ciso`)
-in the same folder. Start it with title takeover (hold R while starting a game). Saves are
-standard `.gci` files in `save/card_a/` (usable in Dolphin's GCI-folder mode and save editors;
-each file's previous version is kept in `save/backup/`), logs go to `mkdd.log` /
-`mkdd_trace.log` / `crash.log` in the same folder. An older `save/slotA.bin` is converted on
-first start and kept as `slotA.bin.migrated`.
+in the same folder. Start it with title takeover (hold R while starting a game). The app creates
+three folders next to the `.nro` and the disc image:
 
-Controls: A/B/X/Y as on the GameCube, + = Start, ZR = R (drift), ZL = L, L/R = Z,
-left stick (or the D-pad) = control stick, right stick = C-stick.
+| Folder | |
+|---|---|
+| `save/` | standard `.gci` saves in `save/card_a/` (usable in Dolphin's GCI-folder mode and save editors); each file's previous version is kept in `save/backup/` |
+| `config/` | `settings.ini`, `color.ini` and `shaders.bin` (compiled shaders: delete it to rebuild) |
+| `logs/` | `mkdd.log`, `mkdd_trace.log`, `crash.log`, `stderr.log`, `boot.txt` (the previous run's as `*.prev.log`) |
 
-Press - for the options menu: display 4:3 or 16:9, FPS counter, button mapping (pick a
-GameCube button, press the Switch button for it) and exit. Settings are saved to
-`settings.ini` in the app folder. 16:9 widens the game's camera (more of the track at the
-sides) and moves the race HUD to the screen edges; menus stay 4:3 in the middle.
+### Controls
+
+Up to 4 players. Controllers become players in order: the console in handheld mode first,
+then wireless controllers as the system numbers them (so handheld + one Pro Controller is a
+2-player game). **CONTROLLERS** in the - menu opens the system screen for pairing, the player
+order and single Joy-Cons. Connects and disconnects are logged (`pad:` lines in `mkdd.log`).
+
+- **Handheld, Pro Controller, Joy-Con pair:** A/B/X/Y as on the GameCube, + = Start,
+  ZR = R (drift), ZL = L, L/R = Z, left stick (or the D-pad) = control stick, right stick =
+  C-stick. Remappable in the menu (applies to all of these).
+- **Single Joy-Con, held sideways:** the four face buttons sit where a GameCube pad's A (right),
+  B (bottom), X (top) and Y (left) are; SL = L, SR = R, the top shoulder or stick click = Z,
+  + (right Joy-Con) or ZL / - (left Joy-Con) = Start. Player 1 on a single right Joy-Con opens
+  the menu with stick click + +.
+- **GameCube controller (official adapter):** its own layout, with analog L/R.
+
+Rumble works on controllers with HD Rumble and on GameCube controllers.
+
+### Options menu (-)
+
+The game pauses while the menu is open (and while the Switch is in the HOME menu or asleep).
+
+| Option | |
+|---|---|
+| Display | 4:3, or 16:9: wider game camera, race HUD at the screen edges, menus 4:3 in the middle |
+| Color | Accurate / Vivid / Custom brightness, contrast, saturation (hold Y on that page to preview); saved to `config/color.ini` |
+| Controllers | the system controller screen |
+| Rumble | Off / Low / High |
+| Button mapping | pick a GameCube button, press the Switch button for it |
+| Debugging | the page below |
+| Exit game | |
+
+**Debugging**
+
+| Option | |
+|---|---|
+| Show FPS | Off / FPS / FPS + times: ms per game frame of the game thread (GAME), the graphics thread (GX) and the render thread (RENDER); 16.7 is the 60 fps budget |
+| Unlock all | every character, kart, cup and mode while it is on; never written to your save, so your own progress stays as it is |
+| Logging | debug logs on the SD card, for bug reports |
+
+Settings are saved to `config/settings.ini`.
 
 ## Credits and licence
 

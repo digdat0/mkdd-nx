@@ -21,7 +21,7 @@ link_directories(${DEVKITPRO}/portlibs/switch/lib)
 
 file(GLOB RT_SOURCES CONFIGURE_DEPENDS "${ROOT}/runtime/*.c")
 file(GLOB GEN_SOURCES CONFIGURE_DEPENDS "${GEN_DIR}/part_*.c")
-set(SW_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/main_switch.c ${CMAKE_CURRENT_SOURCE_DIR}/render_gl.c ${CMAKE_CURRENT_SOURCE_DIR}/tev_gen.c ${CMAKE_CURRENT_SOURCE_DIR}/prof_switch.c ${CMAKE_CURRENT_SOURCE_DIR}/menu.c)
+set(SW_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/main_switch.c ${CMAKE_CURRENT_SOURCE_DIR}/render_gl.c ${CMAKE_CURRENT_SOURCE_DIR}/tev_gen.c ${CMAKE_CURRENT_SOURCE_DIR}/prof_switch.c ${CMAKE_CURRENT_SOURCE_DIR}/menu.c ${CMAKE_CURRENT_SOURCE_DIR}/ui_font.c ${CMAKE_CURRENT_SOURCE_DIR}/pause_art.c)
 
 # Generated code: -O2 (big functions; -O3 mostly costs compile time). Runtime hot paths -O3.
 set_source_files_properties(${GEN_SOURCES} ${GEN_DIR}/table.c PROPERTIES COMPILE_OPTIONS "-O2;-w")
@@ -31,8 +31,11 @@ set_source_files_properties(${GEN_DIR}/mem.S PROPERTIES COMPILE_OPTIONS "-I${GEN
 # logo.S .incbin's the loading-screen logo next to it
 set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/logo.S PROPERTIES COMPILE_OPTIONS "-I${CMAKE_CURRENT_SOURCE_DIR}"
     OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/logo_512.rgba")
+# pause_art_data.S: the pause screen's Switch picture and button badges (tools/make_pause_art.py)
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/pause_art_data.S PROPERTIES COMPILE_OPTIONS "-I${CMAKE_CURRENT_SOURCE_DIR}"
+    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/pause_console.rgba;${CMAKE_CURRENT_SOURCE_DIR}/pause_badges.rgba")
 
-add_executable(MKDD-NX ${SW_SOURCES} ${RT_SOURCES} ${GEN_SOURCES} ${GEN_DIR}/table.c ${GEN_DIR}/mem.S ${CMAKE_CURRENT_SOURCE_DIR}/logo.S)
+add_executable(MKDD-NX ${SW_SOURCES} ${RT_SOURCES} ${GEN_SOURCES} ${GEN_DIR}/table.c ${GEN_DIR}/mem.S ${CMAKE_CURRENT_SOURCE_DIR}/logo.S ${CMAKE_CURRENT_SOURCE_DIR}/pause_art_data.S)
 target_link_libraries(MKDD-NX SDL2 EGL GLESv2 glapi drm_nouveau nx m)
 # Mesa is C++: link with the C++ driver so libstdc++ / libsupc++ come in
 set_target_properties(MKDD-NX PROPERTIES LINKER_LANGUAGE CXX)

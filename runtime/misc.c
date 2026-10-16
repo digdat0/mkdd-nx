@@ -105,6 +105,13 @@ static void plock(void) {
 }
 void pad_set(int port, const PadStatus *s) { plock(); s_pads[port & 3] = *s; pmutex_unlock(&s_plock); }
 void pad_get_all(PadStatus out[4]) { plock(); memcpy(out, s_pads, sizeof s_pads); pmutex_unlock(&s_plock); }
+static volatile unsigned s_motors;
+void pad_motor_set(int port, bool on) {
+    unsigned bit = 1u << (port & 3);
+    s_motors = on ? s_motors | bit : s_motors & ~bit;
+}
+unsigned pad_motor_mask(void) { return s_motors; }
+volatile bool g_pad_hold;
 
 /* ---- MTX library: the HLE hook path (indirect calls, the runtime) into the native versions
  * in native.c; generated code calls those directly. ---- */
@@ -151,6 +158,13 @@ static void apply_unlock(void) {
     }
 }
 void cheats_unlock_all(void) { s_unlock = true; apply_unlock(); }
+void cheats_set(bool on) {
+    if (on) { cheats_unlock_all(); return; }
+    if (!s_unlock) return;
+    s_unlock = false;
+    m_write_be(SECRET_KARTS, 2, s_earned[0]);
+    m_write_be(SECRET_GAME, 2, s_earned[1]);
+}
 bool cheats_active(void) { return s_unlock; }
 void cheats_tick(void) { if (s_unlock) apply_unlock(); }
 void cheats_before_save(void) {

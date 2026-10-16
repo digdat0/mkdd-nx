@@ -8,7 +8,9 @@ enum { GC_A, GC_B, GC_X, GC_Y, GC_Z, GC_L, GC_R, GC_START, GC_COUNT };
 typedef struct {
     bool wide;         /* 16:9: wider game camera, race HUD at the screen edges, menus 4:3 in the middle
                           (else 4:3 pillarboxed) */
-    bool show_fps;
+    int show_fps;      /* 0 off, 1 FPS, 2 FPS + frame times (GAME / GX / RENDER ms) */
+    int rumble;        /* 0 off, 1 low, 2 high */
+    bool unlock_all;   /* every character, kart, cup and mode, this session only (never saved) */
     int logging;       /* 0 disabled, 1 game, 2 game + audio, 3 audio */
     uint64_t map[GC_COUNT]; /* Switch buttons (HidNpadButton_*) that press each GameCube button */
 } Settings;
@@ -34,7 +36,15 @@ void settings_save(void);
 /* Feed one frame of controller state. Returns true while the menu is open (the game then gets
  * a neutral pad). *quit is set when the player chose Exit. */
 bool menu_input(uint64_t down, uint64_t held, bool *quit);
-/* Draw the overlay (menu if open, FPS if enabled) over the default framebuffer w x h. */
-void menu_draw(int w, int h, float fps);
+/* The menu (or a button capture) is on screen: the game is paused meanwhile. */
+bool menu_is_open(void);
+/* Player chose CONTROLLERS: returns true once, the caller shows the system controller screen. */
+bool menu_take_controllers(void);
+/* Draw the overlay (menu if open, FPS and perf line if enabled) over the default framebuffer. */
+void menu_draw(int w, int h, float fps, const char *perf);
+/* Read the MarioFont letters from the (opened) disc; later calls do nothing. */
+void menu_font_load(void);
+/* Start-up / message screen in the menu's style: logo, two lines, progress bar (< 0: none). */
+void menu_loading(int w, int h, const char *line1, const char *line2, float progress);
 /* 5x7 bitmap ("0"/"1" x 35, rows top first) for c, or NULL. */
 const char *font_glyph(char c);
