@@ -10,6 +10,13 @@ bool render_update(int scale);
  * wide: the game camera is widened to match, see g_aspect_scale). */
 /* 16:9: draw the 2D layer at 4:3, the race HUD at the screen edges and the rest in the middle. */
 void render_set_hud43(bool on);
+/* HD texture replacements (hdtex.h) on or off: takes effect next frame, every texture reloads. Stays
+ * off without a texture file or BC7 support. */
+void render_set_hd(bool on);
+/* Textures currently showing an HD replacement. */
+unsigned render_hd_in_use(void);
+/* GPU memory of those (BC7 data). */
+uint64_t render_hd_bytes(void);
 /* Textures registered with gx_subst_register: the GL texture to draw instead (0 = the game's own). */
 void render_set_subst(unsigned (*texture)(unsigned id));
 uint64_t render_take_gpu_wait(void); /* ns spent waiting for the GPU since the last call */

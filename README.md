@@ -107,6 +107,7 @@ The game pauses while the menu is open (and while the Switch is in the HOME menu
 |---|---|
 | Display | 4:3, or 16:9: wider game camera, race HUD at the screen edges, menus 4:3 in the middle |
 | Color | Accurate / Vivid / Custom brightness, contrast, saturation (hold Y on that page to preview); saved to `config/color.ini` |
+| HD textures | On / Off when `hd-textures.bin` is in the app folder (see [HD textures](#hd-textures)), else NO PACK |
 | Controllers | the system controller screen |
 | Rumble | Off / Low / High |
 | Button mapping | pick a GameCube button, press the Switch button for it |
@@ -117,11 +118,47 @@ The game pauses while the menu is open (and while the Switch is in the HOME menu
 
 | Option | |
 |---|---|
+| Field of view | Normal / Wide / Wider race camera, kept separately for 4:3 (default Normal) and 16:9 (default Wider); the row changes the current display mode's |
 | Show FPS | Off / FPS / FPS + times: ms per game frame of the game thread (GAME), the graphics thread (GX) and the render thread (RENDER); 16.7 is the 60 fps budget |
 | Unlock all | every character, kart, cup and mode while it is on; never written to your save, so your own progress stays as it is |
 | Logging | debug logs on the SD card, for bug reports |
 
 Settings are saved to `config/settings.ini`.
+
+## HD textures
+
+MKDD-NX can use the community **MKDD HD texture pack** made for Dolphin
+([mkddhd](https://sites.google.com/view/mkddhd/home-page); use the **English** version, downloaded from the
+Mega link on that site). The pack is not included: download it yourself and convert it once on a PC.
+The Switch can't use the pack's PNGs directly (about 1 GB, and decoding them would stall the game), so
+`tools/hdtex_pack.py` turns them into one file of GPU-ready BC7 textures, at the pack's full
+resolution with mipmaps.
+
+**Needs:** Python 3 with Pillow (`py -3 -m pip install pillow`) and a C compiler for the bundled BC7
+encoder (`tools/bc7enc.c`, built automatically on first run). On Windows that is MSYS2's UCRT64 gcc
+(`pacman -S mingw-w64-ucrt-x86_64-gcc` in an MSYS2 shell, found at `C:\msys64\ucrt64\bin`); elsewhere
+any gcc or clang. Set `CC` to use another compiler.
+
+1. Download and extract the English pack. Find its `GM4E01` folder (the one Dolphin would load from
+   `Load/Textures/GM4E01`, full of `tex1_..._.png` files).
+2. Convert it (about 6 minutes on a 12-thread PC; the result is about 790 MB). Keep the output outside
+   this repository:
+
+   ```bash
+   py -3 tools/hdtex_pack.py "D:/Downloads/MKDD HD/GM4E01" "D:/Downloads/hd-textures.bin"
+   ```
+
+   Add `--compare <folder>` to also write a dozen PNG | BC7 side-by-side images to check quality.
+3. Copy `hd-textures.bin` to `sdmc:/switch/MKDD-NX/`, next to `MKDD-NX.nro` (the name must be exactly
+   `hd-textures.bin`).
+4. Start the game: **HD TEXTURES** in the - menu now shows ON (switch it off to compare). The hint
+   on that row counts the textures currently shown in HD.
+
+Textures are matched the way Dolphin matches them (format, size and the XXH64 hash of the
+original texture), so other packs in Dolphin's `tex1_` format work the same way. HD textures load
+in the background from the SD card: a texture shows in its original form for a moment, then
+switches to HD. Up to about 80 MB of GPU memory is used at a time; races run at 60 fps as with
+the original textures.
 
 ## Credits and licence
 
@@ -129,6 +166,8 @@ Settings are saved to `config/settings.ini`.
   runtime design and renderer this port is based on; the build fetches its sheets and scripts.
 - [doldecomp/mkdd](https://github.com/doldecomp/mkdd) (CC0): function names and structures.
 - [GameCubeLoader](https://github.com/Cuyler36/Ghidra-GameCube-Loader), Ghidra, devkitPro.
+- The [MKDD HD texture pack](https://sites.google.com/view/mkddhd/home-page) team, for the textures
+  `tools/hdtex_pack.py` converts (not included here).
 
 The code in this repository is released under the MIT licence (`LICENSE`). Mario Kart:
 Double Dash!! and its characters are Nintendo's; this project is not affiliated with Nintendo.

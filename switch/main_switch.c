@@ -2,6 +2,7 @@
  * render loop (GLES via SDL2 + Mesa), controller input (libnx HID) and audio (SDL2).
  * Platform glue adapted from the gcNX template (gc-decomp-switch-port skill). */
 #include <dirent.h>
+#include <malloc.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,6 +21,7 @@
 #include "prof_switch.h"
 #include "menu.h"
 #include "pause_art.h"
+#include "hdtex.h"
 const char g_build_stamp[] = __DATE__ " " __TIME__;
 #include "../runtime/native.h"
 
@@ -415,6 +417,7 @@ int main(int argc, char **argv) {
     }
     screen("STARTING", NULL, 0.3f);
     if (!render_init()) fatal("GRAPHICS INIT FAILED", "SEE MKDD.LOG");
+    hdtex_open(APP_DIR "/" HD_FILE);
     render_shader_cache(CFG_DIR "/shaders.bin", shader_progress);
     if (!machine_boot(disc, &s_boot, err, sizeof err)) {
         rt_log("boot failed: %s", err);
@@ -501,7 +504,10 @@ int main(int argc, char **argv) {
          * screen. Its artwork is one 4:3 picture that 16:9 only stretched, so it stays 4:3. */
         bool wide = g_set.wide && m_read_be(0x803C9CE0u, 4) != 0;
         g_aspect_scale = wide ? 4.0f / 3.0f : 1.0f;
+        static const float FOV_SCALE[3] = {1.0f, 1.15f, 1.3f}; /* tan(fovy / 2) times: NORMAL, WIDE, WIDER */
+        g_fov_scale = FOV_SCALE[g_set.fov[g_set.wide] % 3];
         render_set_hud43(wide);
+        render_set_hd(g_set.hd_textures);
         u64 r0 = armGetSystemTick();
         bool got = render_update(1);
         t_render += armTicksToNs(armGetSystemTick() - r0);
@@ -561,6 +567,17 @@ int main(int argc, char **argv) {
             rt_log("timing: render %.1f ms/loop (gpu wait %.1f), present %.1f, swap wait %.1f ms/loop; %u TEV programs (%.0f ms compiling)",
                    (double)t_render / 300 / 1e6, (double)render_take_gpu_wait() / 300 / 1e6, (double)t_present / 300 / 1e6,
                    (double)t_swap / 300 / 1e6, progs, cms);
+            if (hdtex_available()) {
+                unsigned loads, fails, queued;
+                uint64_t read;
+                hdtex_stats(&loads, &fails, &read, &queued);
+                rt_log("hd: %u showing (%.0f MB on the GPU), %u loads (%.0f MB read), %u failed, %u queued", render_hd_in_use(),
+                       (double)render_hd_bytes() / 1048576, loads, (double)read / 1048576, fails, queued);
+            }
+            /* malloc's own count: the process heap is reserved whole at start */
+            extern char *fake_heap_start, *fake_heap_end;
+            struct mallinfo mi = mallinfo();
+            rt_log("heap: %.0f MB in use of %.0f MB", (double)mi.uordblks / 1048576, (double)(fake_heap_end - fake_heap_start) / 1048576);
             t_render = t_swap = t_present = 0;
             stat_tick = now;
             rendered = 0;

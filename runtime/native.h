@@ -60,6 +60,8 @@
     X(getPerspAspectSub__6SystemFv, "", 'f', 0) \
     X(C_MTXPerspective, "rffff", '-', 1) \
     X(FUN_8029e0a8, "rr", '-', 1) \
+    X(FUN_801a77e8, "rffffr", '-', 1) \
+    X(FUN_8000a260, "r", '-', 1) \
     X(PSVECNormalize, "rr", '-', 0) \
     X(J3DPSCalcInverseTranspose__FPA4_fPA3_f, "rr", 'r', 0) \
     X(J3DGetTranslateRotateMtx__FRC16J3DTransformInfoPA4_f, "rr", '-', 0) \
@@ -149,4 +151,6 @@ extern int g_native_verify; /* 0 = off, else verify every Nth call */
 void native_init(void);
 /* Widescreen: game camera aspect multiplier (1 = original, 4/3 = 16:9 output) */
 extern float g_aspect_scale;
+/* Field of view: tan(fovy / 2) of the race cameras times this (1 = the game's own). */
+extern float g_fov_scale;
 void native_report(void);

@@ -12,6 +12,7 @@
 
 #include "menu.h"
 #include "render_gl.h"
+#include "hdtex.h"
 #include "ui_font.h"
 #include "../runtime/rt.h"
 
@@ -47,6 +48,9 @@ static void defaults(void) {
     g_set.rumble = 2;
     g_set.unlock_all = false;
     g_set.logging = 1;
+    g_set.hd_textures = true;
+    g_set.fov[0] = 0; /* 4:3: the game's view */
+    g_set.fov[1] = 2; /* 16:9: wider */
     memcpy(g_set.map, DEFAULT_MAP, sizeof g_set.map);
 }
 
@@ -74,21 +78,24 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "rumble")) g_set.rumble = atoi(v) < 0 ? 0 : atoi(v) > 2 ? 2 : atoi(v);
         else if (!strcmp(k, "unlock_all")) g_set.unlock_all = atoi(v) != 0;
         else if (!strcmp(k, "logging")) g_set.logging = atoi(v) & 3;
+        else if (!strcmp(k, "hd_textures")) g_set.hd_textures = atoi(v) != 0;
+        else if (!strcmp(k, "fov_4_3")) g_set.fov[0] = atoi(v) < 0 ? 0 : atoi(v) > 2 ? 2 : atoi(v);
+        else if (!strcmp(k, "fov_16_9")) g_set.fov[1] = atoi(v) < 0 ? 0 : atoi(v) > 2 ? 2 : atoi(v);
         else
             for (int i = 0; i < GC_COUNT; i++)
                 if (!strcmp(k, GC_KEYS[i])) g_set.map[i] = strtoull(v, NULL, 16) & mappable();
     }
     fclose(f);
     apply_logging();
-    rt_log("settings: 16:9 %d, fps %d, logging %d, rumble %d, unlock all %d", g_set.wide, g_set.show_fps, g_set.logging,
-           g_set.rumble, g_set.unlock_all);
+    rt_log("settings: 16:9 %d, fov %d / %d, fps %d, logging %d, rumble %d, unlock all %d", g_set.wide, g_set.fov[0], g_set.fov[1], g_set.show_fps,
+           g_set.logging, g_set.rumble, g_set.unlock_all);
 }
 
 void settings_save(void) {
     FILE *f = fopen(s_path, "w");
     if (!f) return;
-    fprintf(f, "display=%d\nshow_fps=%d\nlogging=%d\nrumble=%d\nunlock_all=%d\n", g_set.wide, g_set.show_fps,
-            g_set.logging, g_set.rumble, g_set.unlock_all);
+    fprintf(f, "display=%d\nshow_fps=%d\nlogging=%d\nrumble=%d\nunlock_all=%d\nhd_textures=%d\nfov_4_3=%d\nfov_16_9=%d\n", g_set.wide,
+            g_set.show_fps, g_set.logging, g_set.rumble, g_set.unlock_all, g_set.hd_textures, g_set.fov[0], g_set.fov[1]);
     for (int i = 0; i < GC_COUNT; i++) fprintf(f, "%s=%llx\n", GC_KEYS[i], (unsigned long long)g_set.map[i]);
     fclose(f);
 }
@@ -148,8 +155,9 @@ void color_adjust(float adj[3]) {
 
 /* ---- menu state ---- */
 enum { PAGE_MAIN, PAGE_MAP, PAGE_EXIT, PAGE_COLOR, PAGE_DEBUG, PAGE_COUNT };
-enum { M_WIDE, M_COLOR, M_CTRL, M_RUMBLE, M_MAP, M_DEBUG, M_EXIT, M_COUNT };
-enum { D_FPS, D_UNLOCK, D_LOG, D_BACK, D_COUNT };
+enum { M_WIDE, M_COLOR, M_HD, M_CTRL, M_RUMBLE, M_MAP, M_DEBUG, M_EXIT, M_COUNT };
+static const char *FOV_NAMES[3] = {"NORMAL", "WIDE", "WIDER"};
+enum { D_FOV, D_FPS, D_UNLOCK, D_LOG, D_BACK, D_COUNT };
 static const char *FPS_NAMES[3] = {"OFF", "FPS", "FPS + TIMES"};
 static const char *RUMBLE_NAMES[3] = {"OFF", "LOW", "HIGH"};
 static bool s_want_controllers;
@@ -248,6 +256,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
     }
     if (s_page == PAGE_DEBUG && (ok || side)) {
         switch (*sel) {
+        case D_FOV: g_set.fov[g_set.wide] = (g_set.fov[g_set.wide] + (left ? 2 : 1)) % 3; settings_save(); break;
         case D_FPS: g_set.show_fps = (g_set.show_fps + (left ? 2 : 1)) % 3; settings_save(); break;
         case D_UNLOCK: g_set.unlock_all = !g_set.unlock_all; cheats_set(g_set.unlock_all); settings_save(); break;
         case D_LOG:
@@ -270,6 +279,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
             else { g_color.mode = (g_color.mode + (left ? COLOR_MODES - 1 : 1)) % COLOR_MODES; s_color_dirty = true; color_save(); }
             break;
         case M_MAP: if (ok) { s_page = PAGE_MAP; s_sel[PAGE_MAP] = 0; } break;
+        case M_HD: g_set.hd_textures = !g_set.hd_textures; settings_save(); break;
         case M_DEBUG: if (ok) { s_page = PAGE_DEBUG; s_sel[PAGE_DEBUG] = 0; } break;
         case M_EXIT: if (ok) s_page = PAGE_EXIT; break;
         }
@@ -649,15 +659,21 @@ void menu_draw(int w, int h, float fps, const char *perf) {
         float ry = y + top;
         const char *hint = NULL;
         if (s_page == PAGE_MAIN) {
-            static const char *labels[M_COUNT] = {"DISPLAY", "COLOR", "CONTROLLERS", "RUMBLE", "BUTTON MAPPING", "DEBUGGING", "EXIT GAME"};
-            const char *values[M_COUNT] = {g_set.wide ? "16:9" : "4:3", COLOR_NAMES[g_color.mode], NULL,
+            static const char *labels[M_COUNT] = {"DISPLAY", "COLOR", "HD TEXTURES", "CONTROLLERS", "RUMBLE", "BUTTON MAPPING", "DEBUGGING", "EXIT GAME"};
+            const char *values[M_COUNT] = {g_set.wide ? "16:9" : "4:3", COLOR_NAMES[g_color.mode],
+                                           !hdtex_available() ? "NO PACK" : g_set.hd_textures ? "ON" : "OFF", NULL,
                                            RUMBLE_NAMES[g_set.rumble % 3], NULL, NULL, NULL};
-            static const bool more[M_COUNT] = {false, false, true, false, true, true, false};
+            static const bool more[M_COUNT] = {false, false, false, true, false, true, true, false};
+            char hd_hint[64];
+            if (!hdtex_available()) snprintf(hd_hint, sizeof hd_hint, "PUT HD-TEXTURES.BIN IN THE MKDD-NX FOLDER");
+            else if (!g_set.hd_textures) snprintf(hd_hint, sizeof hd_hint, "COMMUNITY HD TEXTURE PACK");
+            else snprintf(hd_hint, sizeof hd_hint, "COMMUNITY HD TEXTURE PACK: %u IN USE", render_hd_in_use());
             for (int i = 0; i < M_COUNT; i++, ry += rh) mrow(x, ry, pw, rh, k, s_sel[PAGE_MAIN] == i, labels[i], values[i], more[i]);
             hint = s_sel[PAGE_MAIN] == M_WIDE    ? "16:9: WIDER VIEW, RACE HUD AT THE SCREEN EDGES"
                    : s_sel[PAGE_MAIN] == M_COLOR ? "A: ADJUST   LEFT/RIGHT: ACCURATE, VIVID, CUSTOM"
+                   : s_sel[PAGE_MAIN] == M_HD    ? hd_hint
                    : s_sel[PAGE_MAIN] == M_CTRL  ? "PAIR CONTROLLERS, SET THE PLAYER ORDER, SINGLE JOY-CONS"
-                   : s_sel[PAGE_MAIN] == M_DEBUG ? "FPS AND FRAME TIMES, UNLOCK ALL, LOGS"
+                   : s_sel[PAGE_MAIN] == M_DEBUG ? "FIELD OF VIEW, FPS AND FRAME TIMES, UNLOCK ALL, LOGS"
                                                  : "GAME PAUSED   A: SELECT   B OR -: CLOSE";
             /* "Oct 15 2026 14:08:52" -> "BUILD 1408" (the name of the build's saved .elf), in the
              * title band's top right */
@@ -667,11 +683,12 @@ void menu_draw(int w, int h, float fps, const char *perf) {
             float bs = 22 * k;
             mtext(x + pw - mtext_w(build, bs) - 24 * k, y + 10 * k + (60 * k - bs) / 2, bs, C_VAL_T, C_VAL_B, build);
         } else if (s_page == PAGE_DEBUG) {
-            static const char *labels[D_COUNT] = {"SHOW FPS", "UNLOCK ALL", "LOGGING", "BACK"};
-            const char *values[D_COUNT] = {FPS_NAMES[g_set.show_fps % 3], g_set.unlock_all ? "ON" : "OFF",
+            static const char *labels[D_COUNT] = {"FIELD OF VIEW", "SHOW FPS", "UNLOCK ALL", "LOGGING", "BACK"};
+            const char *values[D_COUNT] = {FOV_NAMES[g_set.fov[g_set.wide] % 3], FPS_NAMES[g_set.show_fps % 3], g_set.unlock_all ? "ON" : "OFF",
                                            LOG_NAMES[g_set.logging & 3], NULL};
             for (int i = 0; i < D_COUNT; i++, ry += rh) mrow(x, ry, pw, rh, k, s_sel[PAGE_DEBUG] == i, labels[i], values[i], false);
-            hint = s_sel[PAGE_DEBUG] == D_FPS      ? "TIMES: MS PER FRAME OF GAME, GRAPHICS AND RENDER THREADS"
+            hint = s_sel[PAGE_DEBUG] == D_FOV      ? (g_set.wide ? "RACE CAMERA IN 16:9 (DEFAULT WIDER)" : "RACE CAMERA IN 4:3 (DEFAULT NORMAL)")
+                   : s_sel[PAGE_DEBUG] == D_FPS    ? "TIMES: MS PER FRAME OF GAME, GRAPHICS AND RENDER THREADS"
                    : s_sel[PAGE_DEBUG] == D_UNLOCK ? "ALL CHARACTERS, KARTS, CUPS: NEVER WRITTEN TO YOUR SAVE"
                    : s_sel[PAGE_DEBUG] == D_LOG    ? "DEBUG LOGS ON THE SD CARD, FOR BUG REPORTS"
                                                    : "B: BACK";
@@ -719,8 +736,9 @@ void menu_draw(int w, int h, float fps, const char *perf) {
 }
 
 /* ---- start-up screen ---- */
-extern const uint8_t mkdd_logo_rgba[]; /* switch/logo.S, 512x512 RGBA, top row first */
-#define LOGO_SIZE 512
+#define TITLE_A "MARIO KART: "
+#define TITLE_B "DOUBLE DASH!!"
+#define TITLE_C "NX"
 
 void menu_loading(int w, int h, const char *line1, const char *line2, float progress) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -729,46 +747,39 @@ void menu_loading(int w, int h, const char *line1, const char *line2, float prog
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
     if (!init_gl()) return;
-    static GLuint logo;
-    if (!logo) {
-        glGenTextures(1, &logo);
-        glBindTexture(GL_TEXTURE_2D, logo);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, LOGO_SIZE, LOGO_SIZE, 0, GL_RGBA, GL_UNSIGNED_BYTE, mkdd_logo_rgba);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
     begin(w, h);
     float k = (float)h / 720.0f, fw = (float)w, fh = (float)h;
 
-    /* navy sky with the menus' darker-blue stars, a checkered strip along the bottom */
+    /* navy sky with the menus' darker-blue stars, framed by a checkered-flag border two squares
+     * deep (squares sized to fit the screen exactly, so the pattern meets at every edge) */
     grad(0, 0, fw, fh, 0x0A1650FFu, 0x1C3A9AFFu);
+    int cols = (int)(fw / (14 * k) + 0.5f), rows = (int)(fh / (14 * k) + 0.5f);
+    float cw = fw / (float)cols, ch = fh / (float)rows;
     uint32_t seed = 777;
     for (int i = 0; i < 40; i++) {
         seed = seed * 1103515245u + 12345u;
-        float sx = (float)(seed >> 8 & 1023) / 1023.0f * fw;
+        float sx = 2 * cw + (float)(seed >> 8 & 1023) / 1023.0f * (fw - 4 * cw);
         seed = seed * 1103515245u + 12345u;
-        float sy = (float)(seed >> 8 & 1023) / 1023.0f * (fh - 40 * k);
+        float sy = 2 * ch + (float)(seed >> 8 & 1023) / 1023.0f * (fh - 4 * ch);
         seed = seed * 1103515245u + 12345u;
         star(sx, sy, (10 + (float)(seed >> 8 & 7)) * k, 0x2A4AA8FFu);
     }
-    float cs = 14 * k;
-    for (float i = 0, n = 0; i < fw; i += cs, n++) {
-        bool odd = (int)n & 1;
-        rect(i, fh - 2 * cs, cs, cs, odd ? 0x101010FFu : 0xFFFFFFFFu);
-        rect(i, fh - cs, cs, cs, odd ? 0xFFFFFFFFu : 0x101010FFu);
-    }
-    flush();
-
-    /* logo */
-    float ls = 400 * k;
-    const float uv[4] = {0, 0, 1, 1};
-    glBindTexture(GL_TEXTURE_2D, logo);
-    quad((fw - ls) / 2, 6 * k, ls, ls, 0xFFFFFFFFu, 0xFFFFFFFFu, SH_IMAGE, 0, 0, uv);
+    for (int y = 0; y < rows; y++)
+        for (int x = 0; x < cols; x++) {
+            if (y >= 2 && y < rows - 2 && x >= 2 && x < cols - 2) continue;
+            rect((float)x * cw, (float)y * ch, cw, ch, (x + y) & 1 ? 0x101010FFu : 0xFFFFFFFFu);
+        }
     flush();
     glBindTexture(GL_TEXTURE_2D, s_font ? uifont_texture() : 0);
+
+    /* the title in the game's lettering (yellow to orange, like its menu titles) */
+    /* "MARIO KART:" yellow to orange, "DOUBLE DASH!!" white, "NX" red on its own line */
+    float tsz = 76 * k, tw0 = mtext_w(TITLE_A TITLE_B, tsz), tmax = fw - 8 * cw - 40 * k;
+    if (tw0 > tmax) { tsz *= tmax / tw0; tw0 = mtext_w(TITLE_A TITLE_B, tsz); }
+    float nsz = tsz * 1.3f, ty0 = 215 * k - (2 * tsz + nsz) / 2, tx = (fw - tw0) / 2; /* a blank line before "NX" */
+    tx += mtext(tx, ty0, tsz, C_TITLE_T, C_TITLE_B, TITLE_A);
+    mtext(tx, ty0, tsz, 0xFFFFFFFFu, 0xD8DCF0FFu, TITLE_B);
+    mtext((fw - mtext_w(TITLE_C, nsz)) / 2, ty0 + 2 * tsz, nsz, 0xFF5A4AFFu, 0xC81414FFu, TITLE_C);
 
     /* message box: red border, white rim, navy, like the - menu */
     float bw = 860 * k, bh = 190 * k, bx = (fw - bw) / 2, by = 420 * k;

@@ -12,10 +12,14 @@ typedef struct {
     int rumble;        /* 0 off, 1 low, 2 high */
     bool unlock_all;   /* every character, kart, cup and mode, this session only (never saved) */
     int logging;       /* 0 disabled, 1 game, 2 game + audio, 3 audio */
+    bool hd_textures;  /* use the HD texture file (HD_FILE) when there is one */
+    int fov[2];        /* race camera field of view for 4:3 / 16:9: 0 normal (the game's), 1 wide, 2 wider */
     uint64_t map[GC_COUNT]; /* Switch buttons (HidNpadButton_*) that press each GameCube button */
 } Settings;
 
 extern Settings g_set;
+/* HD textures converted by tools/hdtex_pack.py, in the app folder */
+#define HD_FILE "hd-textures.bin"
 
 /* Colour option, kept in its own file (save/color.ini) apart from settings.ini and the game save.
  * ACCURATE shows the image as rendered; VIVID and CUSTOM adjust it in the final blit. */

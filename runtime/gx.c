@@ -1556,7 +1556,10 @@ static void draw(uint32_t cmd, const uint8_t *c) {
     uint32_t side = 0;
     if (hud && G.hud_zone) {
         float mid = 0.5f * (xmin + xmax);
-        side = mid < -0.25f ? 1 : mid > 0.25f || G.hud_zone == 2 ? 2 : 0; /* map routine: also the left rank column */
+        /* +-0.2, not 0.25: the second item box (partner's item) is centred at exactly -0.25, and its
+         * frame and icon then fell on different sides (the frame drifted to the middle). Map
+         * routine: also the left rank column. */
+        side = mid < -0.2f ? 1 : mid > 0.2f || G.hud_zone == 2 ? 2 : 0;
     }
     if (hud) {
         uint32_t fl = XV_HUD | (side == 1 ? XV_HUD_LEFT : side == 2 ? XV_HUD_RIGHT : 0);

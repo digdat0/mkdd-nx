@@ -2206,6 +2206,36 @@ static void aspect_refresh(Ctx *c, uint8_t *M) {
     }
 }
 
+/* ---- field of view (the - menu's FIELD OF VIEW): the race cameras' projection (FUN_801a77e8, from
+ * GrafPort::setPort: matrix, fovy, aspect, near, far) and their view-frustum culling (FUN_8000a260,
+ * J3DUClipper::calcViewFrustum: fovy in degrees at +0x4c) both see tan(fovy / 2) times
+ * g_fov_scale, so the culling matches the wider picture. Exact originals at 1.0. ---- */
+float g_fov_scale = 1.0f;
+static double fov_widen(double deg) {
+    double r = atan(tan(deg * (3.14159265358979323846 / 360.0)) * g_fov_scale) * (360.0 / 3.14159265358979323846);
+    return r < 170.0 ? r : 170.0;
+}
+static uint64_t i_FUN_801a77e8(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    if (g_fov_scale != 1.0f) {
+        uint64_t f = dbits(rs(fov_widen(ps_d(a1))));
+        WR(c, 0x4008, 8, f);
+        WR(c, 0x5008, 8, f);
+    }
+    ctx_call_orig(c, s_addr[NAT_FUN_801a77e8]);
+    return 0;
+}
+static uint64_t i_FUN_8000a260(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t clip = (uint32_t)a0;
+    float fovy = ldf(c, M, clip + 0x4c);
+    bool widen = g_fov_scale != 1.0f;
+    if (widen) stf(c, M, clip + 0x4c, (float)rs(fov_widen(fovy)));
+    ctx_call_orig(c, s_addr[NAT_FUN_8000a260]);
+    if (widen) stf(c, M, clip + 0x4c, fovy);
+    return 0;
+}
+
 /* ==== batch 4 (animation, J3D drawing, HUD) ==== */
 
 /* FUN_80026ae0(f32 y, f32 x, f32 *tbl): atan2 from a table (JMath), by octant: the table holds

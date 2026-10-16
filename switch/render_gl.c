@@ -20,7 +20,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../runtime/gx.h"
+#include "../runtime/plat.h"
 #include "../runtime/rt.h"
+#include "hdtex.h"
 #include "tev_gen.h"
 #include "xf_vs.h"
 
@@ -325,11 +327,14 @@ typedef struct { GLuint buf; size_t cap; } Stream;
 /* xb: the frame's XF records and matrices, read by the vertex shader as a texture buffer (unit 8) */
 typedef struct { Stream vb, ib, ub, xb; GLuint vao, xtex; GLsync fence; uint32_t layout; } Slot;
 /* chans: texels stored as 1 (I: R8), 2 (I, A: RG8, see gx_texture_decode_compact) or 4 (RGBA8) bytes */
-typedef struct { GLuint tex; uint8_t wrap_s, wrap_t, chans, subst; bool linear; uint64_t used, key; uint32_t w, h; } GlTexture;
+/* hd: 0 game texture, 1 HD replacement loading (hdtex.h), 2 showing the HD replacement (BC7 with
+ * mipmaps, its own GL texture: deleted on eviction, not pooled) */
+typedef struct { GLuint tex; uint8_t wrap_s, wrap_t, chans, subst, hd; bool linear; uint64_t used, key; uint32_t w, h, hd_bytes; } GlTexture;
 /* Evicted GL textures kept for reuse by a new texture of the same size (glTexSubImage2D): movies
  * and render-to-texture effects make a new texture every frame, and deleting a nouveau texture
  * the GPU used recently waits for the GPU. */
 #define TEX_POOL 48
+#define HD_BC7 0x8E8C /* GL_COMPRESSED_RGBA_BPTC_UNORM_EXT */
 typedef struct { GLuint tex; uint32_t w, h; uint64_t freed; uint8_t chans; } PoolTex;
 
 static struct {
@@ -359,6 +364,9 @@ static struct {
     GLint ubo_align;
     size_t ubo_stride;
     GLuint samplers[3][3][2];
+    GLuint samplers_mip[3][3]; /* trilinear, for HD replacements */
+    bool bptc, hd_on, hd_flush;
+    uint64_t hd_bytes; /* BC7 data of the HD textures on the GPU */
     GLuint white;
     Target efb_color;
     GLuint efb_depth;
@@ -706,6 +714,30 @@ bool render_init(void) {
                 glSamplerParameteri(smp, GL_TEXTURE_MAG_FILTER, l ? GL_LINEAR : GL_NEAREST);
                 R.samplers[s][t][l] = smp;
             }
+    for (int s = 0; s < 3; s++)
+        for (int t = 0; t < 3; t++) {
+            GLuint smp;
+            glGenSamplers(1, &smp);
+            glSamplerParameteri(smp, GL_TEXTURE_WRAP_S, (GLint)wrap[s]);
+            glSamplerParameteri(smp, GL_TEXTURE_WRAP_T, (GLint)wrap[t]);
+            glSamplerParameteri(smp, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glSamplerParameteri(smp, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            R.samplers_mip[s][t] = smp;
+        }
+    /* HD replacements are BC7 (GL_EXT_texture_compression_bptc on GLES) */
+    GLint next = 0, nfmt = 0;
+    glGetIntegerv(GL_NUM_EXTENSIONS, &next);
+    for (GLint i = 0; i < next; i++) {
+        const char *e = (const char *)glGetStringi(GL_EXTENSIONS, (GLuint)i);
+        if (e && (!strcmp(e, "GL_EXT_texture_compression_bptc") || !strcmp(e, "GL_ARB_texture_compression_bptc"))) R.bptc = true;
+    }
+    glGetIntegerv(GL_NUM_COMPRESSED_TEXTURE_FORMATS, &nfmt);
+    if (nfmt > 0 && nfmt < 1024) {
+        GLint fmts[1024];
+        glGetIntegerv(GL_COMPRESSED_TEXTURE_FORMATS, fmts);
+        for (GLint i = 0; i < nfmt; i++) R.bptc |= fmts[i] == HD_BC7;
+    }
+    rt_log("render: BC7 textures %s (%d compressed formats)", R.bptc ? "supported" : "NOT supported: HD textures off", nfmt);
     static const uint8_t white[4] = {255, 255, 255, 255};
     glGenTextures(1, &R.white);
     glBindTexture(GL_TEXTURE_2D, R.white);
@@ -846,30 +878,40 @@ static void bind_slot(unsigned unit, uint64_t key) {
         gt->linear = t->linear;
         gt->subst = t->subst;
         gt->key = key;
+        gt->hd = 0;
+        if (R.hd_on && !t->subst) {
+            int hd = hdtex_find(t->fmt, t->width, t->height, t->raw, t->raw_len);
+            if (hd >= 0 && hdtex_request(hd, key)) gt->hd = 1;
+        }
         u64map_put(&R.textures, key, R.ntex++);
         gx_texture_release(t);
     }
     gt->used = R.tick;
     GLuint sub = gt->subst && s_subst ? s_subst(gt->subst) : 0;
     if (sub) { unit_bind(unit, sub, R.samplers[0][0][1]); return; } /* clamped, linear */
-    unit_bind(unit, gt->tex, R.samplers[gt->wrap_s][gt->wrap_t][gt->linear]);
+    unit_bind(unit, gt->tex, gt->hd == 2 ? R.samplers_mip[gt->wrap_s][gt->wrap_t] : R.samplers[gt->wrap_s][gt->wrap_t][gt->linear]);
 }
 
 /* Drop GL textures not used for `age` frames into the reuse pool (oldest pool entries are
  * deleted when it is full). */
+static void pool_add(GLuint tex, uint32_t w, uint32_t h, uint8_t chans) {
+    if (R.npool == TEX_POOL) {
+        unsigned old = 0;
+        for (unsigned j = 1; j < R.npool; j++) if (R.pool[j].freed < R.pool[old].freed) old = j;
+        glDeleteTextures(1, &R.pool[old].tex);
+        R.pool[old] = R.pool[--R.npool];
+    }
+    R.pool[R.npool++] = (PoolTex){tex, w, h, R.tick, chans};
+}
+
 static void evict_textures(uint64_t age) {
     uint64_t cutoff = R.tick > age ? R.tick - age : 0;
     unsigned w = 0;
     u64map_clear(&R.textures);
     for (unsigned i = 0; i < R.ntex; i++) {
         if (R.tex[i].used < cutoff) {
-            if (R.npool == TEX_POOL) {
-                unsigned old = 0;
-                for (unsigned j = 1; j < R.npool; j++) if (R.pool[j].freed < R.pool[old].freed) old = j;
-                glDeleteTextures(1, &R.pool[old].tex);
-                R.pool[old] = R.pool[--R.npool];
-            }
-            R.pool[R.npool++] = (PoolTex){R.tex[i].tex, R.tex[i].w, R.tex[i].h, R.tick, R.tex[i].chans};
+            if (R.tex[i].hd == 2) { glDeleteTextures(1, &R.tex[i].tex); R.hd_bytes -= R.tex[i].hd_bytes; }
+            else pool_add(R.tex[i].tex, R.tex[i].w, R.tex[i].h, R.tex[i].chans);
             continue;
         }
         R.tex[w] = R.tex[i];
@@ -877,6 +919,95 @@ static void evict_textures(uint64_t age) {
         w++;
     }
     R.ntex = w;
+}
+
+/* Swap finished HD loads in for their game textures (whose GL texture goes back to the pool). The
+ * upload is spread over frames: at most HD_UPLOAD_BYTES and HD_UPLOAD_NS of uploads a frame, in
+ * strips of 4-pixel block rows (a 4096-pixel level alone is 16 MB). The time cap matters most:
+ * nouveau allocates a staging buffer and flushes for every glCompressedTexSubImage2D, ~0.5 ms
+ * each whatever its size, so a frame finishing many small textures (a dozen levels each) at the
+ * character select dropped to 48 fps. The game texture stays on screen until every level is in.
+ * A load whose texture was evicted meanwhile is dropped. */
+#define HD_UPLOAD_BYTES (2u << 20)
+#define HD_UPLOAD_NS 2000000ull
+static struct {
+    uint8_t *data;       /* the load being uploaded, or NULL */
+    uint64_t tag;
+    GLuint tex;
+    unsigned w, h, levels, level, row; /* next: block row `row` of `level` */
+    size_t off;          /* start of `level` in data */
+} s_up;
+
+static void hd_upload_drop(bool delete_tex) {
+    if (delete_tex && s_up.tex) {
+        glDeleteTextures(1, &s_up.tex);
+        if (R.cur_tex[0] == s_up.tex) R.cur_tex[0] = ~0u;
+    }
+    free(s_up.data);
+    memset(&s_up, 0, sizeof s_up);
+}
+
+static void hd_upload(void) {
+    size_t budget = HD_UPLOAD_BYTES;
+    uint64_t ti, t0 = plat_now_ns();
+    while (budget && plat_now_ns() - t0 < HD_UPLOAD_NS) {
+        if (!s_up.data) {
+            int idx;
+            uint8_t *data;
+            if (!hdtex_take(&idx, &s_up.tag, &data)) return;
+            GlTexture *gt = u64map_get(&R.textures, s_up.tag, &ti) ? &R.tex[ti] : NULL;
+            if (!gt || gt->hd != 1 || !data || !R.hd_on) {
+                if (gt && gt->hd == 1) gt->hd = 0;
+                free(data);
+                continue;
+            }
+            s_up.data = data;
+            hdtex_info(idx, &s_up.w, &s_up.h, &s_up.levels);
+            glGenTextures(1, &s_up.tex);
+            if (R.cur_unit != 0) { glActiveTexture(GL_TEXTURE0); R.cur_unit = 0; }
+            glBindTexture(GL_TEXTURE_2D, s_up.tex);
+            R.cur_tex[0] = s_up.tex;
+            glTexStorage2D(GL_TEXTURE_2D, (GLsizei)s_up.levels, HD_BC7, (GLsizei)s_up.w, (GLsizei)s_up.h);
+        }
+        GlTexture *gt = u64map_get(&R.textures, s_up.tag, &ti) ? &R.tex[ti] : NULL;
+        if (!gt || gt->hd != 1 || !R.hd_on) { /* evicted or switched off mid-upload */
+            if (gt && gt->hd == 1) gt->hd = 0;
+            hd_upload_drop(true);
+            continue;
+        }
+        if (R.cur_unit != 0) { glActiveTexture(GL_TEXTURE0); R.cur_unit = 0; }
+        if (R.cur_tex[0] != s_up.tex) { glBindTexture(GL_TEXTURE_2D, s_up.tex); R.cur_tex[0] = s_up.tex; }
+        unsigned l = s_up.level, lw = s_up.w >> l ? s_up.w >> l : 1, lh = s_up.h >> l ? s_up.h >> l : 1;
+        unsigned brows = (lh + 3) / 4;
+        size_t rowbytes = (size_t)((lw + 3) / 4) * 16;
+        unsigned n = (unsigned)(budget / rowbytes);
+        if (n < 1) n = 1;
+        if (n > brows - s_up.row) n = brows - s_up.row;
+        unsigned y = s_up.row * 4, hgt = n * 4 < lh - y ? n * 4 : lh - y;
+        while (glGetError() != GL_NO_ERROR) {} /* errors of this strip only (and the storage) */
+        glCompressedTexSubImage2D(GL_TEXTURE_2D, (GLint)l, 0, (GLint)y, (GLsizei)lw, (GLsizei)hgt, HD_BC7,
+                                  (GLsizei)(n * rowbytes), s_up.data + s_up.off + (size_t)s_up.row * rowbytes);
+        GLenum err = glGetError();
+        if (err != GL_NO_ERROR) {
+            rt_log("render: HD texture upload failed (GL error %#x): HD textures off", err);
+            gt->hd = 0;
+            R.hd_on = false;
+            hd_upload_drop(true);
+            return;
+        }
+        budget = n * rowbytes >= budget ? 0 : budget - n * rowbytes;
+        s_up.row += n;
+        if (s_up.row < brows) continue;
+        s_up.off += (size_t)brows * rowbytes;
+        s_up.row = 0;
+        if (++s_up.level < s_up.levels) continue;
+        pool_add(gt->tex, gt->w, gt->h, gt->chans);
+        gt->tex = s_up.tex;
+        gt->hd = 2;
+        gt->hd_bytes = (uint32_t)s_up.off;
+        R.hd_bytes += s_up.off;
+        hd_upload_drop(false);
+    }
 }
 
 static GLenum compare(uint32_t f) {
@@ -1024,6 +1155,8 @@ bool render_update(int scale_in) {
     if (n == R.shown) { gx_frame_release(f); return false; }
     R.shown = n;
     R.tick++;
+    if (R.hd_flush) { R.hd_flush = false; evict_textures(0); } /* HD switched on/off: everything reloads */
+    if (hdtex_available()) hd_upload();
     /* Normally textures live 10 s unused; when many pile up (movies, screen effects), 2 s. */
     if (R.tick % 600 == 0) evict_textures(600);
     else if (R.tick % 30 == 0 && R.ntex > 768) evict_textures(120);
@@ -1196,6 +1329,16 @@ bool render_update(int scale_in) {
 }
 
 void render_set_hud43(bool on) { R.hud43 = on; }
+void render_set_hd(bool on) {
+    on = on && R.bptc && hdtex_available();
+    if (on != R.hd_on) { R.hd_on = on; R.hd_flush = true; }
+}
+uint64_t render_hd_bytes(void) { return R.hd_bytes; }
+unsigned render_hd_in_use(void) {
+    unsigned n = 0;
+    for (unsigned i = 0; i < R.ntex; i++) n += R.tex[i].hd == 2;
+    return n;
+}
 uint64_t render_take_gpu_wait(void) { uint64_t v = R.gpu_wait_ns; R.gpu_wait_ns = 0; return v; }
 
 void render_present(int w, int h, const float adj[3], bool wide) {
