@@ -1,0 +1,1245 @@
+"""Project the MKDD-Recomp sheets into C for the Switch port.
+
+C counterpart of MKDD-Recomp's tools/gen_rust.py, with the same semantics:
+
+sheets/instructions.csv (p-code per instruction) -> gen/part_NN.c
+sheets/memory.csv                                 -> gen/mem_<section>.bin (loaded via gen/mem.S)
+sheets/functions.csv + meta.csv + hle.csv         -> gen/table.c, gen/funcs.h
+
+Every function becomes `void f_<ADDR>(Ctx *c, uint32_t entry)` with one label per basic block.
+Direct branches inside the function are gotos; computed jumps and mid-function entries go
+through a switch over the block leaders (falling back to ctx_call); calls to other recompiled
+functions are direct C calls. Block leaders: function entries, constant branch/call targets,
+code addresses referenced from data sections (switch jump tables) and the instruction after any
+unconditional transfer. Generated code is disposable: edit the sheets or this generator, rerun.
+
+Usage: python gen_c.py <MKDD-Recomp sheets dir> <output dir> [--no-abi] [--native-verify] [--native-skip=a,b]
+"""
+import os, csv
+import io
+import re
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+csv.field_size_limit(1 << 30)
+PARTS = 96
+
+VN = re.compile(r"([CRUMX])([0-9a-f]+):(\d+)")
+BIN = {
+    "INT_ADD", "INT_SUB", "INT_MULT", "INT_DIV", "INT_SDIV", "INT_REM", "INT_SREM", "INT_AND", "INT_OR",
+    "INT_XOR", "INT_LEFT", "INT_RIGHT", "INT_SRIGHT", "INT_EQUAL", "INT_NOTEQUAL", "INT_LESS",
+    "INT_LESSEQUAL", "INT_SLESS", "INT_SLESSEQUAL", "INT_CARRY", "INT_SCARRY", "INT_SBORROW",
+    "BOOL_AND", "BOOL_OR", "BOOL_XOR", "FLOAT_ADD", "FLOAT_SUB", "FLOAT_MULT", "FLOAT_DIV",
+    "FLOAT_EQUAL", "FLOAT_NOTEQUAL", "FLOAT_LESS", "FLOAT_LESSEQUAL",
+}
+UN = {
+    "INT_NEGATE", "INT_2COMP", "INT_ZEXT", "BOOL_NEGATE", "FLOAT_NEG", "FLOAT_ABS", "FLOAT_SQRT",
+    "FLOAT_NAN", "FLOAT_CEIL", "FLOAT_FLOOR", "FLOAT_ROUND", "POPCOUNT", "LZCOUNT",
+}
+CONV = {"FLOAT2FLOAT": "float2float", "INT2FLOAT": "int2float", "TRUNC": "trunc_"}
+# mftb: the time base registers read the host clock.
+TIMEBASE = {(0x1430, 4): "ctx_tb_lo(c)", (0x1434, 4): "ctx_tb_hi(c)"}
+# mtspr DMAL: starts a locked-cache DMA.
+DMAL = (0x1E6C, 4)
+NOP_INTRINSICS = {
+    "sync", "instructionSynchronize", "dataCacheBlockStore", "instructionCacheBlockInvalidate",
+    "dataCacheBlockInvalidate", "dataCacheBlockFlush", "dataCacheBlockTouch", "eieio",
+}
+# FPSCR status bits (fp_fx .. fp_vxcvi): every FP instruction's p-code recomputes ~20 of them,
+# but only mffs / mcrfs read them back (4 instructions in MKDD). Functions without those skip the
+# writes; enable bits and the rounding mode (mtfsf / mtfsb) stay exact.
+FPSCR_STATUS = (0x500, 0x518)
+# Ghidra-internal registers no instruction reads across instructions: tea (stmw/lmw's address
+# temp, written before use) and r2Save (written by bl, never read). Function-local like the above.
+SCRATCH = set() if "--no-scratch" in sys.argv else {0x980, 0x988}
+FLAGS = {a for a in sys.argv if a.startswith("--")}  # --no-lazy: store every register at calls
+FPSCR_READERS = ("mffs", "mcrfs")
+# Registers the PowerPC EABI makes callees preserve (r14-r31, f14-f31 with their ps1 halves,
+# cr2-cr4): their locals stay valid across calls, only the others are reloaded. r1, r2 and r13
+# are preserved too, but __init_registers sets them for its caller, so they are reloaded.
+NONVOL = ({(4 * r, 4) for r in range(14, 32)}
+          | {(0x4000 + 8 * r, 8) for r in range(14, 32)} | {(0x5000 + 8 * r, 8) for r in range(14, 32)}
+          | {(0x902, 1), (0x903, 1), (0x904, 1)})
+SAFE_BASE = re.compile(r"\((r1|r2|r13)\)")
+# Functions the runtime may hook (sheets/hle.csv, plus the handlers runtime/hle.c binds by name):
+# only these take the HLE check at entry (ctx_enter); every other function uses ctx_enter_nh.
+HOOKABLE = set()
+SHEETS = OUT = None
+
+
+def meet(a, b):
+    """Intersection of keep sets, None standing for everything."""
+    return b if a is None else a if b is None else a & b
+
+
+# Addresses inside the compiler's register save/restore routines (_savegpr / _restgpr /
+# _savefpr / _restfpr: runs of stw/lwz r14-r31 or stfd/lfd f14-f31 ending in blr, entered at
+# any point). They read or write the caller's callee-saved registers, so calls into them store
+# and reload everything (see Gen.call).
+SAVE_RESTORE = set()
+# Guest functions with a native version (runtime/native.h NATIVE_LIST): address -> (name, args,
+# ret, calls_guest). Calls to them become direct C calls (Gen.native_call).
+NATIVE = {}
+_SR_INS = re.compile(r"(stfd|lfd) f(1[4-9]|2\d|3[01]),|(stw|lwz) r(1[4-9]|2\d|3[01]),")
+
+
+def find_save_restore(instructions):
+    run = []
+    for r in instructions:
+        if _SR_INS.match(r["asm"]):
+            run.append(int(r["addr"], 16))
+            continue
+        if r["asm"].strip() == "blr" and len(run) >= 4:
+            SAVE_RESTORE.update(run)
+        run = []
+
+
+def join(a, b):
+    """Union of keep sets (paths merging: a register unstored on either may be unstored)."""
+    return None if a is None or b is None else a | b
+
+
+def read(name):
+    with open(SHEETS / name, newline="", encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
+
+
+def parse_vn(tok):
+    if tok == "_":
+        return None
+    k, off, size = VN.fullmatch(tok).groups()
+    return k, int(off, 16), int(size)
+
+
+def parse_op(text):
+    head, rest = text.split(" = ", 1) if " = " in text else (text, "")
+    parts = head.split(" ")
+    mnem = parts[0]
+    name = None
+    if mnem.startswith("CALLOTHER["):
+        name = mnem[10:-1]
+        mnem = "CALLOTHER"
+    out = parse_vn(parts[1]) if len(parts) > 1 else None
+    ins = [parse_vn(t) for t in rest.split()] if rest else []
+    return mnem, name, out, ins
+
+
+def write_if_changed(path, data):
+    """Only touch files whose content changed, so make/ninja rebuild just what changed."""
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    if path.exists() and path.read_bytes() == data:
+        return
+    path.write_bytes(data)
+
+
+def mask(v, s):
+    return v & ((1 << (8 * s)) - 1)
+
+
+def ends_block(pcode):
+    """True if control never falls through past this instruction unconditionally."""
+    for text in pcode.split(" | "):
+        if text.split(" ", 1)[0] in ("BRANCH", "BRANCHIND", "RETURN"):
+            return True
+    return False
+
+
+def find_leaders(instructions, entries):
+    code = {int(r["addr"], 16) for r in instructions}
+    leaders = set(entries)
+    for r in instructions:
+        for text in r["pcode"].split(" | "):
+            if not text.startswith(("BRANCH ", "CBRANCH ", "CALL ")):
+                continue
+            ins = parse_op(text)[3]
+            if ins and ins[0] and ins[0][0] == "M":
+                leaders.add(ins[0][1])
+    data_refs = 0
+    for r in read("memory.csv"):
+        if "text" in r["section"]:
+            continue
+        raw = bytes.fromhex(r["hex"])
+        for i in range(0, len(raw) - 3, 4):
+            w = int.from_bytes(raw[i:i + 4], "big")
+            if w in code and w not in leaders:
+                leaders.add(w)
+                data_refs += 1
+    print(f"block leaders: {len(leaders)} ({data_refs} from data references)", flush=True)
+    return leaders
+
+
+def cstr(s):
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def has_ld(expr):
+    return "mld(" in expr or "ctx_ld(" in expr or "ctx_intrinsic(" in expr
+
+
+REGS = []  # (offset, size) of every Ghidra register, smallest first
+
+# Paired singles (ps_* / psq_* / dcbz_l). GameCubeLoader's p-code for them has aliasing bugs, so
+# they are compiled from the instruction word here, with runtime/ps.c's semantics (operands read
+# before any write, results rounded to single precision). Unknown encodings call ctx_ps.
+FPR, PS1, GQR, CRF = 0x4000, 0x5000, 0x1E40, 0x900
+
+
+def is_ps(asm):
+    m = asm.split(" ", 1)[0].rstrip(".")
+    return m.startswith(("ps_", "psq_")) or m == "dcbz_l"
+
+
+def ps_regs(w):
+    """Every register a paired-single instruction may touch (a superset is fine)."""
+    d, a, b, cc = (w >> 21) & 31, (w >> 16) & 31, (w >> 11) & 31, (w >> 6) & 31
+    out = [(4 * a, 4), (4 * b, 4), (CRF + (d >> 2), 1)]
+    out += [(GQR + 4 * i, 4) for i in range(8)]
+    for r in (d, a, b, cc):
+        out += [(FPR + 8 * r, 8), (PS1 + 8 * r, 8)]
+    return out
+
+
+def containers(rows):
+    """Register promotion: map each register access (off, size) in a function to the register
+    whose value is kept in a C local (x<off>). That is the smallest enclosing register that no
+    other access in the function partially overlaps (cr0 alone, or the whole CR if mfcr/mtcr
+    touch it; a GPR for its byte / halfword sub-accesses)."""
+    acc = set()
+    for r in rows:
+        for m in VN.finditer(r["pcode"]):
+            if m.group(1) == "R":
+                acc.add((int(m.group(2), 16), int(m.group(3))))
+        if is_ps(r["asm"]):
+            acc.update(ps_regs(int(r["bytes"], 16)))
+    acc -= set(TIMEBASE) | {DMAL}
+    cmap = {}
+    for o, s in acc:
+        for ro, rs in REGS:
+            if ro <= o and o + s <= ro + rs and all(
+                    (b + bs <= ro or b >= ro + rs) or (ro <= b and b + bs <= ro + rs) for b, bs in acc):
+                cmap[(o, s)] = (ro, rs)
+                break
+    return cmap
+
+
+def _blocks(entry, rows, leaders):
+    lead, prev_nxt, after_jump = [], None, False
+    for r in rows:
+        a = int(r["addr"], 16)
+        if a == entry or a in leaders or after_jump or prev_nxt != a:
+            lead.append(a)
+        after_jump = ends_block(r["pcode"])
+        prev_nxt = a + len(r["bytes"]) // 2
+    lead_set = set(lead)
+    starts = [k for k, r in enumerate(rows) if int(r["addr"], 16) in lead_set]
+    return [(s, starts[i + 1] if i + 1 < len(starts) else len(rows)) for i, s in enumerate(starts)]
+
+
+# ---- ABI trimming (default; --no-abi turns it off): stores of dead volatile registers at calls / returns ----
+# Every register access in generated code goes through the C locals; c->regs (the register file)
+# must be current wherever something else reads it: callees read it at entry, callers reload
+# volatile registers from it after a call. Candidates (the PowerPC EABI's volatile registers
+# other than r1-r4, f1, LR, XER SO): r0, r5-r12, f0, f2-f13 and their ps1 halves, ps1 of f1,
+# cr0, cr1, cr5-cr7, CTR, XER OV/CA. An interprocedural liveness pass over these (bitmasks)
+# computes, per call target, which candidates the callee reads at entry (entry_live), per call
+# site which the caller reads after it (live_after), and per function which its callers read
+# after it returns (need, propagated through returns and tail calls). Stores are then skipped:
+#   - before a call: candidates neither read by the callee nor live after the call
+#   - at a return: candidates no caller reads after the call.
+# Indirect calls use the union over all functions.
+_ABI_CAND = sorted({(4 * r, 4) for r in [0] + list(range(5, 13))}
+                   | {(FPR + 8 * f, 8) for f in [0] + list(range(2, 14))} | {(PS1 + 8 * f, 8) for f in range(14)}
+                   | {(CRF + i, 1) for i in (0, 1, 5, 6, 7)} | {(0x1024, 4), (0x401, 1), (0x402, 1), (0x403, 1)})
+_ABI_BIT = {c: 1 << i for i, c in enumerate(_ABI_CAND)}
+_ABI_ALL = (1 << len(_ABI_CAND)) - 1
+# Returns store only the non-candidates (r3, r4, f1, ...) and f1's ps1 half (paired-single results):
+# under the EABI a caller never uses another volatile register its callee left behind.
+_ABI_RET = _ABI_BIT[(PS1 + 8, 8)]
+_ABI_GF = sum(b for (o, _), b in _ABI_BIT.items() if o < 0x80 or o >= FPR)  # GPR / FPR / ps1 candidates
+ABI = {"on": False, "entry": {}, "after": {}, "after_own": {}, "ind_use": 0, "suspect": []}
+_vn_cache = {}
+
+
+def _vn_bits(off, size):
+    """(use bits, def bits): candidates overlapping the varnode / fully covered by it."""
+    k = (off, size)
+    if k not in _vn_cache:
+        u = d = 0
+        for (o, s), b in _ABI_BIT.items():
+            if o < off + size and off < o + s:
+                u |= b
+                if off <= o and o + s <= off + size:
+                    d |= b
+        _vn_cache[k] = (u, d)
+    return _vn_cache[k]
+
+
+def _ps_steps(w):
+    """Uses / defs of a paired-single instruction handled by Gen.ps (None: fallback = all)."""
+    op, d, a, b = w >> 26, (w >> 21) & 31, (w >> 16) & 31, (w >> 11) & 31
+    cc = (w >> 6) & 31
+    def g(r): return _vn_bits(4 * r, 4)[0]
+    def f(r): return _vn_bits(FPR + 8 * r, 8)[0] | _vn_bits(PS1 + 8 * r, 8)[0]
+    def fd(r): return _vn_bits(FPR + 8 * r, 8)[1] | _vn_bits(PS1 + 8 * r, 8)[1]
+    if op in (56, 57):
+        return [("U", (g(a) if a or op == 57 else 0)), ("D", fd(d) | (_vn_bits(4 * a, 4)[1] if op == 57 else 0))]
+    if op in (60, 61):
+        return [("U", f(d) | (g(a) if a or op == 61 else 0)), ("D", _vn_bits(4 * a, 4)[1] if op == 61 else 0)]
+    if op != 4:
+        return None
+    xo6 = (w >> 1) & 0x3F
+    if xo6 in (6, 7, 38, 39):
+        load = not xo6 & 1
+        u = (g(a) if a or xo6 >= 32 else 0) | g(b) | (0 if load else f(d))
+        return [("U", u), ("D", (fd(d) if load else 0) | (_vn_bits(4 * a, 4)[1] if xo6 >= 32 else 0))]
+    xo5 = (w >> 1) & 0x1F
+    if xo5 in (0, 8, 16, 22):
+        xo = (w >> 1) & 0x3FF
+        if xo in (0, 32, 64, 96):
+            return [("U", f(a) | f(b)), ("D", _vn_bits(CRF + (d >> 2), 1)[1])]
+        if xo in (40, 72, 136, 264):
+            return [("U", f(b)), ("D", fd(d))]
+        if xo in (528, 560, 592, 624):
+            return [("U", f(a) | f(b)), ("D", fd(d))]
+        if xo == 1014:
+            return [("U", g(a) | g(b))]
+        return None
+    # register fields each arithmetic op reads (unused fields are 0 and would look like f0)
+    used = {10: "abc", 11: "abc", 12: "ac", 13: "ac", 14: "abc", 15: "abc", 18: "ab", 20: "ab", 21: "ab",
+            23: "abc", 24: "b", 25: "ac", 26: "b", 28: "abc", 29: "abc", 30: "abc", 31: "abc"}.get(xo5)
+    if used:
+        u = (f(a) if "a" in used else 0) | (f(b) if "b" in used else 0) | (f(cc) if "c" in used else 0)
+        return [("U", u), ("D", fd(d))]
+    return None
+
+
+def _abi_steps(rows, own):
+    """Per instruction, forward list of steps: ("U", bits) use, ("D", bits) def, ("C", target)
+    call (None = indirect), ("T", target) tail jump out, ("R",) return, ("A",) everything used,
+    ("I",) computed jump."""
+    out = []
+    for r in rows:
+        st = []
+        if r["asm"].strip() == "ori r0,r0,0x0":  # the nop after calls: reads r0 only formally
+            out.append([])
+            continue
+        if is_ps(r["asm"]):
+            w = int(r["bytes"], 16)
+            ps = _ps_steps(w)
+            if ps is None:  # ctx_ps: runs on c->regs, reading this instruction's registers
+                u = 0
+                for o_, s_ in ps_regs(w):
+                    u |= _vn_bits(o_, s_)[0]
+                ps = [("U", u)]
+            out.append(ps)
+            continue
+        ops = [p for p in r["pcode"].split(" | ") if p]
+        if any(o.startswith(("BRANCH ", "CBRANCH ")) and parse_op(o)[3][0][0] == "C" for o in ops):
+            u = 0
+            for o in ops:
+                _, _, ov, ins = parse_op(o)
+                for v in ins + [ov]:
+                    if v and v[0] == "R":
+                        u |= _vn_bits(v[1], v[2])[0]
+            out.append([("U", u)])
+            continue
+        for o in ops:
+            mnem, name, ov, ins = parse_op(o)
+            u = 0
+            for v in ins:
+                if v and v[0] == "R":
+                    u |= _vn_bits(v[1], v[2])[0]
+            if mnem == "RETURN":
+                st.append(("R",))
+                continue
+            if mnem in ("CALL", "CALLIND"):
+                st.append(("U", u))
+                st.append(("C", ins[0][1] if mnem == "CALL" and ins[0][0] == "M" else None))
+                continue
+            if mnem == "CALLOTHER" and name in ("syscall", "returnFromInterrupt", "trapWord"):
+                st.append(("A",))
+            if mnem == "BRANCHIND":
+                st.append(("I",))
+            if mnem in ("BRANCH", "CBRANCH") and ins and ins[0][0] == "M":
+                # in-function branch: its target's liveness joins here, not at the block's end
+                # (blocks are only split at branch targets, so a bdnz / blt can sit mid-block)
+                st.append(("J", ins[0][1]) if ins[0][1] in own else ("T", ins[0][1]))
+            st.append(("U", u))
+            if ov and ov[0] == "R":
+                st.append(("D", _vn_bits(ov[1], ov[2])[1]))
+        out.append(st)
+    return out
+
+
+def _eabi_args():
+    """Candidates an EABI callee may read at entry: argument registers r5-r10, f2-f8 (f1, r3, r4
+    are never candidates), the ps1 halves of f1-f8, and cr1 (the varargs float flag)."""
+    b = 0
+    for c in ([(4 * r, 4) for r in range(5, 11)] + [(FPR + 8 * f, 8) for f in range(2, 9)]
+              + [(PS1 + 8 * f, 8) for f in range(1, 9)] + [(CRF + 1, 1)]):
+        b |= _ABI_BIT[c]
+    return b
+
+
+def abi_analyze(by_func, leaders):
+    """Indirect calls (virtual functions, callbacks) are assumed to follow the EABI: the callee
+    reads only argument registers. A whole-program union over every function that might be
+    called indirectly makes every register live everywhere, so nothing could be trimmed. Functions
+    whose code reads anything else at entry are reported (ABI["suspect"]); the runtime checks on
+    PC that no indirect call ever reaches one (MKDD_ABICHECK=1)."""
+    funcs = {}
+    for e, rows in by_func.items():
+        own = {int(r["addr"], 16) for r in rows}
+        ranges = _blocks(e, rows, leaders)
+        steps = _abi_steps(rows, own)
+        addr_blk = {int(rows[s]["addr"], 16): i for i, (s, t) in enumerate(ranges)}
+        succ = []  # fall-through only; branches are "J" steps
+        for i, (s, t) in enumerate(ranges):
+            o = set()
+            last = rows[t - 1]
+            if not ends_block(last["pcode"]) or is_ps(last["asm"]):
+                nxt = int(last["addr"], 16) + len(last["bytes"]) // 2
+                if nxt in addr_blk:
+                    o.add(addr_blk[nxt])
+            succ.append(sorted(o))
+        addrs = [int(r["addr"], 16) for r in rows]
+        for i, (s, t) in enumerate(ranges):
+            last = rows[t - 1]
+            nxt = int(last["addr"], 16) + len(last["bytes"]) // 2
+            if (not ends_block(last["pcode"]) or is_ps(last["asm"])) and nxt not in addr_blk:
+                steps[t - 1] = steps[t - 1] + [("T", nxt)]  # falls out of the function: tail call
+        funcs[e] = (ranges, steps, addr_blk, succ, addrs)
+    special = {e for e, f in funcs.items() if any(st[0] == "A" for ins in f[1] for st in ins)}
+    print(f"abi: {len(special)} functions hand the register file to the runtime (rfi / sc / trap)", flush=True)
+    owner = {}
+    for e, (ranges, steps, addr_blk, succ, addrs) in funcs.items():
+        for a in addr_blk:
+            owner.setdefault(a, e)
+    entry = {}                 # call target address -> candidates read at entry
+    ind_use = _eabi_args()
+
+    def liveness(f, own_only):
+        """Backward liveness over one function. Calls clobber every candidate (EABI volatile);
+        above a call only what the callee reads at entry is live (own_only: nothing, giving the
+        registers the function's own instructions read after each call). Returns live-in per
+        block and live-after per call site."""
+        ranges, steps, addr_blk, succ, addrs = f
+        live_in = [0] * len(ranges)
+        rec = {}
+        work = True
+        while work:
+            work = False
+            any_in = 0
+            for x in live_in:
+                any_in |= x
+            for i in reversed(range(len(ranges))):
+                live = 0
+                for j in succ[i]:
+                    live |= live_in[j]
+                s, t = ranges[i]
+                for k in range(t - 1, s - 1, -1):
+                    for st in reversed(steps[k]):
+                        kd = st[0]
+                        if kd == "U":
+                            live |= st[1]
+                        elif kd == "D":
+                            live &= ~st[1]
+                        elif kd == "C":
+                            rec[addrs[k]] = live
+                            tg = st[1]
+                            if tg in SAVE_RESTORE:
+                                # _savegpr/_restfpr etc. (prologues/epilogues) touch only r11/r12
+                                # and the saved registers: everything live passes through them
+                                if not own_only:
+                                    live |= entry.get(tg, 0)
+                            else:
+                                live = 0 if own_only else entry.get(tg, 0) if tg is not None and tg in owner else ind_use
+                        elif kd == "T":
+                            tg = st[1]
+                            if not own_only:
+                                live |= entry.get(tg, 0) if tg in owner else ind_use
+                        elif kd == "J":
+                            live |= live_in[addr_blk[st[1]]] if st[1] in addr_blk else any_in
+                        elif kd == "R":
+                            live |= _ABI_RET
+                        elif kd == "I":
+                            live |= any_in | (0 if own_only else ind_use)
+                        # "A" (rfi / sc / trap): the generated code stores every local before the
+                        # intrinsic, and what rfi restores comes from memory (OSLoadContext) or is
+                        # never used (the runtime calls exception handlers itself): not a read.
+                if live | live_in[i] != live_in[i]:
+                    live_in[i] |= live
+                    work = True
+        return live_in, rec
+
+    after = {}
+    rnd = 0
+    while True:
+        rnd += 1
+        changed = False
+        for e, f in funcs.items():
+            live_in, rec = liveness(f, False)
+            after.update(rec)
+            for a, i in f[2].items():
+                v = live_in[i]
+                if entry.get(a, 0) | v != entry.get(a, 0):
+                    entry[a] = entry.get(a, 0) | v
+                    changed = True
+        print(f"abi: round {rnd}", flush=True)
+        if not changed:
+            break
+    after_own = {}
+    for f in funcs.values():
+        after_own.update(liveness(f, True)[1])
+    dbg = os.environ.get("ABI_DUMP")
+    if dbg:
+        f = funcs[int(dbg, 16)]
+        li, rec = liveness(f, True)
+        for i, (s_, t_) in enumerate(f[0]):
+            print(f"abi-dump: block {i} {f[4][s_]:08x}-{f[4][t_ - 1]:08x} succ {f[3][i]} live_in {abi_names(li[i])}")
+    own_gf = {a: v & _ABI_GF for a, v in after_own.items() if v & _ABI_GF}
+    print(f"abi: {len(own_gf)} of {len(after_own)} call sites read a volatile GPR/FPR after the call "
+          f"before writing it (checked at run time with --abi-check)", flush=True)
+    # CR fields read at entry are partial updates (andi. etc. rewrite some bits of cr0): garbage in,
+    # garbage out, as on hardware. Real inputs outside the EABI arguments would be GPRs / FPRs / CTR.
+    real = _ABI_GF | _ABI_BIT[(0x1024, 4)]
+    suspect = sorted(e for e in funcs if e not in special and entry.get(e, 0) & ~ind_use & real)
+    ABI.update(on=True, entry=entry, after=after, after_own=after_own, ind_use=ind_use, suspect=suspect)
+    print(f"abi: {len(suspect)} functions read more than EABI arguments at entry (unsafe as indirect targets)", flush=True)
+    cnt = defaultdict(int)
+    for e in funcs:
+        v = entry.get(e, 0)
+        for c, b in _ABI_BIT.items():
+            if v & b:
+                cnt[c] += 1
+    print("abi: functions reading a candidate at entry: " + ", ".join(f"{o:x}:{n}" for (o, _), n in sorted(cnt.items())), flush=True)
+    worst = sorted(funcs, key=lambda e: -bin(entry.get(e, 0)).count("1"))[:8]
+    print("abi: most at entry: " + ", ".join(f"{e:08x}({bin(entry.get(e, 0)).count('1')})" for e in worst), flush=True)
+    return rnd
+
+
+def abi_names(bits):
+    return " ".join(f"{o:x}" for (o, s), b in _ABI_BIT.items() if bits & b)
+
+
+def abi_kill(bits_kept):
+    """Candidate containers whose store can be skipped, given the bits that must be kept."""
+    return {c for c, b in _ABI_BIT.items() if not bits_kept & b}
+
+
+# ---- Callee write sets (--no-mod turns it off) and leaf inlining (--no-inline) ----
+# MOD[f]: the register-file bytes a call to f can change (bit i = byte offset i of c->regs; None:
+# anything), over f's own writes and, transitively, its direct callees and tail jumps. Indirect
+# calls, computed jumps, HLE'd callees, natives that run guest code, runtime intrinsics and the
+# register save/restore routines count as anything. Interrupts delivered at a function's entry
+# restore the whole register file (sched.c rt_deliver), so they change nothing. After a direct
+# call the caller reloads only the volatile locals the callee can change; the others still hold
+# the value the callee saw (stored before the call) or are dead after it (a skipped store).
+MOD = {}
+# Small leaf functions (no calls, no computed or outgoing jumps, nothing that hands the register
+# file to the runtime): also emitted as always-inline bodies (inl.h, fi_<ADDR>) that direct
+# calls use, without the entry bookkeeping. Indirect calls and the runtime still use f_<ADDR>.
+INLINE = set()
+INLINE_MAX = 24  # instructions
+
+
+def _bytes(off, size):
+    return ((1 << size) - 1) << off
+
+
+def mod_analyze(by_func, funcs_meta):
+    own_w, edges, leaf = {}, {}, {}
+    ps_ret = {"r": _bytes(0xC, 4), "f": _bytes(FPR + 8, 8) | _bytes(PS1 + 8, 8)}
+    for e, rows in by_func.items():
+        own = {int(r["addr"], 16) for r in rows}
+        w, ed, anything, calls = 0, set(), False, False
+        for r in rows:
+            nxt = int(r["addr"], 16) + len(r["bytes"]) // 2
+            if (is_ps(r["asm"]) or not ends_block(r["pcode"])) and nxt not in own:
+                anything = True  # falls out of the function (tail call through the dispatcher)
+            if is_ps(r["asm"]):
+                for o, s in ps_regs(int(r["bytes"], 16)):
+                    w |= _bytes(o, s)
+                continue
+            for text in r["pcode"].split(" | "):
+                if not text:
+                    continue
+                mnem, name, ov, ins = parse_op(text)
+                if ov and ov[0] == "R":
+                    if (ov[1], ov[2]) == DMAL:
+                        anything = True
+                    w |= _bytes(ov[1], ov[2])
+                if mnem == "CALL" and ins[0][0] == "M":
+                    calls = True
+                    t = ins[0][1]
+                    if t in NATIVE and "--no-native" not in FLAGS:
+                        if NATIVE[t][3] in (1, 2, 4) or "--native-verify" in FLAGS:
+                            anything = True
+                        else:
+                            w |= ps_ret.get(NATIVE[t][2], 0)
+                    elif t in SAVE_RESTORE or t in HOOKABLE or t not in by_func:
+                        anything = True
+                    else:
+                        ed.add(t)
+                elif mnem in ("CALL", "CALLIND", "BRANCHIND"):
+                    anything = True
+                elif mnem in ("BRANCH", "CBRANCH") and ins and ins[0][0] == "M" and ins[0][1] not in own:
+                    t = ins[0][1]
+                    calls = True
+                    if t in NATIVE or t in HOOKABLE or t in SAVE_RESTORE or t not in by_func:
+                        anything = True
+                    else:
+                        ed.add(t)
+                elif mnem == "CALLOTHER" and name not in NOP_INTRINSICS and name not in ("ldexpf", "countLeadingZeros", "syscall"):
+                    anything = True
+        own_w[e], edges[e] = (None if anything else w), ed
+        leaf[e] = not anything and not calls
+    MOD.update(own_w)
+    rnd, changed = 0, True
+    while changed:
+        changed, rnd = False, rnd + 1
+        for e in by_func:
+            m = MOD[e]
+            if m is None:
+                continue
+            for t in edges[e]:
+                mt = MOD[t]
+                if mt is None:
+                    m = None
+                    break
+                m |= mt
+            if m != MOD[e]:
+                MOD[e], changed = m, True
+    known = sum(1 for v in MOD.values() if v is not None)
+    print(f"mod: {rnd} rounds; {known} of {len(MOD)} functions with a known write set", flush=True)
+    if "--no-inline" not in FLAGS and "--check-lazy" not in FLAGS:
+        INLINE.update(e for e in by_func if leaf[e] and len(by_func[e]) <= INLINE_MAX and e in funcs_meta
+                      and e not in HOOKABLE and e not in NATIVE and e not in SAVE_RESTORE)
+        print(f"inline: {len(INLINE)} leaf functions of up to {INLINE_MAX} instructions", flush=True)
+
+
+class Gen:
+    """Register promotion: every register a function touches lives in a C local (x<off>) for the
+    whole function. The locals are loaded at entry, after every call / opaque runtime call
+    (only the volatile ones: callees preserve the ABI's non-volatile registers) and on the
+    computed-jump path; c->regs is brought up to date (dirty locals stored) before anything that
+    can observe it: calls, intrinsics, returns, exits, computed jumps. Which locals may be dirty
+    at each block entry is a forward dataflow over the function's blocks (pass 1)."""
+
+    def __init__(self, all_entries, leaders):
+        self.entries = all_entries      # every generated function (direct calls)
+        self.leaders = leaders
+        self.blk = {}                   # current function: leader address -> label index
+        self.k = 0                      # current instruction index (local labels)
+        self.cmap, self.D, self.cache, self.conts = {}, set(), True, []
+        self.succ, self.keep, self.fpscr_live, self.safe_mem = {}, None, False, False
+        self.hookable = HOOKABLE if "--hook-all" not in FLAGS else None
+
+    def edge(self, label):
+        """Record a jump to block label with the dirty state at this point and which of the
+        block's incoming dirty registers can still be unstored (keep; None = all of them)."""
+        if label in self.succ:
+            keep, d = self.succ[label]
+            self.succ[label] = (join(keep, self.keep), d | self.D)
+        else:
+            self.succ[label] = (self.keep, set(self.D))
+
+    def flush(self):
+        out = "".join(f"WR(c,0x{o:x},{s},x{o:x});" for o, s in sorted(self.D))
+        self.D = set()
+        self.keep = set()
+        return out
+
+    def flush_call(self, kill=frozenset()):
+        """Before a call: store only the registers the callee may read. Callee-saved ones
+        (NONVOL) stay in their locals: an EABI callee only saves and restores them, so the copy
+        in c->regs it sees (and puts back) is never used. Leaving the function by any other way
+        still stores everything."""
+        if "--no-lazy" in FLAGS:
+            return self.flush()
+        vol = {r for r in self.D if r not in NONVOL}
+        out = "".join(f"WR(c,0x{o:x},{s},x{o:x});" for o, s in sorted(vol - kill))
+        if "--abi-check" in FLAGS:  # a callee reading a skipped store sees the poison
+            out += "".join(f"WR(c,0x{o:x},{s},ABI_POISON({s}));" for o, s in sorted(vol & kill))
+        self.D -= vol  # reloaded after the call (the killed ones are dead there)
+        self.keep = meet(self.keep, NONVOL)
+        return out
+
+    def private(self, cont):
+        """FPSCR status bits (see FPSCR_STATUS) stay function-local scratch: never loaded or
+        stored, so the compiler drops every computation whose result only feeds them."""
+        if cont[0] in SCRATCH:
+            return True
+        return not self.fpscr_live and FPSCR_STATUS[0] <= cont[0] < FPSCR_STATUS[1]
+
+    def load_all(self, after_call=False, mod=None):
+        """Load the locals from c->regs. After a call only the volatile ones, and with mod (a
+        callee write set, see MOD) only those the callee can change."""
+        return "".join(f"x{o:x}=RD(c,0x{o:x},{s});" for o, s in self.conts
+                       if not (after_call and (o, s) in NONVOL) and not self.private((o, s))
+                       and (mod is None or mod & _bytes(o, s)))
+
+    def rd(self, v):
+        k, off, s = v
+        if k == "C":
+            return f"0x{mask(off, s):x}ull"
+        if k == "R":
+            if (off, s) in TIMEBASE:
+                return TIMEBASE[(off, s)]
+            cont = self.cmap.get((off, s)) if self.cache else None
+            if cont is None:
+                return f"RD(c,0x{off:x},{s})"
+            co, cs = cont
+            if (off, s) == cont:
+                return f"x{co:x}"
+            sh = 8 * (co + cs - off - s)
+            return f"((x{co:x}>>{sh})&0x{mask(-1, s):x}ull)"
+        if k == "U":
+            return f"u{off:x}"
+        return f"mld(c,M,0x{off:x},{s})"
+
+    def wr(self, v, expr):
+        k, off, s = v
+        if k == "R":
+            if (off, s) == DMAL:
+                return f"{{uint64_t v={expr};{self.flush()}WR(c,0x{off:x},{s},v);ctx_lc_dma(c);{self.load_all(True)}}}"
+            cont = self.cmap.get((off, s)) if self.cache else None
+            if cont is None:
+                return f"WR(c,0x{off:x},{s},{expr});"
+            co, cs = cont
+            if not self.private(cont):
+                self.D.add(cont)
+            if (off, s) == cont:
+                return f"x{co:x}=({expr})&0x{mask(-1, s):x}ull;" if s < 8 else f"x{co:x}={expr};"
+            sh, m = 8 * (co + cs - off - s), mask(-1, s)
+            return f"x{co:x}=(x{co:x}&~(0x{m:x}ull<<{sh}))|((({expr})&0x{m:x}ull)<<{sh});"
+        if k == "U":
+            return f"u{off:x}={expr};"
+        if k == "M":
+            return f"ctx_st(c,0x{off:x},{s},{expr});"
+        raise ValueError(v)
+
+    def args(self, *exprs):
+        """Arguments in Rust's left-to-right order: hoist them when more than one may touch
+        memory (MMIO reads have side effects; C leaves argument order unspecified)."""
+        if sum(has_ld(e) for e in exprs) < 2:
+            return "", list(exprs)
+        decl = "".join(f"uint64_t a{i}={e};" for i, e in enumerate(exprs))
+        return decl, [f"a{i}" for i in range(len(exprs))]
+
+    def bin_or_un(self, out, fn, exprs, tail):
+        decl, a = self.args(*exprs)
+        body = self.wr(out, f"{fn}({','.join(a + tail)})")
+        return f"{{{decl}{body}}}" if decl else body
+
+    def branch(self, target, idx, own, nops):
+        k, off, s = target
+        if k == "C":  # relative to this instruction's p-code ops
+            rel = off - (1 << 32) if off >= 1 << 31 else off
+            t = idx + rel
+            return f"goto I{self.k}_{t if 0 <= t < nops else 'end'};"
+        if off in own:
+            self.edge(self.blk[off])
+            return f"goto B{self.blk[off]};"
+        if off in NATIVE and "--no-native" not in FLAGS and not (NATIVE[off][3] == 2 and any(o == 0x700 for o, _ in self.conts)):  # tail call: leave with the result stored
+            name, args, ret, _ = NATIVE[off]
+            a = self.native_args(args)
+            st = {"r": "WR(c,0xc,4,(uint32_t)r);", "f": "WR(c,0x4008,8,r);WR(c,0x5008,8,r);"}.get(ret, "")
+            return f"{{uint64_t r;{{uint64_t a[8]={{{a}}};{self.flush()}r=n_{name}(c,M,a[0],a[1],a[2],a[3],a[4],a[5],a[6],a[7]);}}(void)r;{st}return;}}"
+        return f"{self.flush()}ctx_call(c,0x{off:x});return;"
+
+    def native_args(self, args):
+        exprs, g, f = [], 3, 1
+        for ch in args:
+            if ch == "r":
+                exprs.append(self.rd(("R", 4 * g, 4)))
+                g += 1
+            else:
+                exprs.append(self.rd(("R", 0x4000 + 8 * f, 8)))
+                f += 1
+        return ",".join(exprs + ["0"] * (8 - len(exprs)))
+
+    def native_ret(self, ret):
+        if ret == "r":
+            return self.wr(("R", 0xC, 4), "r")
+        if ret == "f":
+            return self.wr(("R", 0x4008, 8), "r") + self.wr(("R", 0x5008, 8), "r")
+        return ""
+
+    def native_call(self, off):
+        """A call to a function with a native version: arguments straight from the register
+        locals. A native that may run guest code needs the register file current (r1 for its
+        stack, etc.) and may change volatile registers, like a call; one that doesn't leaves
+        every register untouched, so nothing is stored or reloaded."""
+        name, args, ret, guest = NATIVE[off]
+        if guest == 2 and any(o == 0x700 for o, _ in self.conts):
+            return None  # writes MSR, which this function keeps in a local: a normal call
+        a = self.native_args(args)
+        if guest in (1, 4) or "--native-verify" in FLAGS:
+            pre, post = self.flush_call(), self.load_all(True)
+        else:
+            pre = post = ""
+        return f"{pre}{{uint64_t r=n_{name}(c,M,{a});(void)r;{post}{self.native_ret(ret)}}}"
+
+    def call(self, off):
+        if off in NATIVE and "--no-native" not in FLAGS:
+            out = self.native_call(off)
+            if out is not None:
+                return out
+        if off in SAVE_RESTORE:
+            target = f"f_{off:08X}(c,0x{off:x});" if off in self.entries else f"ctx_call(c,0x{off:x});"
+            return f"{self.flush()}{target}{self.load_all()}"
+        kill = (abi_kill(ABI["entry"].get(off, ABI["ind_use"]) | ABI["after"].get(self.cur, _ABI_ALL))
+                if ABI["on"] and off not in HOOKABLE else frozenset())
+        pre = self.flush_call(kill)
+        call = f"f_{off:08X}(c,0x{off:x});" if off in self.entries else f"ctx_call(c,0x{off:x});"
+        if off in INLINE:
+            call = f"fi_{off:08X}(c,M);"
+        if "--check-lazy" in FLAGS:
+            call = f"{{uint64_t sv[36];lazy_snap(c,sv);{call}lazy_check(c,sv,0x{off:x}u,0x{self.cur:x}u);}}"
+        mod = MOD.get(off) if off in self.entries and "--no-mod" not in FLAGS and "--abi-check" not in FLAGS else None
+        if mod is not None and "--check-mod" in FLAGS:  # the skipped reloads: c->regs must be unchanged
+            sk = [(o, z) for o, z in self.conts if (o, z) not in NONVOL and not self.private((o, z)) and not mod & _bytes(o, z)]
+            snap = "".join(f"uint64_t m{o:x}=RD(c,0x{o:x},{z});" for o, z in sk)
+            chk = "".join(f"if(RD(c,0x{o:x},{z})!=m{o:x})mod_report(0x{off:x}u,0x{self.cur:x}u,0x{o:x}u);" for o, z in sk)
+            call = f"{{{snap}{call}{chk}}}"
+        return f"{pre}{call}{self.abi_after()}{self.load_all(True, mod)}"
+
+    def abi_after(self):
+        """--abi-check: after a call, report reads of registers a callee left poisoned."""
+        if not (ABI["on"] and "--abi-check" in FLAGS):
+            return ""
+        m = ABI["after_own"].get(self.cur, 0) & _ABI_GF & ~_ABI_RET
+        return f"abi_after(c,0x{self.cur:x}u,0x{m:x}ull);" if m else ""
+
+    def op(self, text, idx, own, asm, nops):
+        mnem, name, out, ins = parse_op(text)
+        if mnem == "COPY":
+            return self.wr(out, self.rd(ins[0]))
+        if mnem == "LOAD":
+            if self.safe_mem:
+                return self.wr(out, f"mld_s(M,{self.rd(ins[0])},{out[2]})")
+            return self.wr(out, f"mld(c,M,{self.rd(ins[0])},{out[2]})")
+        if mnem == "STORE":
+            a, v = self.rd(ins[0]), self.rd(ins[1])
+            st = "mst_s(M," if self.safe_mem else "mst(c,M,"
+            if has_ld(a) or has_ld(v):
+                return f"{{uint64_t a={a};uint64_t v={v};{st}a,{ins[1][2]},v);}}"
+            return f"{st}{a},{ins[1][2]},{v});"
+        if mnem in BIN:
+            fn = mnem.lower()
+            if mnem == "INT_MULT" and out[2] == 8 and asm.startswith("psq_l"):
+                fn = "float_mult"  # GameCubeLoader spec multiplies the dequant scale with INT_MULT
+            return self.bin_or_un(out, fn, [self.rd(ins[0]), self.rd(ins[1])], [str(ins[0][2])])
+        if mnem in UN:
+            return self.bin_or_un(out, mnem.lower(), [self.rd(ins[0])], [str(ins[0][2])])
+        if mnem == "INT_SEXT":
+            return self.wr(out, f"mask(int_sext({self.rd(ins[0])},{ins[0][2]}),{out[2]})")
+        if mnem in CONV:
+            return self.wr(out, f"{CONV[mnem]}({self.rd(ins[0])},{ins[0][2]},{out[2]})")
+        if mnem == "SUBPIECE":
+            return self.wr(out, f"subpiece({self.rd(ins[0])},{ins[1][1]},{out[2]})")
+        if mnem == "PIECE":
+            return self.bin_or_un(out, "piece", [self.rd(ins[0]), self.rd(ins[1])], [str(ins[1][2])])
+        if mnem == "BRANCH":
+            return self.branch(ins[0], idx, own, nops)
+        if mnem == "CBRANCH":
+            cond = self.rd(ins[1])
+            k, off, _ = ins[0]
+            if k == "C" or off in own:
+                return f"if({cond}!=0){{{self.branch(ins[0], idx, own, nops)}}}"
+            fl = self.flush()  # leaving the function: c->regs must be current (on both paths)
+            return f"{{uint64_t cb={cond};{fl}if(cb!=0){{{self.branch(ins[0], idx, own, nops)}}}}}"
+        if mnem == "BRANCHIND":
+            t = self.rd(ins[0])
+            return f"{{jt=(uint32_t)({t});{self.flush()}goto J;}}"
+        if mnem in ("CALL", "CALLIND"):
+            k, off, _ = ins[0]
+            if mnem == "CALL" and k == "M":
+                return self.call(off)
+            t = self.rd(ins[0])
+            if "--check-lazy" in FLAGS:
+                return f"{{uint64_t t={t};{self.flush_call()}{{uint64_t sv[36];lazy_snap(c,sv);ctx_call(c,t);lazy_check(c,sv,(uint32_t)t,0x{self.cur:x}u);}}{self.load_all(True)}}}"
+            kill = abi_kill(ABI["ind_use"] | ABI["after"].get(self.cur, _ABI_ALL)) if ABI["on"] else frozenset()
+            chk = f"abi_ind(c,(uint32_t)t,0x{self.cur:x}u);" if ABI["on"] and "--abi-check" in FLAGS else ""
+            return f"{{uint64_t t={t};{self.flush_call(kill)}{chk}ctx_call(c,t);{self.abi_after()}{self.load_all(True)}}}"
+        if mnem == "RETURN":
+            if ABI["on"]:  # --abi: volatile candidates are not handed back (EABI)
+                kill = abi_kill(_ABI_RET)
+                out = "".join(f"WR(c,0x{o:x},{s},x{o:x});" for o, s in sorted(self.D - kill))
+                if "--abi-check" in FLAGS:  # poison what was skipped: abi_after() spots a caller reading it
+                    out += "".join(f"WR(c,0x{o:x},{s},ABI_POISON({s}));" for o, s in sorted(self.D & kill))
+                self.D, self.keep = set(), set()
+                return f"{out}return;"
+            return f"{self.flush()}return;"
+        if mnem == "CALLOTHER":
+            if name == "ldexpf":
+                return self.wr(out, f"ldexp_pow2({self.rd(ins[0])},{ins[0][2]},{out[2]})")
+            if name == "countLeadingZeros":
+                return self.wr(out, f"lzcount({self.rd(ins[0])},{ins[0][2]})")
+            if name in NOP_INTRINSICS:
+                return ""
+            if name == "syscall":  # only the SDK's cache/HID0 sync handler: nothing to emulate
+                return "g_syscalls++;"
+            vals = [self.rd(v) for v in ins]
+            decl = "".join(f"uint64_t a{i}={e};" for i, e in enumerate(vals))
+            arr = f"(const uint64_t[]){{{','.join(f'a{i}' for i in range(len(vals)))}}}" if vals else "0"
+            call = f'ctx_intrinsic(c,"{name}",{arr},{len(vals)})'
+            fl = self.flush()
+            reload = self.load_all()
+            if out:
+                return f"{{{decl}{fl}uint64_t r={call};{reload}{self.wr(out, 'r')}}}"
+            return f"{{{decl}{fl}{call};{reload}}}"
+        raise ValueError(f"unhandled p-code op {mnem}")
+
+    def ps(self, w):
+        """C for one paired-single instruction (None: not handled here)."""
+        op, d, a, b = w >> 26, (w >> 21) & 31, (w >> 16) & 31, (w >> 11) & 31
+        R = lambda off, s: self.rd(("R", off, s))
+        def W(off, s, e):
+            return self.wr(("R", off, s), e)
+        def gpr0(r):  # rA, or 0 for r0 in the non-update forms
+            return "0" if r == 0 else f"(uint32_t){R(4 * r, 4)}"
+        def setp(r, e0, e1):
+            return W(FPR + 8 * r, 8, f"ps_u({e0})") + W(PS1 + 8 * r, 8, f"ps_u({e1})")
+        def ldst(load, ea, wb, i, upd):
+            g = f"(uint32_t){R(GQR + 4 * i, 4)}"
+            if load:
+                s = f"{{double p0,p1;ps_load(c,M,ea,{g},{int(wb)},&p0,&p1);{setp(d, 'p0', 'p1')}}}"
+            else:
+                s = f"ps_store(c,M,ea,{g},{int(wb)},ps_d({R(FPR + 8 * d, 8)}),ps_d({R(PS1 + 8 * d, 8)}));"
+            if upd:
+                s += W(4 * a, 4, "ea")
+            return f"{{uint32_t ea={ea};{s}}}"
+        if op in (56, 57, 60, 61):
+            off = (w & 0xFFF) - (0x1000 if w & 0x800 else 0)
+            base = gpr0(a) if op in (56, 60) else f"(uint32_t){R(4 * a, 4)}"
+            return ldst(op < 60, f"{base}+(uint32_t){off}", (w >> 15) & 1, (w >> 12) & 7, op in (57, 61))
+        if op != 4:
+            return None
+        xo6 = (w >> 1) & 0x3F
+        if xo6 in (6, 7, 38, 39):
+            base = gpr0(a) if xo6 < 32 else f"(uint32_t){R(4 * a, 4)}"
+            return ldst(not xo6 & 1, f"{base}+(uint32_t){R(4 * b, 4)}", (w >> 10) & 1, (w >> 7) & 7, xo6 >= 32)
+        xo5 = (w >> 1) & 0x1F
+        P0 = lambda r: f"ps_d({R(FPR + 8 * r, 8)})"
+        P1 = lambda r: f"ps_d({R(PS1 + 8 * r, 8)})"
+        if xo5 in (0, 8, 16, 22):
+            xo = (w >> 1) & 0x3FF
+            if xo in (0, 32):
+                return W(CRF + (d >> 2), 1, f"ps_cmp({P0(a)},{P0(b)})")
+            if xo in (64, 96):
+                return W(CRF + (d >> 2), 1, f"ps_cmp({P1(a)},{P1(b)})")
+            pairs = {40: ("-B0", "-B1"), 72: ("B0", "B1"), 136: ("-__builtin_fabs(B0)", "-__builtin_fabs(B1)"),
+                     264: ("__builtin_fabs(B0)", "__builtin_fabs(B1)"), 528: ("A0", "B0"), 560: ("A0", "B1"),
+                     592: ("A1", "B0"), 624: ("A1", "B1")}
+            if xo in pairs:
+                e0, e1 = pairs[xo]
+                return (f"{{double A0={P0(a)},A1={P1(a)},B0={P0(b)},B1={P1(b)};(void)A0;(void)A1;"
+                        f"{setp(d, e0, e1)}}}")
+            if xo == 1014:  # dcbz_l
+                return f"{{uint32_t ea=({gpr0(a)}+(uint32_t){R(4 * b, 4)})&~31u;for(int k=0;k<4;k++)mst(c,M,ea+8*k,8,0);}}"
+            return None
+        cr = (w >> 6) & 31
+        ar = {10: ("A0+B1", "C1"), 11: ("C0", "A0+B1"), 12: ("A0*C0", "A1*C0"), 13: ("A0*C1", "A1*C1"),
+              14: ("A0*C0+B0", "A1*C0+B1"), 15: ("A0*C1+B0", "A1*C1+B1"), 18: ("A0/B0", "A1/B1"),
+              20: ("A0-B0", "A1-B1"), 21: ("A0+B0", "A1+B1"), 24: ("1.0/B0", "1.0/B1"), 25: ("A0*C0", "A1*C1"),
+              26: ("1.0/__builtin_sqrt(B0)", "1.0/__builtin_sqrt(B1)"), 28: ("A0*C0-B0", "A1*C1-B1"),
+              29: ("A0*C0+B0", "A1*C1+B1"), 30: ("-(A0*C0-B0)", "-(A1*C1-B1)"), 31: ("-(A0*C0+B0)", "-(A1*C1+B1)")}
+        rd = f"double A0={P0(a)},A1={P1(a)},B0={P0(b)},B1={P1(b)},C0={P0(cr)},C1={P1(cr)};(void)A0;(void)A1;(void)B0;(void)B1;(void)C0;(void)C1;"
+        if xo5 == 23:  # ps_sel
+            return f"{{{rd}{setp(d, 'A0>=0.0?C0:B0', 'A1>=0.0?C1:B1')}}}"
+        if xo5 in ar:
+            e0, e1 = ar[xo5]
+            return f"{{{rd}double r0={e0},r1={e1};{setp(d, '(double)(float)r0', '(double)(float)r1')}}}"
+        return None
+
+    def instruction(self, ins, own):
+        if is_ps(ins["asm"]):
+            body = self.ps(int(ins["bytes"], 16))
+            if body is not None:
+                return "{" + body + "}"
+            return f"{self.flush()}ctx_ps(c,0x{ins['bytes']}u);{self.load_all()}"
+        # Memory operands based on r1 / r2 / r13 (stack, small-data areas) are always in MEM1.
+        self.safe_mem = SAFE_BASE.search(ins["asm"]) is not None
+        ops = [p for p in ins["pcode"].split(" | ") if p]
+        uniq = sorted({int(m.group(2), 16) for m in VN.finditer(ins["pcode"]) if m.group(1) == "U"})
+        decl = "".join(f"uint64_t u{u:x}=0;" for u in uniq)
+        # Relative branches between this instruction's own p-code ops make control flow inside
+        # the instruction: it then runs on c->regs directly (stored before, reloaded after).
+        internal = any(o.startswith(("BRANCH ", "CBRANCH ")) and parse_op(o)[3][0][0] == "C" for o in ops)
+        if internal:
+            fl = self.flush()
+            self.cache = False
+            body = [self.op(o, i, own, ins["asm"], len(ops)) for i, o in enumerate(ops)]
+            self.cache = True
+            labelled = "".join(f"I{self.k}_{i}:;{b}" for i, b in enumerate(body))
+            return f"{fl}{{{decl}{labelled}I{self.k}_end:;}}{self.load_all()}"
+        body = [self.op(o, i, own, ins["asm"], len(ops)) for i, o in enumerate(ops)]
+        return "{" + decl + "".join(body) + "}"
+
+    def block(self, rows, start, end, own, lead_set, d_in):
+        """C for rows[start:end] (one basic block) entered with dirty set d_in. Also leaves the
+        successor block labels in self.succ and the dirty set at the block's exit in self.D."""
+        self.D, self.succ, self.keep = set(d_in), {}, None
+        lines = []
+        for k in range(start, end):
+            r = rows[k]
+            self.k = k
+            self.cur = int(r["addr"], 16)
+            lines.append(f"/* {r['asm'].replace('*/', '* /')} */{self.instruction(r, own)}")
+        r = rows[end - 1]
+        nxt = int(r["addr"], 16) + len(r["bytes"]) // 2
+        if not ends_block(r["pcode"]) or is_ps(r["asm"]):
+            # Fall through into the next block (or out of the function: tail-call it).
+            if nxt in self.blk:
+                self.edge(self.blk[nxt])
+                if not (end < len(rows) and int(rows[end]["addr"], 16) == nxt):
+                    lines.append(f"goto B{self.blk[nxt]};")
+            else:
+                lines.append(f"{self.flush()}ctx_call(c,0x{nxt:x});return;")
+        return lines
+
+    def native_entry(self, entry):
+        """A function with a native version runs it when entered from anywhere (indirect calls,
+        the runtime), with the arguments from the register file; ctx_call_orig (the verifier)
+        sets c->bypass to run the recompiled body instead. Hooked ones get there through their
+        HLE handler."""
+        if entry not in NATIVE or entry in HOOKABLE or "--no-native" in FLAGS:
+            return ""
+        name, args, ret, _ = NATIVE[entry]
+        a, g, f = [], 3, 1
+        for ch in args:
+            if ch == "r":
+                a.append(f"RD(c,0x{4 * g:x},4)")
+                g += 1
+            else:
+                a.append(f"RD(c,0x{0x4000 + 8 * f:x},8)")
+                f += 1
+        a += ["0"] * (8 - len(a))
+        st = {"r": "WR(c,0xc,4,(uint32_t)r);", "f": "WR(c,0x4008,8,r);WR(c,0x5008,8,r);"}.get(ret, "")
+        return (f"if(entry==0x{entry:x}u){{if(c->bypass==0x{entry:x}u)c->bypass=0;"
+                f"else{{uint64_t r=n_{name}(c,M,{','.join(a)});(void)r;{st}return;}}}}")
+
+    def enter_fn(self, entry):
+        return "ctx_enter" if self.hookable is None or entry in self.hookable else "ctx_enter_nh"
+
+    def function(self, entry, name, rows, inline=False):
+        own = {int(r["addr"], 16) for r in rows}
+        lead, prev_nxt, after_jump = [], None, False
+        for r in rows:
+            a = int(r["addr"], 16)
+            if a == entry or a in self.leaders or after_jump or prev_nxt != a:
+                lead.append(a)
+            after_jump = ends_block(r["pcode"])
+            prev_nxt = a + len(r["bytes"]) // 2
+        self.blk = {a: i + 1 for i, a in enumerate(lead)}
+        self.fn = entry
+        lead_set = set(lead)
+        self.cmap = containers(rows)
+        self.conts = sorted(set(self.cmap.values()))
+        self.fpscr_live = any(r["asm"].startswith(FPSCR_READERS) for r in rows)
+        self.cache = True
+        # Blocks as row ranges.
+        starts = [k for k, r in enumerate(rows) if int(r["addr"], 16) in lead_set]
+        ranges = [(s, starts[i + 1] if i + 1 < len(starts) else len(rows)) for i, s in enumerate(starts)]
+        label = [self.blk[int(rows[s]["addr"], 16)] for s, _ in ranges]
+        # Pass 1: per block, the dirty set it leaves when entered clean, whether it stores
+        # everything on the way (then what came in doesn't survive), and its successors.
+        trans = []
+        for s, e in ranges:
+            self.block(rows, s, e, own, lead_set, set())
+            trans.append(dict(self.succ))
+        index = {lab: i for i, lab in enumerate(label)}
+        d_in = [set() for _ in ranges]
+        changed = True
+        while changed:
+            changed = False
+            for i, succ in enumerate(trans):
+                for lab, (keep, d_edge) in succ.items():
+                    out = d_edge | (d_in[i] if keep is None else d_in[i] & keep)
+                    j = index[lab]
+                    if not out <= d_in[j]:
+                        d_in[j] |= out
+                        changed = True
+        # Pass 2.
+        local_decl = ("uint64_t " + ",".join(f"x{o:x}" + ("=0" if self.private((o, s)) else "") for o, s in self.conts)
+                      + ";") if self.conts else ""
+        cases = "".join(f"case 0x{a:x}u:" for a in lead)
+        jcases = "".join(f"case 0x{a:x}u:goto B{i + 1};" for i, a in enumerate(lead))
+        if inline:  # direct calls only: always entered at entry, no bookkeeping (see INLINE)
+            lines = [f"/* {name.replace('*/', '* /')} (inline) */",
+                     f"ALWAYS_INLINE void fi_{entry:08X}(Ctx *c,uint8_t *const M){{",
+                     f"uint32_t jt;{local_decl}(void)jt;{self.load_all()}goto B{self.blk[entry]};"]
+            for i, (s, e) in enumerate(ranges):
+                lines.append(f"B{label[i]}:;")
+                lines += self.block(rows, s, e, own, lead_set, d_in[i])
+            lines.append("}")
+            return "\n".join(lines)
+        lines = [f"/* {name.replace('*/', '* /')} ({len(rows)} instructions, {len(lead)} blocks) */",
+                 f"void f_{entry:08X}(Ctx *c,uint32_t entry){{",
+                 f"uint32_t jt;{local_decl}uint8_t *const M=c->ram;if({self.enter_fn(entry)}(c,0x{entry:x}u,entry))return;",
+                 self.native_entry(entry),
+                 f"if(LIKELY(entry==0x{entry:x}u)){{{self.load_all()}goto B{self.blk[entry]};}}" if entry in self.blk else "",
+                 f"switch(entry){{{cases}jt=entry;goto J;default:ctx_block_miss(c,0x{entry:x}u,entry);return;}}",
+                 f"J:{self.load_all()}switch(jt){{{jcases}default:ctx_call(c,jt);return;}}"]
+        for i, (s, e) in enumerate(ranges):
+            lines.append(f"B{label[i]}:;")
+            lines += self.block(rows, s, e, own, lead_set, d_in[i])
+        lines.append("}")
+        return "\n".join(lines)
+
+def main():
+    global SHEETS, OUT
+    SHEETS, OUT = Path(sys.argv[1]), Path(sys.argv[2])
+    OUT.mkdir(parents=True, exist_ok=True)
+    funcs = {int(r["addr"], 16): r for r in read("functions.csv")}
+    meta = {r["key"]: r["value"] for r in read("meta.csv")}
+    hle = [(int(r["addr"], 16), r["name"]) for r in read("hle.csv") if r["addr"]]
+    by_func = defaultdict(list)
+    orphan_entry = prev_end = None
+    print("reading instructions.csv ...", flush=True)
+    instructions = read("instructions.csv")
+    for r in instructions:
+        a = int(r["addr"], 16)
+        if r["func"]:
+            f = int(r["func"], 16)
+            orphan_entry = None
+        else:
+            # Code outside any Ghidra function (exception vectors, etc.): group contiguous runs.
+            if orphan_entry is None or a != prev_end:
+                orphan_entry = a
+            f = orphan_entry
+        prev_end = a + len(r["bytes"]) // 2
+        by_func[f].append(r)
+
+    entries = sorted(by_func)
+    leaders = find_leaders(instructions, entries)
+    find_save_restore(instructions)
+    # Functions that save or load whole register contexts behave the same way.
+    SAVE_RESTORE.update(a for a, r in funcs.items() if re.fullmatch(
+        r"(__)?OS(Save|Load)(FPU)?Context|OSFillFPUContext|OSSwitchFiber(Ex)?|__?setjmp|longjmp", r["name"]))
+    print(f"save/restore routine addresses: {len(SAVE_RESTORE)}", flush=True)
+    bind = set(re.findall(r'\{"(\w+)", H_', (Path(__file__).resolve().parent.parent / "runtime" / "hle.c").read_text()))
+    HOOKABLE.update(e for e, _ in hle)
+    by_name = {}
+    for a, r in funcs.items():
+        by_name.setdefault(re.sub(r"\W", "_", r["name"]), []).append(a)
+    nat_src = (Path(__file__).resolve().parent.parent / "runtime" / "native.h").read_text()
+    # --native-skip=a,b: leave these natives out (calls go to the recompiled functions), for bisecting
+    skip = {n for a in sys.argv if a.startswith("--native-skip=") for n in a.split("=", 1)[1].split(",") if n}
+    for m in re.finditer(r"X\((\w+), \"([rf]*)\", '(.)', (\d)\)", nat_src):
+        if m[1] in skip:
+            continue
+        addrs = by_name.get(m[1], [])
+        if len(addrs) != 1:
+            raise SystemExit(f"native.h: {m[1]} matches {len(addrs)} functions")
+        NATIVE[addrs[0]] = (m[1], m[2], m[3], int(m[4]))
+    print(f"native functions: {len(NATIVE)}", flush=True)
+    HOOKABLE.update(a for a, r in funcs.items() if r["name"] in bind)
+    print(f"hookable functions: {len(HOOKABLE)}", flush=True)
+    del instructions
+    total = sum(len(v) for v in by_func.values())
+    per_part = total / PARTS
+    parts, cur, cnt = [], [], 0
+    for e in entries:
+        cur.append(e)
+        cnt += len(by_func[e])
+        if cnt >= per_part * (len(parts) + 1) and len(parts) < PARTS - 1:
+            parts.append(cur)
+            cur = []
+    parts.append(cur)
+
+    entry_set = set(entries)
+    with io.StringIO() as fh:
+        fh.write("/* GENERATED by tools/gen_c.py. Do not edit. */\n#pragma once\n#include \"gc_core.h\"\n#include \"native.h\"\n")
+        for e in entries:
+            fh.write(f"void f_{e:08X}(Ctx *c,uint32_t entry);\n")
+        write_if_changed(OUT / "funcs.h", fh.getvalue())
+
+    REGS.extend(sorted(((int(r["offset"], 16), int(r["size"])) for r in read("registers.csv")), key=lambda t: (t[1], t[0])))
+    if "--no-abi" not in FLAGS:  # on by default (it was opt-in, and a build without it lost ~6%)
+        rounds = abi_analyze(by_func, leaders)
+        print(f"abi: {rounds} rounds; read by indirect callees: {abi_names(ABI['ind_use']) or '-'}", flush=True)
+    mod_analyze(by_func, funcs)
+    g = Gen(entry_set, leaders)
+    with io.StringIO() as fh:
+        fh.write("/* GENERATED by tools/gen_c.py: small leaf functions inlined at direct calls. Do not edit. */\n"
+                 "#pragma once\n#include \"funcs.h\"\n#pragma GCC diagnostic ignored \"-Wunused-label\"\n"
+                 "#pragma GCC diagnostic ignored \"-Wunused-variable\"\n"
+                 "#pragma GCC diagnostic ignored \"-Wunused-but-set-variable\"\n\n")
+        for e in sorted(INLINE):
+            fh.write(g.function(e, funcs[e]["name"], by_func[e], inline=True) + "\n\n")
+        write_if_changed(OUT / "inl.h", fh.getvalue())
+    names = []
+    for n, part in enumerate(parts):
+        with io.StringIO() as fh:
+            fh.write("/* GENERATED by tools/gen_c.py from sheets/instructions.csv. Do not edit. */\n"
+                     "#include \"funcs.h\"\n#include \"inl.h\"\n#pragma GCC diagnostic ignored \"-Wunused-label\"\n"
+                     "#pragma GCC diagnostic ignored \"-Wunused-variable\"\n"
+                     "#pragma GCC diagnostic ignored \"-Wunused-but-set-variable\"\n\n")
+            for e in part:
+                name = funcs[e]["name"] if e in funcs else f"orphan_{e:08X} (code outside any function)"
+                fh.write(g.function(e, name, by_func[e]) + "\n\n")
+            write_if_changed(OUT / f"part_{n:02}.c", fh.getvalue())
+        print(f"part_{n:02}: {len(part)} functions", flush=True)
+
+    # Memory image from memory.csv, embedded with .incbin.
+    blobs, starts = defaultdict(bytearray), {}
+    for r in read("memory.csv"):
+        sec = r["section"]
+        starts.setdefault(sec, int(r["addr"], 16))
+        blobs[sec] += bytes.fromhex(r["hex"])
+    ident = {sec: re.sub(r"\W", "_", sec) for sec in blobs}
+    for sec, data in blobs.items():
+        write_if_changed(OUT / f"mem_{ident[sec]}.bin", bytes(data))
+    write_if_changed(OUT / "mem.S", "".join(
+        f'    .section .rodata.mem_{ident[s]},"a"\n    .balign 32\n    .global mem_{ident[s]}\nmem_{ident[s]}:\n'
+        f'    .incbin "mem_{ident[s]}.bin"\n' for s in blobs))
+
+    regs = read("registers.csv")
+    reg_space = max(int(r["offset"], 16) + int(r["size"]) for r in regs)
+    with io.StringIO() as fh:
+        fh.write("/* GENERATED by tools/gen_c.py. Do not edit. */\n#include \"funcs.h\"\n#include \"table.h\"\n\n")
+        fh.write(f"const uint32_t ENTRY_POINT = {meta['entry_point']}u;\n")
+        fh.write(f"const unsigned REG_SPACE = 0x{reg_space:x};\n")
+        fh.write(f"const char GAME_ID[] = \"{meta['game_id']}\";\n")
+        fh.write(f"const char DOL_SHA1[] = \"{meta['main_dol_sha1']}\";\n\n")
+        for s in blobs:
+            fh.write(f"extern const uint8_t mem_{ident[s]}[];\n")
+        fh.write("const MemSection SECTIONS[] = {\n")
+        for s, start in starts.items():
+            fh.write(f"    {{0x{start:08x}u, mem_{ident[s]}, {len(blobs[s])}u}},\n")
+        fh.write(f"}};\nconst unsigned SECTION_COUNT = {len(blobs)};\n\n")
+        fh.write("const FuncEntry FUNCS[] = {\n")
+        for e in entries:
+            end = max(int(r["addr"], 16) + len(r["bytes"]) // 2 for r in by_func[e])
+            fh.write(f"    {{0x{e:08x}u, 0x{end:08x}u, f_{e:08X}}},\n")
+        fh.write(f"}};\nconst unsigned FUNC_COUNT = {len(entries)};\n\n")
+        fh.write("/* Functions handled by the runtime's HLE (sheets/hle.csv). */\nconst NamedAddr HLE[] = {\n")
+        for e, name in hle:
+            fh.write(f'    {{0x{e:08x}u, "{name}"}},\n')
+        fh.write(f"}};\nconst unsigned HLE_COUNT = {len(hle)};\n\n")
+        hk = sorted(HOOKABLE) if "--hook-all" not in FLAGS else []
+        fh.write("/* Functions generated with the HLE check (empty: all of them). */\nconst uint32_t HOOKABLE[] = {"
+                 + ",".join(f"0x{a:08x}u" for a in hk) + ("" if hk else "0") + f"}};\nconst unsigned HOOKABLE_COUNT = {len(hk)};\n\n")
+        fh.write("/* --abi: candidate registers (bit i of abi_after's mask = entry i). */\nconst uint16_t ABI_CAND_OFF[] = {"
+                 + ",".join(f"0x{o:x}" for o, _ in _ABI_CAND) + "};\nconst uint8_t ABI_CAND_SIZE[] = {"
+                 + ",".join(str(z) for _, z in _ABI_CAND) + f"}};\nconst unsigned ABI_CAND_COUNT = {len(_ABI_CAND)};\n")
+        sus = ABI["suspect"]
+        fh.write("/* --abi: functions that read non-argument volatile registers at entry (never valid indirect\n"
+                 " * call targets under the EABI assumption; checked with MKDD_ABICHECK=1). */\nconst uint32_t ABI_SUSPECT[] = {"
+                 + ",".join(f"0x{a:08x}u" for a in sus) + ("" if sus else "0") + f"}};\nconst unsigned ABI_SUSPECT_COUNT = {len(sus)};\n\n")
+        fh.write("const NamedAddr NAMES[] = {\n")
+        for e in entries:
+            name = funcs[e]["name"] if e in funcs else f"orphan_{e:08X}"
+            fh.write(f'    {{0x{e:08x}u, "{name}"}},\n')
+        fh.write(f"}};\nconst unsigned NAME_COUNT = {len(entries)};\n")
+        write_if_changed(OUT / "table.c", fh.getvalue())
+    print(f"{len(entries)} functions in {len(parts)} parts, {total} instructions, register space 0x{reg_space:x}")
+
+
+if __name__ == "__main__":
+    main()
