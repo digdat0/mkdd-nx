@@ -39,11 +39,6 @@ sdmc:/switch/MKDD-NX/
 The first start takes longer while shaders are compiled; later starts reuse them. Press **-** at
 any time for the options menu.
 
-**Default settings:** 16:9 with the Wider field of view, HD textures off, Color Accurate, Rumble
-off, texture filtering Normal, docked resolution 2X, Border off, default button mapping, and every
-Debugging option (Show FPS, Unlock all, Logging, Profiler) off. Delete `config/settings.ini` to go
-back to them.
-
 ### App folder
 
 The app creates three folders next to the `.nro` and the disc image:
