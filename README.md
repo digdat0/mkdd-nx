@@ -1,5 +1,5 @@
 # MKDD-NX: Mario Kart: Double Dash!! 
-Static recompilation of the GameCube Mario Kart: Double Dash!! for Nintendo Switch (USA, GM4E01). 
+Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo Switch (USA, GM4E01). 
 
 **No game code or data is in this repository.** 
 **Bring your own legally dumped disc image of Mario Kart: Double Dash!! (USA, GM4E01). We do not condone piracy and will not respond to requests for game image files!**
