@@ -11,9 +11,8 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 - A Switch running custom firmware (Atmosphere) with the homebrew menu.
 - Your own dump of **Mario Kart: Double Dash!! (USA)**, game ID **GM4E01**, as `.iso`, `.gcm` or
   `.ciso`. Other regions (PAL GM4P01, Japan GM4J01) and the bundle/demo discs don't work: the game
-  checks the disc's `main.dol` and refuses any other version. A Redump-style name such as
-  `Mario Kart - Double Dash!! (USA).iso` is fine, but any file name works.
-- `MKDD-NX.nro`, built from that disc image on a PC (see [Build Instructions](https://github.com/digdat0/mkdd-nx/wiki/Build-Instructions): one command).
+  checks the disc's `main.dol` and refuses any other version.
+- `MKDD-NX.nro` from the releases section.
 
 **Setup:**
 
