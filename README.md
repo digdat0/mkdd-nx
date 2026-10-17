@@ -1,8 +1,7 @@
 # MKDD-NX: Mario Kart: Double Dash!! 
-
- Static recompilation for Nintendo Switch
-
 <img width="200" height="200" alt="Double Dash NX" src="Double%20Dash%20NX_%20Logo3.png" />
+
+Static recompilation for Nintendo Switch
 
 A native Switch homebrew build of Mario Kart: Double Dash!! (USA, GM4E01). The game's PowerPC
 code is translated to C ahead of time and compiled for the Switch's ARM CPU; the GameCube
