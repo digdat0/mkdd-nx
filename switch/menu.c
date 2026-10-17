@@ -43,12 +43,12 @@ static uint64_t mappable(void) {
 
 /* ---- settings.ini ---- */
 static void defaults(void) {
-    g_set.wide = false;
+    g_set.wide = true;
     g_set.show_fps = 0;
-    g_set.rumble = 2;
+    g_set.rumble = 0;
     g_set.unlock_all = false;
-    g_set.logging = 1;
-    g_set.hd_textures = true;
+    g_set.logging = 0;
+    g_set.hd_textures = false;
     g_set.fov[0] = 0; /* 4:3: the game's view */
     g_set.fov[1] = 2; /* 16:9: wider */
     g_set.aniso = 0;

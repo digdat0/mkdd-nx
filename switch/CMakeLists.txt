@@ -37,8 +37,8 @@ set_target_properties(MKDD-NX PROPERTIES LINKER_LANGUAGE CXX)
 
 nx_generate_nacp(MKDD-NX.nacp
     NAME "Mario Kart: Double Dash!! (recomp)"
-    AUTHOR "MKDD-Recomp / Switch port"
-    VERSION "0.1.0"
+    AUTHOR "digdat0"
+    VERSION "1.0.0"
 )
 nx_create_nro(MKDD-NX
     NACP MKDD-NX.nacp
