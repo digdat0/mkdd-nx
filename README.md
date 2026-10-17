@@ -120,17 +120,15 @@ any gcc or clang. Set `CC` to use another compiler.
 
 1. Download and extract the English pack. Find its `GM4E01` folder (the one Dolphin would load from
    `Load/Textures/GM4E01`, full of `tex1_..._.png` files).
-2. Convert it (about 6 minutes on a 12-thread PC; the result is about 790 MB). Keep the output outside
-   this repository:
+2. Convert it (about 6 minutes on a 12-thread PC; the result is about 790 MB). 
 
    ```bash
    py -3 tools/hdtex_pack.py "D:/Downloads/MKDD HD/GM4E01" "D:/Downloads/hd-textures.bin"
    ```
 
-   Add `--compare <folder>` to also write a dozen PNG | BC7 side-by-side images to check quality.
 3. Copy `hd-textures.bin` to `sdmc:/switch/MKDD-NX/`, next to `MKDD-NX.nro` (the name must be exactly
    `hd-textures.bin`).
-4. Start the game: **HD TEXTURES** in the - menu now shows ON (switch it off to compare). The hint
+4. Start the game: **HD TEXTURES** in the - menu now shows ON (switch it off to compare during a race). The hint
    on that row counts the textures currently shown in HD.
 
 Textures are matched the way Dolphin matches them (format, size and the XXH64 hash of the
