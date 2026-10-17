@@ -1,4 +1,5 @@
-# MKDD-NX: Mario Kart: Double Dash!! on Nintendo Switch (static recompilation)
+# MKDD-NX: Mario Kart: Double Dash!! 
+ Static recompilation for Nintendo Switch
 
 <img width="400" height="400" alt="Double Dash NX" src="Double%20Dash%20NX_%20Logo3.png" />
 
