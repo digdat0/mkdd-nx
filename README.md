@@ -3,14 +3,7 @@
 
 Static recompilation for Nintendo Switch
 
-A native Switch homebrew build of Mario Kart: Double Dash!! (USA, GM4E01). The game's PowerPC
-code is translated to C ahead of time and compiled for the Switch's ARM CPU; the GameCube
-hardware it talks to (OS threads, GX graphics, DSP audio, DVD, memory card, pads) is
-reimplemented in `runtime/`. No emulation of the CPU at run time.
-
-Based on [MKDD-Recomp](https://github.com/LeftInWalmart/MKDD-Recomp) (Rust/Bevy, PC): its
-spreadsheet pipeline, runtime design and renderer were ported to C / GLES here. Function names
-come from the [doldecomp/mkdd](https://github.com/doldecomp/mkdd) decompilation (CC0).
+A native Switch homebrew build of Mario Kart: Double Dash!! (USA, GM4E01). 
 
 **No game code or data is in this repository.** The generated C and the `.nro` built from it
 contain code recompiled from your own disc: they are for your personal use only and must not be
@@ -238,6 +231,10 @@ Headless PC test build (MSYS2 UCRT64 gcc): `pc/build_pc.sh <gen folder>`, then
 `pc/build/mkdd_pc.exe <disc image> [seconds] [pad script]`.
 
 ## Credits and licence
+
+Based on [MKDD-Recomp](https://github.com/LeftInWalmart/MKDD-Recomp) (Rust/Bevy, PC): its
+spreadsheet pipeline, runtime design and renderer were ported to C / GLES here. Function names
+come from the [doldecomp/mkdd](https://github.com/doldecomp/mkdd) decompilation (CC0).
 
 - [MKDD-Recomp](https://github.com/LeftInWalmart/MKDD-Recomp): the spreadsheet pipeline,
   runtime design and renderer this port is based on; the build fetches its sheets and scripts.
