@@ -520,6 +520,25 @@ void gx_subst_register(unsigned id, uint32_t fmt, uint32_t w, uint32_t h, uint64
     if (s_nsubst < 16) s_subst[s_nsubst++] = (__typeof__(s_subst[0])){fmt, w, h, hash, (uint8_t)id};
 }
 /* New textures only (cache misses): the full hash runs only when format and size match. */
+static volatile uint32_t s_movie[8][3]; /* recent movie plane sets (Y, U, V addresses) */
+static volatile unsigned s_nmovie;
+void gx_movie_planes(const uint32_t virt[3]) {
+    const uint32_t planes[3] = {virt[0] & 0x01FFFFFFu, virt[1] & 0x01FFFFFFu, virt[2] & 0x01FFFFFFu}; /* as the texture registers hold them */
+    for (unsigned i = 0; i < 8; i++)
+        if (s_movie[i][0] == planes[0] && s_movie[i][1] == planes[1] && s_movie[i][2] == planes[2]) return;
+    unsigned i = s_nmovie++ % 8;
+    s_movie[i][0] = 0; /* never matched half-written */
+    s_movie[i][2] = planes[2];
+    s_movie[i][1] = planes[1];
+    s_movie[i][0] = planes[0];
+}
+static uint8_t movie_plane(uint32_t addr) {
+    for (unsigned i = 0; i < 8; i++)
+        for (unsigned k = 0; k < 3; k++)
+            if (s_movie[i][0] && s_movie[i][k] == addr) return (uint8_t)(k + 1);
+    return 0;
+}
+
 static uint8_t subst_id(uint32_t fmt, uint32_t w, uint32_t h, const uint8_t *data, size_t size) {
     uint64_t hash = 0;
     for (unsigned i = 0; i < s_nsubst; i++) {
@@ -570,6 +589,9 @@ static uint64_t texture_inner(unsigned map) {
     memcpy(t->raw, data, size);
     t->raw_len = size;
     t->subst = subst_id(fmt, w, h, data, size);
+    t->movie = fmt == 1 ? movie_plane(addr) : 0; /* I8 */
+    static bool movie_logged;
+    if (t->movie && !movie_logged) { movie_logged = true; rt_log("gx: movie frame planes drawn as textures (first: %ux%u), scaled by the renderer", w, h); }
     if (paletted) {
         uint32_t t0 = tlut_addr < TMEM_SIZE - 512 ? tlut_addr : TMEM_SIZE - 512;
         t->tlut = malloc(512);

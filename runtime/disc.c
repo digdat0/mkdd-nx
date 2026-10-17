@@ -1,4 +1,4 @@
-/* Read-only access to the game disc image (.iso/.gcm or .ciso). C port of gc-runtime's disc.rs. */
+/* Read-only access to the game disc image (.iso/.gcm, .ciso or .rvz). C port of gc-runtime's disc.rs. */
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -11,6 +11,7 @@ static PMutex s_lock;
 static uint64_t s_bs;          /* CISO block size, 0 for plain ISO */
 static int64_t *s_map;         /* CISO block -> stored slot, -1 = missing */
 static size_t s_nblocks;
+static bool s_rvz;             /* RVZ image: reads go through rvz.c */
 /* Reads land here first, never straight in guest RAM: on Switch a large fread becomes an fs
  * IPC receive buffer, and the kernel unmaps its whole pages from the process until the read
  * returns, so the GX decoder thread faulted reading a display list in those pages. */
@@ -44,6 +45,17 @@ bool disc_open(const char *path, char *err, size_t errlen) {
         s_map = malloc(s_nblocks * sizeof *s_map);
         int64_t n = 0;
         for (size_t i = 0; i < s_nblocks; i++) s_map[i] = hdr[8 + i] ? n++ : -1;
+    } else if (!memcmp(hdr, "RVZ", 4)) {
+        uint64_t size;
+        char why[160];
+        if (!rvz_open(s_file, &size, why, sizeof why)) {
+            free(hdr);
+            fclose(s_file);
+            s_file = NULL;
+            snprintf(err, errlen, "%s: %s", path, why);
+            return false;
+        }
+        s_rvz = true;
     }
     free(hdr);
     return true;
@@ -57,7 +69,8 @@ void disc_read(uint64_t off, void *out, size_t n) {
     if (!s_file) { memset(out, 0, n); return; }
     pmutex_lock(&s_lock);
     const uint64_t start = off;
-    size_t done = 0;
+    size_t done = s_rvz ? n : 0;
+    if (s_rvz) rvz_read(off, dst, n); /* decompresses into its own cache, never straight into guest RAM */
     while (done < n) {
         int64_t pos;
         size_t take;

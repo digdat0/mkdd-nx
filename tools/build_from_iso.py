@@ -1,6 +1,6 @@
 """One-step build: your own Mario Kart: Double Dash!! (USA) disc image -> MKDD-NX.nro.
 
-usage: python tools/build_from_iso.py <disc image (.iso/.gcm/.ciso)> [options]
+usage: python tools/build_from_iso.py <disc image (.iso/.gcm/.ciso/.rvz)> [options]
        (Windows: py -3 tools/build_from_iso.py ...)
 
 Steps (each is skipped when its output is already there; --force redoes them all):
@@ -57,13 +57,25 @@ def run(cmd, **kw):
 
 # ---- disc ----
 class Disc:
-    """Plain .iso/.gcm, or .ciso (block map after a 'CISO' header)."""
+    """Plain .iso/.gcm, .ciso (block map after a 'CISO' header) or .rvz (tools/rvz.py)."""
 
     def __init__(self, path):
         self.f = open(path, "rb")
         hdr = self.f.read(0x8000)
         self.bs = 0
-        if hdr[:4] == b"CISO":
+        self.rvz = None
+        if hdr[:4] == b"RVZ":
+            try:
+                import zstandard  # noqa: F401  (RVZ's usual compression)
+            except ImportError:
+                fail("reading an .rvz needs the zstandard package: py -3 -m pip install zstandard")
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import rvz
+            try:
+                self.rvz = rvz.RVZ(path)
+            except ValueError as e:
+                fail(f"{path}: {e}")
+        elif hdr[:4] == b"CISO":
             self.bs = struct.unpack_from("<I", hdr, 4)[0]
             self.map, n = [], 0
             for used in hdr[8:0x8000]:
@@ -71,6 +83,8 @@ class Disc:
                 n += used != 0
 
     def read(self, off, size):
+        if self.rvz:
+            return self.rvz.read(off, size)
         if not self.bs:
             self.f.seek(off)
             return self.f.read(size)

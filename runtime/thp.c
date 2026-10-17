@@ -8,6 +8,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include "gx.h"
 #include "rt.h"
 
 static const uint8_t ZIGZAG[64] = {
@@ -342,6 +343,7 @@ bool thp_decode(uint32_t file, const uint32_t dst[3]) {
         }
     }
     free(out);
+    if (ok) gx_movie_planes(dst);
     return ok;
 #undef AT
 #undef BE16

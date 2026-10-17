@@ -9,8 +9,9 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 **You need:**
 
 - A Switch running custom firmware (Atmosphere) with the homebrew menu.
-- Your own dump of **Mario Kart: Double Dash!! (USA)**, game ID **GM4E01**, as `.iso`, `.gcm` or
-  `.ciso`. Other regions (PAL GM4P01, Japan GM4J01) and the bundle/demo discs don't work: the game
+- Your own dump of **Mario Kart: Double Dash!! (USA)**, game ID **GM4E01**, as `.iso`, `.gcm`,
+  `.ciso` or `.rvz` (Dolphin's compressed format, read as-is: no need to convert it, and it takes
+  about a third of the space). Other regions (PAL GM4P01, Japan GM4J01) and the bundle/demo discs don't work: the game
   checks the disc's `main.dol` and refuses any other version.
 - `MKDD-NX.nro` from the releases section.
 
@@ -18,8 +19,9 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 
 1. On the SD card, create the folder `sdmc:/switch/MKDD-NX/`.
 2. Copy `MKDD-NX.nro` into it.
-3. Copy your disc image into the same folder. Keep only one disc image there: the game uses the
-   first `.iso` / `.gcm` / `.ciso` it finds.
+3. Copy your disc image into the same folder. If there is more than one, the game uses an `.iso` /
+   `.gcm` first, then `.ciso`, then `.rvz`. Swapping an `.iso` for an `.rvz` (or back) is fine: saves,
+   settings and HD textures carry over.
 4. Optional: add `hd-textures.bin` there too (see [HD textures](#hd-textures)).
 5. Start it from the homebrew menu with **title takeover**: hold **R** while starting any game
    from the HOME menu, then pick MKDD-NX. (The album / applet mode has too little memory.)
@@ -27,7 +29,7 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 ```
 sdmc:/switch/MKDD-NX/
     MKDD-NX.nro
-    Mario Kart - Double Dash!! (USA).iso
+    Mario Kart - Double Dash!! (USA).iso     (or .rvz)
     hd-textures.bin          (optional)
 ```
 

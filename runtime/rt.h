@@ -35,6 +35,9 @@ void machine_run(Ctx *boot); /* runs the game from the DOL entry point on this t
 bool disc_open(const char *path, char *err, size_t errlen);
 bool disc_present(void);
 void disc_read(uint64_t off, void *out, size_t n);
+/* RVZ images (runtime/rvz.c), used by disc.c */
+bool rvz_open(FILE *f, uint64_t *disc_size, char *err, size_t errlen);
+void rvz_read(uint64_t off, uint8_t *out, size_t n);
 uint32_t disc_read_u32(uint64_t off);
 bool disc_find(const char *path, uint64_t *off, uint32_t *size); /* file in the disc's FST */
 /* Replace n bytes at disc offset off in every later read (front-end layout fixes; at most 1024 bytes). */

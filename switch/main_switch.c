@@ -129,22 +129,26 @@ static void fatal(const char *line1, const char *line2) {
     exit(0);
 }
 
-/* First .iso / .gcm / .ciso in the app folder. */
+/* The disc image in the app folder. With several, the fastest to read wins: .iso / .gcm, then
+ * .ciso, then .rvz (the same game either way: each is checked against the supported main.dol). */
 static bool find_disc(char *out, size_t n) {
+    static const char *EXT[] = {".iso", ".gcm", ".ciso", ".rvz"};
+    static const int RANK[] = {0, 0, 1, 2};
     DIR *d = opendir(APP_DIR);
     if (!d) return false;
     struct dirent *e;
-    bool found = false;
+    int best = 99;
     while ((e = readdir(d))) {
         const char *dot = strrchr(e->d_name, '.');
-        if (dot && (!strcasecmp(dot, ".iso") || !strcasecmp(dot, ".gcm") || !strcasecmp(dot, ".ciso"))) {
-            snprintf(out, n, APP_DIR "/%s", e->d_name);
-            found = true;
-            break;
-        }
+        for (int i = 0; dot && i < 4; i++)
+            if (!strcasecmp(dot, EXT[i]) && RANK[i] < best) {
+                snprintf(out, n, APP_DIR "/%s", e->d_name);
+                best = RANK[i];
+            }
     }
     closedir(d);
-    return found;
+    if (best < 99) rt_log("disc: using %s", out);
+    return best < 99;
 }
 
 /* ---- audio: SDL pulls from the AI queue, resampled from the game rate (32/48 kHz) ---- */
@@ -440,11 +444,15 @@ int main(int argc, char **argv) {
 
     char disc[512], err[512];
     screen("LOOKING FOR THE DISC IMAGE", NULL, 0.05f);
-    if (!find_disc(disc, sizeof disc)) fatal("NO DISC IMAGE FOUND", "PUT YOUR GM4E01 .ISO IN /SWITCH/MKDD-NX/");
+    if (!find_disc(disc, sizeof disc)) fatal("NO DISC IMAGE FOUND", "PUT YOUR GM4E01 .ISO OR .RVZ IN /SWITCH/MKDD-NX/");
     if (disc_open(disc, err, sizeof err)) {
         menu_font_load();  /* the loading screen's letters */
         pause_art_init();  /* the pause screen's controller picture, drawn as a Switch */
         render_set_subst(pause_art_texture);
+    } else {
+        rt_log("disc: %s", err);
+        fatal("COULD NOT READ THE DISC IMAGE", strstr(err, "compression") ? "RVZ: CONVERT IT AGAIN IN DOLPHIN WITH ZSTANDARD"
+                                                                         : "THE FILE IS DAMAGED: SEE LOGS/MKDD.LOG");
     }
     screen("STARTING", NULL, 0.3f);
     if (!render_init()) fatal("GRAPHICS INIT FAILED", "SEE MKDD.LOG");

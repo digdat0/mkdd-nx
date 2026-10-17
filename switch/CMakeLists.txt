@@ -31,14 +31,14 @@ set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/pause_art_data.S PROPERT
     OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/pause_console.rgba;${CMAKE_CURRENT_SOURCE_DIR}/pause_badges.rgba")
 
 add_executable(MKDD-NX ${SW_SOURCES} ${RT_SOURCES} ${GEN_SOURCES} ${GEN_DIR}/table.c ${CMAKE_CURRENT_SOURCE_DIR}/pause_art_data.S)
-target_link_libraries(MKDD-NX SDL2 EGL GLESv2 glapi drm_nouveau nx m)
+target_link_libraries(MKDD-NX SDL2 EGL GLESv2 glapi drm_nouveau zstd nx m)
 # Mesa is C++: link with the C++ driver so libstdc++ / libsupc++ come in
 set_target_properties(MKDD-NX PROPERTIES LINKER_LANGUAGE CXX)
 
 nx_generate_nacp(MKDD-NX.nacp
     NAME "Mario Kart: Double Dash!! (recomp)"
     AUTHOR "digdat0"
-    VERSION "1.0.0"
+    VERSION "1.1.0"
 )
 nx_create_nro(MKDD-NX
     NACP MKDD-NX.nacp

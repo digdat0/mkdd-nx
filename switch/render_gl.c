@@ -322,6 +322,85 @@ static const char *BLIT_FS =
     "    o_color = vec4(clamp(c, 0.0, 1.0), 1.0);\n"
     "}\n";
 
+/* Movie frames (THP: the picture as Y, U, V I8 planes, colour at half size), redrawn at twice the
+ * plane size before the game's draw samples them: MOVIE_DEBLOCK_FS smooths the JPEG 8x8 block
+ * edges in flat areas, MOVIE_LUMA_FS scales brightness with Catmull-Rom plus light sharpening,
+ * MOVIE_CHROMA_FS scales each colour plane guided by brightness (a sample counts less the more
+ * its brightness differs), so colour edges follow the picture's edges instead of bleeding. */
+static const char *MOVIE_DEBLOCK_FS =
+    "#version 320 es\n"
+    "precision highp float;\n"
+    "precision highp int;\n"
+    "uniform highp sampler2D u_y;\n"
+    "out vec4 o_color;\n"
+    "float Y(ivec2 p) { return texelFetch(u_y, clamp(p, ivec2(0), textureSize(u_y, 0) - 1), 0).r; }\n"
+    /* correction for texel p from the block edge across direction d (x: p's coordinate along d) */
+    "float edge(ivec2 p, ivec2 d, int x, int n) {\n"
+    "    int r = x & 7, b;\n"
+    "    if (r >= 6) b = x - r + 8; else if (r <= 1) b = x - r; else return 0.0;\n"
+    "    if (b <= 0 || b >= n) return 0.0;\n"
+    "    ivec2 q = p + d * (b - x);\n"
+    "    float p1 = Y(q - 2 * d), p0 = Y(q - d), q0 = Y(q), q1 = Y(q + d), t = 10.0 / 255.0;\n"
+    "    if (abs(q0 - p0) >= t || abs(p1 - p0) >= t * 0.5 || abs(q1 - q0) >= t * 0.5) return 0.0;\n"
+    "    float dd = (q0 - p0) * 0.375;\n"
+    "    int k = x - b;\n"
+    "    return k == -1 ? dd : k == 0 ? -dd : k == -2 ? dd / 3.0 : -dd / 3.0;\n"
+    "}\n"
+    "void main() {\n"
+    "    ivec2 p = ivec2(gl_FragCoord.xy), n = textureSize(u_y, 0);\n"
+    "    float v = Y(p) + edge(p, ivec2(1, 0), p.x, n.x) + edge(p, ivec2(0, 1), p.y, n.y);\n"
+    "    o_color = vec4(clamp(v, 0.0, 1.0));\n"
+    "}\n";
+
+static const char *MOVIE_LUMA_FS =
+    "#version 320 es\n"
+    "precision highp float;\n"
+    "precision highp int;\n"
+    "uniform highp sampler2D u_y;\n"
+    "out vec4 o_color;\n"
+    "float Y(ivec2 p) { return texelFetch(u_y, clamp(p, ivec2(0), textureSize(u_y, 0) - 1), 0).r; }\n"
+    "void main() {\n"
+    "    vec2 s = gl_FragCoord.xy * 0.5 - 0.5, b = floor(s), f = s - b;\n"
+    "    vec2 w[4];\n"
+    "    w[0] = f * (-0.5 + f * (1.0 - 0.5 * f));\n"
+    "    w[1] = 1.0 + f * f * (-2.5 + 1.5 * f);\n"
+    "    w[2] = f * (0.5 + f * (2.0 - 1.5 * f));\n"
+    "    w[3] = f * f * (-0.5 + 0.5 * f);\n"
+    "    ivec2 i = ivec2(b);\n"
+    "    float c = 0.0;\n"
+    "    for (int y = 0; y < 4; y++)\n"
+    "        for (int x = 0; x < 4; x++) c += w[x].x * w[y].y * Y(i + ivec2(x - 1, y - 1));\n"
+    "    float l = mix(mix(Y(i), Y(i + ivec2(1, 0)), f.x), mix(Y(i + ivec2(0, 1)), Y(i + ivec2(1, 1)), f.x), f.y);\n"
+    "    o_color = vec4(clamp(c + 0.35 * (c - l), 0.0, 1.0));\n"
+    "}\n";
+
+static const char *MOVIE_CHROMA_FS =
+    "#version 320 es\n"
+    "precision highp float;\n"
+    "precision highp int;\n"
+    "uniform highp sampler2D u_c;\n" /* U or V plane */
+    "uniform highp sampler2D u_g;\n" /* deblocked brightness, linear filtering */
+    "uniform vec2 u_out;\n"
+    "out vec4 o_color;\n"
+    "void main() {\n"
+    "    vec2 uv = gl_FragCoord.xy / u_out;\n"
+    "    ivec2 n = textureSize(u_c, 0);\n"
+    "    float g0 = texture(u_g, uv).r;\n"
+    "    vec2 s = uv * vec2(n) - 0.5, b = floor(s), f = s - b;\n"
+    "    float sum = 0.0, wsum = 0.0;\n"
+    "    for (int y = -1; y <= 2; y++)\n"
+    "        for (int x = -1; x <= 2; x++) {\n"
+    "            ivec2 t = clamp(ivec2(b) + ivec2(x, y), ivec2(0), n - 1);\n"
+    "            vec2 d = abs(vec2(float(x), float(y)) - f);\n"
+    "            float ws = max(0.0, 1.0 - d.x / 1.5) * max(0.0, 1.0 - d.y / 1.5);\n"
+    "            float dg = (g0 - texture(u_g, (vec2(t) + 0.5) / vec2(n)).r) / 0.06;\n"
+    "            float w = ws * (exp(-0.5 * dg * dg) + 0.002);\n"
+    "            sum += w * texelFetch(u_c, t, 0).r;\n"
+    "            wsum += w;\n"
+    "        }\n"
+    "    o_color = vec4(sum / max(wsum, 1e-5));\n"
+    "}\n";
+
 typedef struct { GLuint tex, fbo; uint32_t w, h; } Target;
 /* Streamed per-frame data: NSLOT buffers of each kind used round-robin, each slot guarded by a
  * fence, written through unsynchronised maps (re-specifying a buffer with glBufferData every
@@ -333,7 +412,9 @@ typedef struct { Stream vb, ib, ub, xb; GLuint vao, xtex; GLsync fence; uint32_t
 /* chans: texels stored as 1 (I: R8), 2 (I, A: RG8, see gx_texture_decode_compact) or 4 (RGBA8) bytes */
 /* hd: 0 game texture, 1 HD replacement loading (hdtex.h), 2 showing the HD replacement (BC7 with
  * mipmaps, its own GL texture: deleted on eviction, not pooled) */
-typedef struct { GLuint tex; uint8_t wrap_s, wrap_t, chans, subst, hd; bool linear; uint64_t used, key; uint32_t w, h, hd_bytes; } GlTexture;
+/* movie: plane of a movie frame (GxTexture.movie); enh_set / enh_gen: its redrawn version in M.set
+ * (valid while that set's gen still matches) */
+typedef struct { GLuint tex; uint8_t wrap_s, wrap_t, chans, subst, hd, movie, enh_set; bool linear; uint64_t used, key; uint32_t w, h, hd_bytes, enh_gen; } GlTexture;
 /* Evicted GL textures kept for reuse by a new texture of the same size (glTexSubImage2D): movies
  * and render-to-texture effects make a new texture every frame, and deleting a nouveau texture
  * the GPU used recently waits for the GPU. */
@@ -824,6 +905,21 @@ static void state_reset(void) {
 static unsigned (*s_subst)(unsigned id);
 void render_set_subst(unsigned (*texture)(unsigned id)) { s_subst = texture; }
 
+/* Redrawn movie planes (see MOVIE_DEBLOCK_FS): a few sets in turn, so a set is not redrawn while
+ * the GPU may still be drawing the frame that used it. */
+#define MOVIE_SETS 4
+static struct {
+    GLuint prog_deblock, prog_luma, prog_chroma;
+    GLint chroma_out;
+    int state;          /* 0 not tried, 1 ready, -1 shaders failed (movies drawn as before) */
+    GLuint fbo, yd;     /* yd: deblocked brightness at the plane size */
+    uint32_t w, h;
+    struct { GLuint y, u, v; uint32_t gen; } set[MOVIE_SETS];
+    unsigned next;
+    uint32_t gen;
+    uint64_t seen_frames, seen_tick;
+} M;
+
 /* GL texture + sampler for a texture slot key (decoded texture, EFB copy, or white). */
 static void bind_slot(unsigned unit, uint64_t key) {
     if (!key) {
@@ -898,6 +994,9 @@ static void bind_slot(unsigned unit, uint64_t key) {
         gt->wrap_t = t->wrap_t > 2 ? 0 : t->wrap_t;
         gt->linear = t->linear;
         gt->subst = t->subst;
+        gt->movie = t->movie;
+        gt->enh_set = 0;
+        gt->enh_gen = 0;
         gt->key = key;
         gt->hd = 0;
         if (R.hd_on && !t->subst) {
@@ -908,6 +1007,11 @@ static void bind_slot(unsigned unit, uint64_t key) {
         gx_texture_release(t);
     }
     gt->used = R.tick;
+    if (gt->movie && gt->enh_gen && M.set[gt->enh_set].gen == gt->enh_gen) {
+        GLuint e = gt->movie == 1 ? M.set[gt->enh_set].y : gt->movie == 2 ? M.set[gt->enh_set].u : M.set[gt->enh_set].v;
+        unit_bind(unit, e, R.samplers[gt->wrap_s][gt->wrap_t][1]);
+        return;
+    }
     GLuint sub = gt->subst && s_subst ? s_subst(gt->subst) : 0;
     if (sub) { unit_bind(unit, sub, R.samplers[0][0][1]); return; } /* clamped, linear */
     unit_bind(unit, gt->tex, gt->hd == 2 ? R.samplers_mip[gt->wrap_s][gt->wrap_t] : R.samplers[gt->wrap_s][gt->wrap_t][gt->linear]);
@@ -1155,6 +1259,111 @@ static void decode_copy(const EfbCopy *e, uint32_t scale, CopyOp *c) {
     c->vfilter[3] = (float)(cmd & 3);
 }
 
+static bool movie_ready(void) {
+    if (M.state) return M.state > 0;
+    M.prog_deblock = link_program(FULL_VS, MOVIE_DEBLOCK_FS, "movie-deblock");
+    M.prog_luma = link_program(FULL_VS, MOVIE_LUMA_FS, "movie-luma");
+    M.prog_chroma = link_program(FULL_VS, MOVIE_CHROMA_FS, "movie-chroma");
+    if (!M.prog_deblock || !M.prog_luma || !M.prog_chroma) { M.state = -1; return false; }
+    glUseProgram(M.prog_deblock);
+    glUniform1i(glGetUniformLocation(M.prog_deblock, "u_y"), 0);
+    glUseProgram(M.prog_luma);
+    glUniform1i(glGetUniformLocation(M.prog_luma, "u_y"), 0);
+    glUseProgram(M.prog_chroma);
+    glUniform1i(glGetUniformLocation(M.prog_chroma, "u_c"), 0);
+    glUniform1i(glGetUniformLocation(M.prog_chroma, "u_g"), 1);
+    M.chroma_out = glGetUniformLocation(M.prog_chroma, "u_out");
+    R.cur_prog = ~0u;
+    glGenFramebuffers(1, &M.fbo);
+    M.state = 1;
+    rt_log("render: movie frames are redrawn (deblocked, scaled 2x, colour guided by brightness)");
+    return true;
+}
+
+static void movie_tex(GLuint *t, uint32_t w, uint32_t h) {
+    if (*t) glDeleteTextures(1, t);
+    glGenTextures(1, t);
+    if (R.cur_unit != 0) { glActiveTexture(GL_TEXTURE0); R.cur_unit = 0; }
+    glBindTexture(GL_TEXTURE_2D, *t);
+    R.cur_tex[0] = *t;
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R8, (GLsizei)w, (GLsizei)h);
+    /* sampled as I8, like the game's planes */
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_RED);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_RED);
+}
+
+static void movie_pass(GLuint prog, GLuint dst, uint32_t w, uint32_t h) {
+    use_program(prog);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst, 0);
+    glViewport(0, 0, (GLsizei)w, (GLsizei)h);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+}
+
+/* Redraw one movie frame's planes (y: w x h, u and v: half that) into the next set. */
+static void movie_enhance(GlTexture *y, GlTexture *u, GlTexture *v) {
+    uint32_t w = y->w, h = y->h, W = w * 2, H = h * 2;
+    if (M.w != w || M.h != h) {
+        movie_tex(&M.yd, w, h);
+        for (unsigned s = 0; s < MOVIE_SETS; s++) {
+            movie_tex(&M.set[s].y, W, H);
+            movie_tex(&M.set[s].u, W, H);
+            movie_tex(&M.set[s].v, W, H);
+            M.set[s].gen = 0;
+        }
+        M.w = w;
+        M.h = h;
+    }
+    unsigned s = M.next++ % MOVIE_SETS;
+    glBindFramebuffer(GL_FRAMEBUFFER, M.fbo);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    R.pipe_valid = false;
+    apply_cull(0);
+    glBindVertexArray(R.empty_vao);
+    unit_bind(1, 0, 0); /* yd is the next target: not bound for sampling meanwhile */
+    unit_bind(0, y->tex, R.samplers[0][0][0]);
+    movie_pass(M.prog_deblock, M.yd, w, h);
+    unit_bind(0, M.yd, R.samplers[0][0][0]);
+    movie_pass(M.prog_luma, M.set[s].y, W, H);
+    use_program(M.prog_chroma);
+    glUniform2f(M.chroma_out, (float)W, (float)H);
+    unit_bind(1, M.yd, R.samplers[0][0][1]);
+    unit_bind(0, u->tex, R.samplers[0][0][0]);
+    movie_pass(M.prog_chroma, M.set[s].u, W, H);
+    unit_bind(0, v->tex, R.samplers[0][0][0]);
+    movie_pass(M.prog_chroma, M.set[s].v, W, H);
+    M.set[s].gen = ++M.gen;
+    y->enh_set = u->enh_set = v->enh_set = (uint8_t)s;
+    y->enh_gen = u->enh_gen = v->enh_gen = M.gen;
+}
+
+/* While a movie plays: redraw the planes of each draw that samples a movie frame's Y, U and V. */
+static void movie_prepass(const Frame *f) {
+    if (g_thp_frames != M.seen_frames) { M.seen_frames = g_thp_frames; M.seen_tick = R.tick; }
+    if (!M.seen_tick || R.tick - M.seen_tick > 60 || M.state < 0) return;
+    for (size_t i = 0; i < f->batches.len; i++) {
+        const uint64_t *k = f->batches.data[i].tev.textures;
+        GlTexture *pl[4] = {0};
+        for (unsigned m = 0; m < 8; m++) {
+            uint64_t idx;
+            if (!k[m] || (k[m] & 0xFFFF000000000000ull) == RT_TAG) continue;
+            if (!u64map_get(&R.textures, k[m], &idx)) {
+                bind_slot(m, k[m]); /* upload it now (the draw would anyway) */
+                if (!u64map_get(&R.textures, k[m], &idx)) continue;
+            }
+            GlTexture *gt = &R.tex[idx];
+            if (gt->movie) pl[gt->movie] = gt;
+        }
+        if (!pl[1] || !pl[2] || !pl[3] || pl[2]->w * 2 != pl[1]->w || pl[3]->w != pl[2]->w) continue;
+        if (pl[1]->enh_gen && M.set[pl[1]->enh_set].gen == pl[1]->enh_gen) continue; /* done */
+        if (!movie_ready()) return;
+        movie_enhance(pl[1], pl[2], pl[3]);
+    }
+}
+
 static void bind_efb(void) {
     glBindFramebuffer(GL_FRAMEBUFFER, R.efb_color.fbo);
     glViewport(0, 0, (GLsizei)R.efb_w, (GLsizei)R.efb_h);
@@ -1245,6 +1454,7 @@ bool render_update(int scale_in) {
         glUnmapBuffer(GL_UNIFORM_BUFFER);
     }
 
+    movie_prepass(f);
     size_t next = 0;
     R.stat_batches = (uint32_t)f->batches.len;
     R.stat_verts = f->nverts;
