@@ -108,6 +108,28 @@ The Switch can't use the pack's PNGs directly (about 1 GB, and decoding them wou
 `tools/hdtex_pack.py` turns them into one file of GPU-ready BC7 textures, at the pack's full
 resolution with mipmaps.
 
+### The easy way: MKDD-NX HD Textures app
+
+Download the app for your computer from the [latest release](https://github.com/digdat0/mkdd-nx/releases/latest):
+`MKDD-NX-HD-Textures.exe` (Windows) or `MKDD-NX-HD-Textures-arm64.dmg` / `-x86_64.dmg` (Mac with Apple
+Silicon / Intel). Nothing else needs installing.
+
+1. Download and extract the English pack (link above, also in the app).
+2. Open the app. Windows may say "Windows protected your PC": click **More info**, then **Run anyway**.
+   On a Mac, open the `.dmg`, drag the app to Applications, then right-click it and choose **Open** the
+   first time (it isn't signed by Apple).
+3. **Texture pack:** choose the pack's `GM4E01` folder (or the folder you extracted it into: the app finds
+   `GM4E01` inside).
+4. **Output folder:** choose where to save `hd-textures.bin` (about 800 MB).
+5. **Convert.** It takes about 5-15 minutes depending on the computer, and keeps the computer awake, so you
+   can walk away. When it's done, the window says so and where the file is.
+6. Copy `hd-textures.bin` to `sdmc:/switch/MKDD-NX/`, next to `MKDD-NX.nro` (the name must be exactly
+   `hd-textures.bin`).
+7. Start the game: **HD TEXTURES** in the - menu now shows ON (switch it off to compare during a race). The
+   hint on that row counts the textures currently shown in HD.
+
+### From the command line
+
 **Needs:** Python 3 with Pillow (`py -3 -m pip install pillow`) and a C compiler for the bundled BC7
 encoder (`tools/bc7enc.c`, built automatically on first run). On Windows that is MSYS2's UCRT64 gcc
 (`pacman -S mingw-w64-ucrt-x86_64-gcc` in an MSYS2 shell, found at `C:\msys64\ucrt64\bin`); elsewhere
@@ -115,16 +137,16 @@ any gcc or clang. Set `CC` to use another compiler.
 
 1. Download and extract the English pack. Find its `GM4E01` folder (the one Dolphin would load from
    `Load/Textures/GM4E01`, full of `tex1_..._.png` files).
-2. Convert it (about 6 minutes on a 12-thread PC; the result is about 790 MB). 
+2. Convert it (about 6 minutes on a 12-thread PC; the result is about 790 MB).
 
    ```bash
    py -3 tools/hdtex_pack.py "D:/Downloads/MKDD HD/GM4E01" "D:/Downloads/hd-textures.bin"
    ```
 
-3. Copy `hd-textures.bin` to `sdmc:/switch/MKDD-NX/`, next to `MKDD-NX.nro` (the name must be exactly
-   `hd-textures.bin`).
-4. Start the game: **HD TEXTURES** in the - menu now shows ON (switch it off to compare during a race). The hint
-   on that row counts the textures currently shown in HD.
+3. Copy it to the SD card and turn it on, as in steps 6 and 7 above.
+
+The app is built from `tools/hdtex_app/` (`build_app.py`; GitHub Actions builds the Windows and Mac
+versions for each release).
 
 Textures are matched the way Dolphin matches them (format, size and the XXH64 hash of the
 original texture), so other packs in Dolphin's `tex1_` format work the same way. HD textures load

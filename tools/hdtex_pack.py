@@ -21,6 +21,7 @@ Output (little-endian):
 """
 import argparse
 import ctypes
+import io
 import os
 import re
 import shutil
@@ -49,6 +50,10 @@ def fail(msg):
     sys.exit("hdtex_pack: " + msg)
 
 
+class PackError(Exception):
+    """A problem the user can fix (wrong folder, no space, no compiler): the message says what."""
+
+
 def find_cc():
     cands = [os.environ.get("CC")]
     if os.name == "nt":
@@ -60,26 +65,47 @@ def find_cc():
     return None
 
 
+def build_encoder(out, native=True):
+    """Compile tools/bc7enc.c into the shared library out (native: tuned for this CPU only)."""
+    cc = find_cc()
+    if not cc:
+        raise PackError("no C compiler found to build tools/bc7enc.c (install MSYS2 ucrt64 gcc, or set CC)")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [cc, "-O3"] + (["-march=native"] if native else []) + ["-shared", "-o", str(out), str(SRC)]
+    cmd.insert(2, "-static" if os.name == "nt" else "-fPIC")
+    env = dict(os.environ)
+    env["PATH"] = str(Path(cc).parent) + os.pathsep + env.get("PATH", "")
+    r = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    if r.returncode:
+        raise PackError("building the BC7 encoder failed:\n" + r.stderr)
+
+
 def load_encoder():
-    if not LIB.exists() or LIB.stat().st_mtime < SRC.stat().st_mtime:
-        cc = find_cc()
-        if not cc:
-            fail("no C compiler found to build tools/bc7enc.c (install MSYS2 ucrt64 gcc, or set CC)")
-        LIB.parent.mkdir(exist_ok=True)
-        cmd = [cc, "-O3", "-march=native", "-shared", "-o", str(LIB), str(SRC)]
-        if os.name == "nt":
-            cmd.insert(3, "-static")
-        else:
-            cmd.insert(3, "-fPIC")
-        env = dict(os.environ)
-        env["PATH"] = str(Path(cc).parent) + os.pathsep + env.get("PATH", "")
-        r = subprocess.run(cmd, env=env, capture_output=True, text=True)
-        if r.returncode:
-            fail("building the BC7 encoder failed:\n" + r.stderr)
-    lib = ctypes.CDLL(str(LIB))
+    if getattr(sys, "frozen", False):  # the HD texture app: the library is bundled next to the code
+        lib_path = Path(sys._MEIPASS) / LIB.name
+    else:
+        lib_path = LIB
+        if not LIB.exists() or LIB.stat().st_mtime < SRC.stat().st_mtime:
+            build_encoder(LIB)
+    lib = ctypes.CDLL(str(lib_path))
     lib.bc7_encode.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int, ctypes.c_char_p]
     lib.bc7_encode.restype = None
     return lib
+
+
+def find_pack(folder):
+    """The texture folder to convert: folder itself, or a GM4E01 folder inside it (the pack's
+    download usually wraps it in a few folders). None if neither holds Dolphin texture names."""
+    folder = Path(folder)
+    if folder.name.upper() != "GM4E01":
+        for d in sorted(folder.rglob("*")):
+            if d.is_dir() and d.name.upper() == "GM4E01":
+                folder = d
+                break
+    for path in folder.rglob("tex1_*.png"):
+        if NAME.match(path.name):
+            return folder
+    return None
 
 
 def scan(pack):
@@ -135,6 +161,101 @@ def encode(lib, img):
     return buf.raw
 
 
+def convert(pack, out, jobs=None, progress=None, cancel=None, compare=None, limit=None):
+    """Convert the Dolphin pack folder into the HD texture file out. progress(done, total, bytes,
+    seconds) is called from worker threads; setting the threading.Event cancel stops early (the
+    partial file is removed). Textures that can't be read are skipped. Returns a summary dict."""
+    pack, out = Path(pack), Path(out)
+    if not pack.is_dir():
+        raise PackError(f"{pack} is not a folder")
+    lib = load_encoder()
+    tex, skipped = scan(pack)
+    keys = sorted(tex)
+    if limit:
+        keys = keys[:limit]
+    if not keys:
+        raise PackError(f"no Dolphin HD textures in {pack} (expected tex1_<w>x<h>_<hash>_<format>.png files)")
+    need = sum(p.stat().st_size for k in keys for p in tex[k]["files"].values())  # BC7 output is about this size
+    out.parent.mkdir(parents=True, exist_ok=True)
+    free = shutil.disk_usage(out.parent).free
+    if free < need * 1.2 + (64 << 20):
+        raise PackError(f"not enough free space in {out.parent}: about {need * 1.2 / 2**30:.1f} GB needed, "
+                        f"{free / 2**30:.1f} GB free")
+    if compare:
+        compare = Path(compare)
+        compare.mkdir(parents=True, exist_ok=True)
+        step = max(1, len(keys) // 12)
+        compare_keys = set(keys[::step][:12])
+    else:
+        compare_keys = set()
+
+    index, failed, lock, done = {}, [], threading.Lock(), [0]
+    t0 = time.time()
+    tmp = out.with_suffix(out.suffix + ".part")
+    try:
+        with open(tmp, "wb") as f:
+            f.write(b"\0" * (HEADER.size + ENTRY.size * len(keys)))
+            f.seek(0, 2)
+            f.write(b"\0" * ((-f.tell()) % ALIGN))
+
+            def job(key):
+                if cancel is not None and cancel.is_set():
+                    return key, None
+                try:
+                    levels = levels_of(tex[key]["files"])
+                except Exception as e:  # a damaged or unreadable PNG: the game keeps that texture's original
+                    return key, f"{tex[key]['files'][0].name}: {e}"
+                data = b"".join(encode(lib, im) for im in levels)
+                if key in compare_keys:
+                    im = levels[0]
+                    dec = Image.open(io.BytesIO(dds_bc7(im.size, data[: ((im.size[0] + 3) // 4) * ((im.size[1] + 3) // 4) * 16])))
+                    side = Image.new("RGBA", (im.size[0] * 2, im.size[1]))
+                    side.paste(im, (0, 0))
+                    side.paste(dec.convert("RGBA"), (im.size[0], 0))
+                    side.save(compare / tex[key]["files"][0].name)
+                return key, (levels[0].size, len(levels), data)
+
+            with ThreadPoolExecutor(jobs or os.cpu_count() or 4) as ex:
+                futs = [ex.submit(job, k) for k in keys]
+                for fu in as_completed(futs):
+                    key, res = fu.result()
+                    with lock:
+                        if isinstance(res, tuple):
+                            (W, H), nlev, data = res
+                            off = f.tell()
+                            f.write(data)
+                            f.write(b"\0" * ((-f.tell()) % ALIGN))
+                            index[key] = (W, H, nlev, len(data), off)
+                        elif res:
+                            failed.append(res)
+                        done[0] += 1
+                        if progress:
+                            progress(done[0], len(keys), f.tell(), time.time() - t0)
+                    if cancel is not None and cancel.is_set():
+                        ex.shutdown(wait=True, cancel_futures=True)
+                        break
+            if cancel is not None and cancel.is_set():
+                raise PackError("cancelled")
+            if not index:
+                raise PackError("none of the textures could be read:\n" + "\n".join(failed[:5]))
+
+            f.seek(0)
+            f.write(HEADER.pack(MAGIC, VERSION, len(index), ENC_BC7, 0, HEADER.size))
+            for key in sorted(index):
+                th, tl, w, h, fmt = key
+                W, H, nlev, size, off = index[key]
+                f.write(ENTRY.pack(th, tl, w, h, W, H, fmt, tex[key]["flags"], nlev, 0, size, off))
+        os.replace(tmp, out)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    return {"textures": len(index), "failed": failed, "skipped": len(skipped), "bytes": out.stat().st_size,
+            "seconds": time.time() - t0, "out": out}
+
+
 def main():
     ap = argparse.ArgumentParser(description="Dolphin HD texture pack -> MKDD-NX BC7 texture file")
     ap.add_argument("pack", type=Path)
@@ -142,74 +263,32 @@ def main():
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     ap.add_argument("--compare", type=Path, help="write PNG | BC7 side-by-side images of a few textures here")
     ap.add_argument("--limit", type=int, help="convert only the first N textures (testing)")
+    ap.add_argument("--build-encoder", type=Path, metavar="LIB",
+                    help="only compile the BC7 encoder into LIB, for any CPU of this kind (app packaging)")
     a = ap.parse_args()
+    if a.build_encoder:
+        build_encoder(a.build_encoder, native=False)
+        return
 
-    if not a.pack.is_dir():
-        fail(f"{a.pack} is not a folder")
     try:
         a.out.resolve().relative_to(ROOT)
         if "build" not in a.out.resolve().relative_to(ROOT).parts[0]:
             fail("write the output outside the repository (it is game content)")
     except ValueError:
         pass
-    lib = load_encoder()
-    tex, skipped = scan(a.pack)
-    keys = sorted(tex)
-    if a.limit:
-        keys = keys[: a.limit]
-    print(f"{len(tex)} textures, {len(skipped)} other files skipped")
-    if not keys:
-        fail("no Dolphin texture names found (expected tex1_<w>x<h>_<hash>_<format>.png)")
-    if a.compare:
-        a.compare.mkdir(parents=True, exist_ok=True)
-        step = max(1, len(keys) // 12)
-        compare = set(keys[::step][:12])
-    else:
-        compare = set()
 
-    index, lock, done = {}, threading.Lock(), [0]
-    t0 = time.time()
-    tmp = a.out.with_suffix(a.out.suffix + ".part")
-    with open(tmp, "wb") as f:
-        f.write(b"\0" * (HEADER.size + ENTRY.size * len(keys)))
-        f.seek(0, 2)
-        pad = (-f.tell()) % ALIGN
-        f.write(b"\0" * pad)
+    def progress(done, total, size, el):
+        if done % 50 == 0 or done == total:
+            print(f"  {done}/{total}  {size / 2**20:.0f} MB  {el:.0f} s, ~{el / done * (total - done):.0f} s left", flush=True)
 
-        def job(key):
-            levels = levels_of(tex[key]["files"])
-            data = b"".join(encode(lib, im) for im in levels)
-            if key in compare:
-                im = levels[0]
-                dec = Image.open(__import__("io").BytesIO(dds_bc7(im.size, data[: ((im.size[0] + 3) // 4) * ((im.size[1] + 3) // 4) * 16])))
-                side = Image.new("RGBA", (im.size[0] * 2, im.size[1]))
-                side.paste(im, (0, 0))
-                side.paste(dec.convert("RGBA"), (im.size[0], 0))
-                side.save(a.compare / tex[key]["files"][0].name)
-            return key, levels[0].size, len(levels), data
-
-        with ThreadPoolExecutor(a.jobs) as ex:
-            futs = [ex.submit(job, k) for k in keys]
-            for fu in as_completed(futs):
-                key, (W, H), nlev, data = fu.result()
-                with lock:
-                    off = f.tell()
-                    f.write(data)
-                    f.write(b"\0" * ((-f.tell()) % ALIGN))
-                    index[key] = (W, H, nlev, len(data), off)
-                    done[0] += 1
-                    if done[0] % 50 == 0 or done[0] == len(keys):
-                        el = time.time() - t0
-                        print(f"  {done[0]}/{len(keys)}  {f.tell() / 2**20:.0f} MB  {el:.0f} s, ~{el / done[0] * (len(keys) - done[0]):.0f} s left", flush=True)
-
-        f.seek(0)
-        f.write(HEADER.pack(MAGIC, VERSION, len(keys), ENC_BC7, 0, HEADER.size))
-        for key in sorted(index, key=lambda k: (k[0], k[1], k[2], k[3], k[4])):
-            th, tl, w, h, fmt = key
-            W, H, nlev, size, off = index[key]
-            f.write(ENTRY.pack(th, tl, w, h, W, H, fmt, tex[key]["flags"], nlev, 0, size, off))
-    os.replace(tmp, a.out)
-    print(f"wrote {a.out} ({a.out.stat().st_size / 2**20:.0f} MB, {len(keys)} textures) in {time.time() - t0:.0f} s")
+    try:
+        r = convert(a.pack, a.out, a.jobs, progress, compare=a.compare, limit=a.limit)
+    except PackError as e:
+        fail(str(e))
+    for msg in r["failed"]:
+        print("  skipped (unreadable): " + msg)
+    print(f"wrote {a.out} ({r['bytes'] / 2**20:.0f} MB, {r['textures']} textures, {r['skipped']} other files skipped) "
+          f"in {r['seconds']:.0f} s")
 
 
 def dds_bc7(size, data):
