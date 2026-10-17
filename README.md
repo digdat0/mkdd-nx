@@ -1,12 +1,8 @@
 # MKDD-NX: Mario Kart: Double Dash!! 
-<img width="200" height="200" alt="Double Dash NX" src="Double%20Dash%20NX_%20Logo3.png" />
-
-Static recompilation for Nintendo Switch
-
-A native Switch homebrew build of Mario Kart: Double Dash!! (USA, GM4E01). 
+Static recompilation of the GameCube Mario Kart: Double Dash!! for Nintendo Switch (USA, GM4E01). 
 
 **No game code or data is in this repository.** 
-**Bring your own legally dumped disc image of Mario Kart: Double Dash!! (USA, GM4E01).**
+**Bring your own legally dumped disc image of Mario Kart: Double Dash!! (USA, GM4E01). We do not condone piracy and will not respond to requests for game image files!**
 
 ## Getting started
 
