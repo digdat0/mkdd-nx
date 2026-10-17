@@ -5,11 +5,8 @@ Static recompilation for Nintendo Switch
 
 A native Switch homebrew build of Mario Kart: Double Dash!! (USA, GM4E01). 
 
-**No game code or data is in this repository.** The generated C and the `.nro` built from it
-contain code recompiled from your own disc: they are for your personal use only and must not be
-shared. Bring your own legally dumped disc image of Mario Kart: Double Dash!! (USA, GM4E01).
-The game's own code and data (`main.dol`) are not built into the `.nro`: it loads them from your disc
-image at start-up and refuses to run if that `main.dol` is not the supported version (SHA-1 check).
+**No game code or data is in this repository.** 
+**Bring your own legally dumped disc image of Mario Kart: Double Dash!! (USA, GM4E01).**
 
 ## Getting started
 
