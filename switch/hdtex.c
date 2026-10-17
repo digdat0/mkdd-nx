@@ -116,7 +116,9 @@ bool hdtex_open(const char *path) {
     snprintf(s_path, sizeof s_path, "%s", path);
     pmutex_init(&s_mu);
     pcond_init(&s_cv);
-    pthread_start("mkdd-hdtex", loader, NULL, 64 << 10, 2, 1);
+    /* core 0 (the render thread's, which mostly waits for the GPU), below it in priority: core 2
+     * belongs to the GX decoder */
+    pthread_start("mkdd-hdtex", loader, NULL, 64 << 10, 0, 1);
     rt_log("hd textures: %u replacements in %s", s_n, path);
     return true;
 }

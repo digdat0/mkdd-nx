@@ -83,6 +83,22 @@ void __libnx_exception_handler(ThreadExceptionDump *ctx) {
     fclose(f);
 }
 
+/* ---- clocks (CPU / GPU / memory, MHz), for the log ---- */
+static bool s_clk_ok;
+static ClkrstSession s_clk[3];
+static void clocks_init(void) {
+    if (!hosversionAtLeast(8, 0, 0) || R_FAILED(clkrstInitialize())) return;
+    static const PcvModuleId ids[3] = {PcvModuleId_CpuBus, PcvModuleId_GPU, PcvModuleId_EMC};
+    s_clk_ok = true;
+    for (int i = 0; i < 3; i++) s_clk_ok &= R_SUCCEEDED(clkrstOpenSession(&s_clk[i], ids[i], 3));
+}
+static void clocks_log(const char *why) {
+    if (!s_clk_ok) return;
+    u32 hz[3] = {0};
+    for (int i = 0; i < 3; i++) clkrstGetClockRate(&s_clk[i], &hz[i]);
+    rt_log("clocks (%s): CPU %u MHz, GPU %u MHz, memory %u MHz", why, hz[0] / 1000000, hz[1] / 1000000, hz[2] / 1000000);
+}
+
 /* ---- loading / message screen (menu.c draws it in the menu's style) ---- */
 static void screen(const char *line1, const char *line2, float progress) {
     int w = 0, h = 0;
@@ -406,7 +422,9 @@ int main(int argc, char **argv) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
-    s_window = SDL_CreateWindow(APP_TITLE, 0, 0, 1280, 720, SDL_WINDOW_OPENGL);
+    /* 1920x1080 on the TV, 1280x720 in handheld; resizable so it follows docking (see the loop) */
+    bool tv = appletGetOperationMode() == AppletOperationMode_Console;
+    s_window = SDL_CreateWindow(APP_TITLE, 0, 0, tv ? 1920 : 1280, tv ? 1080 : 720, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
     if (!s_window || !SDL_GL_CreateContext(s_window)) {
         fprintf(stderr, "[NX] window/GL context failed: %s\n", SDL_GetError());
         return 1;
@@ -460,14 +478,19 @@ int main(int argc, char **argv) {
                        R_SUCCEEDED(apmSetPerformanceConfiguration(ApmPerformanceMode_Normal, 0x00020004));
         }
         rt_log("apm: handheld profile %s (was %#x)", perf_set ? "raised" : "unchanged", perf_prev);
+        clocks_init();
     }
 
     update_pads();
     /* An empty file "cpu_xform" in the app folder switches the XF stage back to the decoder (CPU). */
     g_gx_cpu_xform = access(CFG_DIR "/cpu_xform", F_OK) == 0;
     rt_log("xf: vertex transform on the %s", g_gx_cpu_xform ? "CPU (cpu_xform file)" : g_gx_cpu_xform_forced ? "CPU (shader failed)" : "GPU");
-    /* Sampling profiler (mkdd_prof.bin, tools/prof_report.py); an empty file "noprof" turns it off. */
-    if (access(CFG_DIR "/noprof", F_OK) != 0) {
+    /* An empty file "novcache" in config/ turns the converted-vertex cache off (for comparisons). */
+    g_gx_vcache = access(CFG_DIR "/novcache", F_OK) != 0;
+    rt_log("gx: vertex cache %s", g_gx_vcache ? "on" : "off (novcache file)");
+    /* Sampling profiler (mkdd_prof.bin, tools/prof_report.py): Debugging > Profiler. Off by default:
+     * it pauses the game thread 500 times a second and shares the GX decoder's core. */
+    if (g_set.profiler) {
         u64 ib, ie;
         image_range(&ib, &ie);
         prof_start(LOG_DIR "/mkdd_prof.bin", ib, ie);
@@ -525,7 +548,27 @@ int main(int argc, char **argv) {
         static const float ANISO[5] = {1, 2, 4, 8, 16};
         render_set_aniso(ANISO[g_set.aniso % 5]);
         u64 r0 = armGetSystemTick();
-        bool got = render_update(1);
+        /* Docked: output 1920x1080 and (DOCKED RESOLUTION 2X) render the game at twice its size,
+         * 1280x960 instead of 640x480. Handheld: 1280x720, the game's own size. */
+        bool docked = appletGetOperationMode() == AppletOperationMode_Console;
+        {
+            static int last_w, last_h, last_scale, clocks_pending;
+            if (clocks_pending && !--clocks_pending) clocks_log(docked ? "docked" : "handheld");
+            int tw = docked ? 1920 : 1280, th = docked ? 1080 : 720, cw, ch;
+            SDL_GL_GetDrawableSize(s_window, &cw, &ch);
+            if (cw != tw || ch != th) {
+                SDL_SetWindowSize(s_window, tw, th);
+                SDL_GL_GetDrawableSize(s_window, &cw, &ch);
+            }
+            int scale = docked && g_set.docked_res ? 2 : 1;
+            if (cw != last_w || ch != last_h || scale != last_scale) {
+                rt_log("display: %s, output %dx%d, game rendered at %dx", docked ? "docked" : "handheld", cw, ch, scale);
+                clocks_pending = 120; /* clocks settle after a dock change: log them in 2 s */
+                last_w = cw; last_h = ch; last_scale = scale;
+            }
+        }
+        render_gpu_timer_begin();
+        bool got = render_update(docked && g_set.docked_res ? 2 : 1);
         t_render += armTicksToNs(armGetSystemTick() - r0);
         if (got) {
             rendered++;
@@ -554,6 +597,7 @@ int main(int argc, char **argv) {
             fps_frames = 0;
             fps_tick = armGetSystemTick();
         }
+        render_gpu_timer_mid();
         int w, h;
         SDL_GL_GetDrawableSize(s_window, &w, &h);
         u64 p0 = armGetSystemTick();
@@ -571,6 +615,7 @@ int main(int argc, char **argv) {
             if (g_set.border && !wide && racing) menu_border(w, h);
             menu_draw(w, h, s_fps, perf);
         } else screen("BOOTING", NULL, 0.8f);
+        render_gpu_timer_end();
         u64 s0 = armGetSystemTick();
         t_present += armTicksToNs(s0 - p0);
         pf_main += armTicksToNs(s0 - r0);
@@ -591,6 +636,10 @@ int main(int argc, char **argv) {
             rt_log("timing: render %.1f ms/loop (gpu wait %.1f), present %.1f, swap wait %.1f ms/loop; %u TEV programs (%.0f ms compiling)",
                    (double)t_render / 300 / 1e6, (double)render_take_gpu_wait() / 300 / 1e6, (double)t_present / 300 / 1e6,
                    (double)t_swap / 300 / 1e6, progs, cms);
+            double g_avg, g_max, g_img, g_out;
+            unsigned g_n = render_gpu_timer_take(&g_avg, &g_max, &g_img, &g_out);
+            if (g_n) rt_log("gpu: %.1f ms per loop (game image %.1f, output %.1f; max %.1f, %u samples; includes waits for the CPU's commands)",
+                            g_avg, g_img, g_out, g_max, g_n);
             if (hdtex_available()) {
                 unsigned loads, fails, queued;
                 uint64_t read;

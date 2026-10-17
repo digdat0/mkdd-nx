@@ -15,6 +15,7 @@
  * rectangles, copy rectangles and texture coordinates then all use top-left coordinates. */
 #include "render_gl.h"
 #include <GLES3/gl32.h>
+#include <EGL/egl.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -309,8 +310,11 @@ static const char *BLIT_FS =
     "in vec2 v_uv;\n"
     "out vec4 o_color;\n"
     "void main() {\n"
-    "    vec2 qd = fwidth(v_uv) * 0.25;\n"
-    "    vec3 c = (texture(xfb, v_uv + vec2(-qd.x, -qd.y)).rgb + texture(xfb, v_uv + vec2(qd.x, -qd.y)).rgb\n"
+    /* shrinking (the picture is larger than the screen area): average 4 taps; enlarging: 1 */
+    "    vec2 fw = fwidth(v_uv), qd = fw * 0.25;\n"
+    "    vec3 c;\n"
+    "    if (max(fw.x * float(textureSize(xfb, 0).x), fw.y * float(textureSize(xfb, 0).y)) <= 1.0) c = texture(xfb, v_uv).rgb;\n"
+    "    else c = (texture(xfb, v_uv + vec2(-qd.x, -qd.y)).rgb + texture(xfb, v_uv + vec2(qd.x, -qd.y)).rgb\n"
     "            + texture(xfb, v_uv + vec2(-qd.x, qd.y)).rgb + texture(xfb, v_uv + vec2(qd.x, qd.y)).rgb) * 0.25;\n"
     "    c = pow(c, vec3(u_adj.x));\n"
     "    c = mix(vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), c, u_adj.y);\n"
@@ -335,6 +339,8 @@ typedef struct { GLuint tex; uint8_t wrap_s, wrap_t, chans, subst, hd; bool line
  * the GPU used recently waits for the GPU. */
 #define TEX_POOL 48
 #define HD_BC7 0x8E8C /* GL_COMPRESSED_RGBA_BPTC_UNORM_EXT */
+#define TEX_BC1 0x83F1 /* GL_COMPRESSED_RGBA_S3TC_DXT1_EXT: the game's CMPR textures as they are */
+#define CHANS_BC1 8    /* GlTexture / PoolTex chans value of a BC1 texture */
 typedef struct { GLuint tex; uint32_t w, h; uint64_t freed; uint8_t chans; } PoolTex;
 
 static struct {
@@ -366,6 +372,7 @@ static struct {
     GLuint samplers[3][3][2];
     GLuint samplers_mip[3][3]; /* trilinear, for HD replacements */
     bool bptc, hd_on, hd_flush;
+    bool s3tc;                 /* BC1 sampling: CMPR textures stay compressed on the GPU */
     float aniso_max, aniso;    /* GL_EXT_texture_filter_anisotropic limit (0: none) and the current level */
     uint64_t hd_bytes; /* BC7 data of the HD textures on the GPU */
     GLuint white;
@@ -736,7 +743,7 @@ bool render_init(void) {
     if (nfmt > 0 && nfmt < 1024) {
         GLint fmts[1024];
         glGetIntegerv(GL_COMPRESSED_TEXTURE_FORMATS, fmts);
-        for (GLint i = 0; i < nfmt; i++) R.bptc |= fmts[i] == HD_BC7;
+        for (GLint i = 0; i < nfmt; i++) { R.bptc |= fmts[i] == HD_BC7; R.s3tc |= fmts[i] == TEX_BC1; }
     }
     for (GLint i = 0; i < next; i++) {
         const char *e = (const char *)glGetStringi(GL_EXTENSIONS, (GLuint)i);
@@ -744,7 +751,8 @@ bool render_init(void) {
     }
     R.aniso = 1.0f;
     rt_log("render: anisotropic filtering up to %.0fx", (double)R.aniso_max);
-    rt_log("render: BC7 textures %s (%d compressed formats)", R.bptc ? "supported" : "NOT supported: HD textures off", nfmt);
+    rt_log("render: BC7 textures %s (%d compressed formats); CMPR textures %s", R.bptc ? "supported" : "NOT supported: HD textures off", nfmt,
+           R.s3tc ? "kept compressed (BC1)" : "decoded (no BC1)");
     static const uint8_t white[4] = {255, 255, 255, 255};
     glGenTextures(1, &R.white);
     glBindTexture(GL_TEXTURE_2D, R.white);
@@ -842,7 +850,9 @@ static void bind_slot(unsigned unit, uint64_t key) {
         }
         size_t need = (size_t)t->width * t->height * 4;
         if (need > R.rgba_cap) { R.rgba_cap = need; R.rgba = realloc(R.rgba, need); }
-        unsigned chans = gx_texture_decode_compact(t, R.rgba);
+        /* CMPR (most of MKDD's textures) stays compressed: an eighth of the memory and bandwidth of
+         * RGBA8, the same texels (the GPU's BC1 decode follows the same rules) */
+        unsigned chans = R.s3tc && gx_texture_cmpr_bc1(t, R.rgba) ? CHANS_BC1 : gx_texture_decode_compact(t, R.rgba);
         if (!chans) {
             gx_texture_decode(t, R.rgba);
             chans = 4;
@@ -864,7 +874,11 @@ static void bind_slot(unsigned unit, uint64_t key) {
         R.cur_tex[unit] = gt->tex;
         GLenum pf = chans == 1 ? GL_RED : chans == 2 ? GL_RG : GL_RGBA;
         glPixelStorei(GL_UNPACK_ALIGNMENT, chans == 4 ? 4 : 1);
-        if (reuse >= 0)
+        GLsizei bc1_size = (GLsizei)(t->width / 4 * (t->height / 4) * 8);
+        if (chans == CHANS_BC1) {
+            if (reuse >= 0) glCompressedTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, (GLsizei)t->width, (GLsizei)t->height, TEX_BC1, bc1_size, R.rgba);
+            else glCompressedTexImage2D(GL_TEXTURE_2D, 0, TEX_BC1, (GLsizei)t->width, (GLsizei)t->height, 0, bc1_size, R.rgba);
+        } else if (reuse >= 0)
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, (GLsizei)t->width, (GLsizei)t->height, pf, GL_UNSIGNED_BYTE, R.rgba);
         else {
             GLint ifmt = chans == 1 ? GL_R8 : chans == 2 ? GL_RG8 : GL_RGBA8;
@@ -1358,6 +1372,80 @@ unsigned render_hd_in_use(void) {
     for (unsigned i = 0; i < R.ntex; i++) n += R.tex[i].hd == 2;
     return n;
 }
+/* GL_EXT_disjoint_timer_query. switch-mesa's results are 1/1.6276 of real time (PTIMER counted at
+ * the wrong rate). Each query makes nvc0 wait for the GPU first, so it is sampled rarely. */
+#define TIME_ELAPSED 0x88BF
+#define GPU_DISJOINT 0x8FBB
+static struct {
+    int state; /* 0 untried, 1 available, -1 unavailable */
+    GLuint q[2];               /* the game image (render_update), the output (present + menu) */
+    int running;               /* query running: 0 none, 1 first, 2 second */
+    bool pending;
+    unsigned frames, n;
+    double sum, max, part[2];
+    void (*get_u64)(GLuint, GLenum, GLuint64 *);
+} s_gt;
+
+void render_gpu_timer_begin(void) {
+    if (s_gt.state == 0) {
+        const char *ext = (const char *)glGetString(GL_EXTENSIONS);
+        s_gt.get_u64 = (void (*)(GLuint, GLenum, GLuint64 *))eglGetProcAddress("glGetQueryObjectui64vEXT");
+        s_gt.state = ext && strstr(ext, "GL_EXT_disjoint_timer_query") && s_gt.get_u64 ? 1 : -1;
+        if (s_gt.state == 1) glGenQueries(2, s_gt.q);
+        rt_log("render: GPU timer %s", s_gt.state == 1 ? "available" : "not available");
+    }
+    if (s_gt.state != 1 || s_gt.running) return;
+    if (s_gt.pending) {
+        GLuint ready = 0;
+        glGetQueryObjectuiv(s_gt.q[1], GL_QUERY_RESULT_AVAILABLE, &ready);
+        if (!ready) return;
+        GLint disjoint = 0;
+        glGetIntegerv(GPU_DISJOINT, &disjoint);
+        GLuint64 ns[2] = {0, 0};
+        s_gt.get_u64(s_gt.q[0], GL_QUERY_RESULT, &ns[0]);
+        s_gt.get_u64(s_gt.q[1], GL_QUERY_RESULT, &ns[1]);
+        s_gt.pending = false;
+        if (!disjoint) {
+            double a = (double)ns[0] * 1.6276 / 1e6, b = (double)ns[1] * 1.6276 / 1e6;
+            s_gt.sum += a + b;
+            s_gt.part[0] += a;
+            s_gt.part[1] += b;
+            if (a + b > s_gt.max) s_gt.max = a + b;
+            s_gt.n++;
+        }
+    }
+    if (++s_gt.frames < 60) return;
+    s_gt.frames = 0;
+    glBeginQuery(TIME_ELAPSED, s_gt.q[0]);
+    s_gt.running = 1;
+}
+
+void render_gpu_timer_mid(void) {
+    if (s_gt.running != 1) return;
+    glEndQuery(TIME_ELAPSED);
+    glBeginQuery(TIME_ELAPSED, s_gt.q[1]);
+    s_gt.running = 2;
+}
+
+void render_gpu_timer_end(void) {
+    if (!s_gt.running) return;
+    if (s_gt.running == 1) { glEndQuery(TIME_ELAPSED); glBeginQuery(TIME_ELAPSED, s_gt.q[1]); }
+    glEndQuery(TIME_ELAPSED);
+    s_gt.running = 0;
+    s_gt.pending = true;
+}
+
+unsigned render_gpu_timer_take(double *avg_ms, double *max_ms, double *image_ms, double *output_ms) {
+    unsigned n = s_gt.n;
+    *avg_ms = n ? s_gt.sum / n : 0;
+    *image_ms = n ? s_gt.part[0] / n : 0;
+    *output_ms = n ? s_gt.part[1] / n : 0;
+    *max_ms = s_gt.max;
+    s_gt.n = 0;
+    s_gt.sum = s_gt.max = s_gt.part[0] = s_gt.part[1] = 0;
+    return n;
+}
+
 uint64_t render_take_gpu_wait(void) { uint64_t v = R.gpu_wait_ns; R.gpu_wait_ns = 0; return v; }
 
 void render_present(int w, int h, const float adj[3], bool wide) {
@@ -1368,13 +1456,24 @@ void render_present(int w, int h, const float adj[3], bool wide) {
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glViewport(0, 0, w, h);
     glClearColor(0, 0, 0, 1);
-    glClear(GL_COLOR_BUFFER_BIT);
-    if (!R.have_xfb) return;
     float vw = (float)w, vh = (float)h;
     float aspect = wide ? 16.0f / 9.0f : 4.0f / 3.0f;
     if (vw / vh > aspect) vw = vh * aspect;
     else vh = vw / aspect;
-    glViewport((GLint)(((float)w - vw) / 2), (GLint)(((float)h - vh) / 2), (GLsizei)vw, (GLsizei)vh);
+    GLint vx = (GLint)(((float)w - vw) / 2), vy = (GLint)(((float)h - vh) / 2);
+    if (!R.have_xfb) { glClear(GL_COLOR_BUFFER_BIT); return; }
+    /* clear only the bars beside / above the picture (none when it fills the screen) */
+    glEnable(GL_SCISSOR_TEST);
+    if (vx > 0) {
+        glScissor(0, 0, vx, h); glClear(GL_COLOR_BUFFER_BIT);
+        glScissor(vx + (GLint)vw, 0, w - vx - (GLint)vw, h); glClear(GL_COLOR_BUFFER_BIT);
+    }
+    if (vy > 0) {
+        glScissor(0, 0, w, vy); glClear(GL_COLOR_BUFFER_BIT);
+        glScissor(0, vy + (GLint)vh, w, h - vy - (GLint)vh); glClear(GL_COLOR_BUFFER_BIT);
+    }
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(vx, vy, (GLsizei)vw, (GLsizei)vh);
     glUseProgram(R.prog_blit);
     glUniform3f(R.blit_adj, adj[0], adj[1], adj[2]);
     glActiveTexture(GL_TEXTURE0);

@@ -21,6 +21,12 @@ unsigned render_hd_in_use(void);
 uint64_t render_hd_bytes(void);
 /* Textures registered with gx_subst_register: the GL texture to draw instead (0 = the game's own). */
 void render_set_subst(unsigned (*texture)(unsigned id));
+/* Sampled GPU time of a whole loop (render_update .. present), about once a second: begin before
+ * render_update, end after the menu; take returns the samples since the last call (avg / max ms). */
+void render_gpu_timer_begin(void);
+void render_gpu_timer_mid(void); /* between render_update and present */
+void render_gpu_timer_end(void);
+unsigned render_gpu_timer_take(double *avg_ms, double *max_ms, double *image_ms, double *output_ms);
 uint64_t render_take_gpu_wait(void); /* ns spent waiting for the GPU since the last call */
 /* adj: gamma exponent, saturation, contrast applied to the game image (1,1,1 = unchanged). */
 void render_present(int w, int h, const float adj[3], bool wide);

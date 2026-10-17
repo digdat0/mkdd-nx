@@ -71,6 +71,84 @@ void rt_intrinsic(Ctx *c, const char *name, const uint64_t *args, unsigned n) {
     diag_intrinsic(name);
 }
 
+/* ---- main.dol ---- */
+/* SHA-1 (FIPS 180-1), for checking the disc's main.dol. */
+static uint32_t rol32(uint32_t x, int n) { return x << n | x >> (32 - n); }
+static void sha1_block(uint32_t h[5], const uint8_t *p) {
+    uint32_t w[80], a = h[0], b = h[1], c = h[2], d = h[3], e = h[4];
+    for (int i = 0; i < 16; i++) w[i] = (uint32_t)p[4 * i] << 24 | p[4 * i + 1] << 16 | p[4 * i + 2] << 8 | p[4 * i + 3];
+    for (int i = 16; i < 80; i++) w[i] = rol32(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+    for (int i = 0; i < 80; i++) {
+        uint32_t f, k;
+        if (i < 20)      { f = (b & c) | (~b & d);          k = 0x5A827999u; }
+        else if (i < 40) { f = b ^ c ^ d;                   k = 0x6ED9EBA1u; }
+        else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDCu; }
+        else             { f = b ^ c ^ d;                   k = 0xCA62C1D6u; }
+        uint32_t t = rol32(a, 5) + f + e + k + w[i];
+        e = d; d = c; c = rol32(b, 30); b = a; a = t;
+    }
+    h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e;
+}
+static void sha1_hex(const uint8_t *data, size_t n, char out[41]) {
+    uint32_t h[5] = {0x67452301u, 0xEFCDAB89u, 0x98BADCFEu, 0x10325476u, 0xC3D2E1F0u};
+    size_t i = 0;
+    for (; i + 64 <= n; i += 64) sha1_block(h, data + i);
+    uint8_t tail[128] = {0};
+    size_t r = n - i, tl = r < 56 ? 64 : 128;
+    memcpy(tail, data + i, r);
+    tail[r] = 0x80;
+    uint64_t bits = (uint64_t)n * 8;
+    for (int j = 0; j < 8; j++) tail[tl - 1 - j] = (uint8_t)(bits >> (8 * j));
+    for (size_t j = 0; j < tl; j += 64) sha1_block(h, tail + j);
+    for (int j = 0; j < 5; j++) snprintf(out + 8 * j, 9, "%08x", (unsigned)h[j]);
+}
+
+/* Load the game's code and data from main.dol on the disc (it is not part of the build): find it
+ * through the disc header, check it is the exact main.dol the code was generated from, and copy
+ * every section the generator listed to its address. */
+static bool load_dol(const char *disc_path, char *err, size_t errlen) {
+    uint32_t dol_off = disc_read_u32(0x420);
+    uint8_t hdr[0x100];
+    disc_read(dol_off, hdr, sizeof hdr);
+    uint32_t off[18], addr[18], size[18], dol_size = sizeof hdr;
+    for (int i = 0; i < 18; i++) {
+        off[i]  = (uint32_t)hdr[4 * i] << 24 | hdr[4 * i + 1] << 16 | hdr[4 * i + 2] << 8 | hdr[4 * i + 3];
+        addr[i] = (uint32_t)hdr[0x48 + 4 * i] << 24 | hdr[0x49 + 4 * i] << 16 | hdr[0x4A + 4 * i] << 8 | hdr[0x4B + 4 * i];
+        size[i] = (uint32_t)hdr[0x90 + 4 * i] << 24 | hdr[0x91 + 4 * i] << 16 | hdr[0x92 + 4 * i] << 8 | hdr[0x93 + 4 * i];
+        if (size[i] && off[i] + size[i] > dol_size) dol_size = off[i] + size[i];
+    }
+    if (dol_size > (16u << 20)) {
+        snprintf(err, errlen, "%s: main.dol header is damaged", disc_path);
+        return false;
+    }
+    uint8_t *dol = malloc(dol_size);
+    if (!dol) { snprintf(err, errlen, "out of memory"); return false; }
+    disc_read(dol_off, dol, dol_size);
+    char sha[41];
+    sha1_hex(dol, dol_size, sha);
+    if (strcmp(sha, DOL_SHA1) != 0) {
+        free(dol);
+        rt_log("boot: main.dol SHA-1 %s, expected %s", sha, DOL_SHA1);
+        snprintf(err, errlen, "%s: main.dol is not the supported version (USA GM4E01, SHA-1 %.8s, found %.8s). "
+                 "Use a clean dump of the disc", disc_path, DOL_SHA1, sha);
+        return false;
+    }
+    for (unsigned s = 0; s < SECTION_COUNT; s++) {
+        int i = 0;
+        while (i < 18 && !(size[i] && addr[i] == SECTIONS[s].addr && size[i] >= SECTIONS[s].size)) i++;
+        if (i == 18) { /* cannot happen with a matching SHA-1 unless the generator's sheets are off */
+            free(dol);
+            snprintf(err, errlen, "main.dol has no section at %#010x (%u bytes): regenerate the C", SECTIONS[s].addr,
+                     SECTIONS[s].size);
+            return false;
+        }
+        m_load(SECTIONS[s].addr, dol + off[i], SECTIONS[s].size);
+    }
+    free(dol);
+    rt_log("boot: main.dol loaded from the disc (%u bytes, %u sections, SHA-1 ok)", dol_size, SECTION_COUNT);
+    return true;
+}
+
 /* ---- boot ---- */
 bool machine_boot(const char *disc_path, Ctx *boot, char *err, size_t errlen) {
     /* 32 MiB: generated code masks stack / small-data addresses to 25 bits without a bounds
@@ -89,7 +167,7 @@ bool machine_boot(const char *disc_path, Ctx *boot, char *err, size_t errlen) {
         return false;
     }
     core_build_dispatch();
-    for (unsigned i = 0; i < SECTION_COUNT; i++) m_load(SECTIONS[i].addr, SECTIONS[i].data, SECTIONS[i].size);
+    if (!load_dol(disc_path, err, errlen)) return false;
 
     uint8_t header[0x20];
     disc_read(0, header, sizeof header);

@@ -14,6 +14,8 @@ come from the [doldecomp/mkdd](https://github.com/doldecomp/mkdd) decompilation 
 **No game code or data is in this repository.** The generated C and the `.nro` built from it
 contain code recompiled from your own disc: they are for your personal use only and must not be
 shared. Bring your own legally dumped disc image of Mario Kart: Double Dash!! (USA, GM4E01).
+The game's own code and data (`main.dol`) are not built into the `.nro`: it loads them from your disc
+image at start-up and refuses to run if that `main.dol` is not the supported version (SHA-1 check).
 
 ## Build
 
@@ -138,6 +140,7 @@ also opens by itself when a controller in use disconnects; reconnect it and clos
 | Rumble | Off / Low / High |
 | Field of view | Normal / Wide / Wider race camera, kept separately for 4:3 (default Normal) and 16:9 (default Wider); the row changes the current display mode's |
 | Texture filtering | Normal / 2x / 4x / 8x / 16x anisotropic filtering: sharper roads and walls at a distance (most visible with HD textures, which have mipmaps) |
+| Docked resolution | 2X (default) / Native: on the TV the game renders at twice its size (1280x960 instead of 640x480) and outputs 1080p; handheld always renders at the game's own size |
 | Border | Off / On: checkered border art in the side bars during races in 4:3 (menus keep black bars) |
 
 **Debugging**
@@ -147,6 +150,7 @@ also opens by itself when a controller in use disconnects; reconnect it and clos
 | Show FPS | Off / FPS / FPS + times: ms per game frame of the game thread (GAME), the graphics thread (GX) and the render thread (RENDER); 16.7 is the 60 fps budget |
 | Unlock all | every character, kart, cup and mode while it is on; never written to your save, so your own progress stays as it is |
 | Logging | debug logs on the SD card, for bug reports |
+| Profiler | Off / On: performance samples in `logs/mkdd_prof.bin` for reports (`tools/prof_report.py`); costs a little speed, takes effect at the next start |
 
 Settings are saved to `config/settings.ini`.
 

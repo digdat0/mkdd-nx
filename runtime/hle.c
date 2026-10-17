@@ -119,6 +119,8 @@ static void dvd_read(uint64_t off, uint32_t dst, uint32_t len) {
     if (o < 0) return;
     if (len > RAM_SIZE - (uint64_t)o) len = (uint32_t)(RAM_SIZE - (uint64_t)o);
     disc_read(off, g_ram + o, len);
+    gx_mem_dirty((uint32_t)o, len);
+    if (len >= (256u << 10)) gx_mem_dirty_all(); /* a scene load: see gx_mem_dirty_all */
 }
 
 static void read_cstr(uint32_t addr, char *out, size_t n) {
@@ -163,6 +165,45 @@ static void format_guest(Ctx *c, uint32_t fmt_addr, unsigned arg, char *out, siz
 #undef NEXT
     while (k && (out[k - 1] == '\n' || out[k - 1] == ' ')) k--;
     out[k] = 0;
+}
+
+/* Game-flow watcher (GM4E01, small-data base r13 = 0x803D1420), checked once a frame from
+ * PADRead: logs scene requests, soft resets, pause-menu choices and race phases when they
+ * change, to explain where the game went when a race transition stalls. */
+#define W_SCENE 0x803C9CE0u      /* SequenceApp::msScene, msNextScene at +4 */
+#define W_RESET 0x803CBE80u      /* ResetAgent::msState; msForceMenu +8, msInvalid +9 */
+#define W_PAUSE 0x803CB6E4u      /* PauseManager::mPauseChoice */
+#define W_RACEMGR 0x803CB7E8u    /* RaceMgr::sRaceManager; +0x18 RaceDirector: phase +0xc, next +0x10 */
+#define W_SEQAPP 0x803CBE20u     /* SequenceApp::mspSequenceApp: requested scenes +0x38, loaded +0x3c, state +0x44 */
+static void watch_flow(uint16_t buttons) {
+    static uint32_t last[11];
+    static bool init;
+    uint32_t v[11] = {0};
+    v[0] = (uint32_t)m_read_be(W_SCENE, 4);
+    v[1] = (uint32_t)m_read_be(W_SCENE + 4, 4);
+    v[2] = (uint32_t)m_read_be(W_RESET, 4);
+    v[3] = (uint32_t)m_read_be(W_RESET + 8, 1) << 8 | (uint32_t)m_read_be(W_RESET + 9, 1);
+    v[4] = (uint32_t)m_read_be(W_PAUSE, 4);
+    uint32_t mgr = (uint32_t)m_read_be(W_RACEMGR, 4);
+    uint32_t dir = (mgr & 0xFE000000u) == 0x80000000u ? (uint32_t)m_read_be(mgr + 0x18, 4) : 0;
+    if ((dir & 0xFE000000u) == 0x80000000u) {
+        v[5] = (uint32_t)m_read_be(dir + 0xc, 4);
+        v[6] = (uint32_t)m_read_be(dir + 0x10, 4);
+    }
+    uint32_t seq = (uint32_t)m_read_be(W_SEQAPP, 4);
+    if ((seq & 0xFE000000u) == 0x80000000u) {
+        v[8] = (uint32_t)m_read_be(seq + 0x44, 4);
+        v[9] = (uint32_t)m_read_be(seq + 0x38, 4);
+        v[10] = (uint32_t)m_read_be(seq + 0x3c, 4);
+    }
+    v[7] = (buttons & 0x1600) == 0x1600; /* START + X + B: the game's soft-reset combo */
+    if (init && !memcmp(v, last, sizeof v)) return;
+    init = true;
+    memcpy(last, v, sizeof v);
+    rt_log("flow: scene %d next %d, reset state %u (menu/invalid %#x), pause choice %d, race phase %d next %d, "
+           "sequence state %u (scenes requested %#x, loaded %#x), buttons %#06x%s", (int)v[0], (int)v[1], v[2], v[3],
+           (int)v[4], (int)v[5], (int)v[6], v[8], v[9], v[10], buttons,
+           v[7] ? " (reset combo held)" : "");
 }
 
 static void call_cb(Ctx *c, uint32_t cb, uint32_t a, uint32_t b) {
@@ -336,6 +377,7 @@ bool rt_hle(Ctx *c, uint32_t addr) {
             m_write_be(o + 11, 1, 0);
         }
         cheats_tick();
+        watch_flow(p[0].button);
         ctx_set_gpr(c, 3, 0);
         break;
     }

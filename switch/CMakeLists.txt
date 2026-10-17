@@ -26,13 +26,11 @@ set(SW_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/main_switch.c ${CMAKE_CURRENT_SOURCE_
 # Generated code: -O2 (big functions; -O3 mostly costs compile time). Runtime hot paths -O3.
 set_source_files_properties(${GEN_SOURCES} ${GEN_DIR}/table.c PROPERTIES COMPILE_OPTIONS "-O2;-w")
 set_source_files_properties(${RT_SOURCES} ${SW_SOURCES} PROPERTIES COMPILE_OPTIONS "-O3;-Wall;-Wno-unused-function")
-# mem.S .incbin's the memory image next to it
-set_source_files_properties(${GEN_DIR}/mem.S PROPERTIES COMPILE_OPTIONS "-I${GEN_DIR}")
 # pause_art_data.S: the pause screen's Switch picture and button badges (tools/make_pause_art.py)
 set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/pause_art_data.S PROPERTIES COMPILE_OPTIONS "-I${CMAKE_CURRENT_SOURCE_DIR}"
     OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/pause_console.rgba;${CMAKE_CURRENT_SOURCE_DIR}/pause_badges.rgba")
 
-add_executable(MKDD-NX ${SW_SOURCES} ${RT_SOURCES} ${GEN_SOURCES} ${GEN_DIR}/table.c ${GEN_DIR}/mem.S ${CMAKE_CURRENT_SOURCE_DIR}/pause_art_data.S)
+add_executable(MKDD-NX ${SW_SOURCES} ${RT_SOURCES} ${GEN_SOURCES} ${GEN_DIR}/table.c ${CMAKE_CURRENT_SOURCE_DIR}/pause_art_data.S)
 target_link_libraries(MKDD-NX SDL2 EGL GLESv2 glapi drm_nouveau nx m)
 # Mesa is C++: link with the C++ driver so libstdc++ / libsupc++ come in
 set_target_properties(MKDD-NX PROPERTIES LINKER_LANGUAGE CXX)

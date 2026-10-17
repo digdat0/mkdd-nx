@@ -77,11 +77,11 @@ static void watchdog(void *arg) {
     uint64_t start = plat_now_ns();
     uint64_t prev[5] = {0}, prev_busy = 0, prev_draws = 0, prev_stale = 0, prev_lost = 0;
     FILE *f = fopen(s_trace_path, "w");
-    char buf[4096];
+    char buf[8192];
     for (;;) {
         plat_sleep_ns(5000000000ull);
         uint64_t now[5] = {gx_frame_count(), g_ai_buffers, g_audio_underruns, g_dvd_reads, g_dsp_subframes};
-        char threads[2048];
+        char threads[4096];
         sched_describe(threads, sizeof threads);
         int n = snprintf(buf, sizeof buf,
                          "=== t=%.0fs entries=%llu calls=%llu unresolved=%llu block_misses=%llu frames=%llu gx_bytes=%llu\n"

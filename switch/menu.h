@@ -16,6 +16,8 @@ typedef struct {
     int fov[2];        /* race camera field of view for 4:3 / 16:9: 0 normal (the game's), 1 wide, 2 wider */
     int aniso;         /* texture filtering: 0 normal, 1-4 anisotropic 2x / 4x / 8x / 16x */
     bool border;       /* 4:3: checkered border art in the side bars during races */
+    bool profiler;     /* sampling profiler (logs/mkdd_prof.bin), from the next start */
+    int docked_res;    /* docked (TV): 0 native (the game's 640x480-ish frame), 1 rendered at 2x, 1080p output */
     uint64_t map[GC_COUNT]; /* Switch buttons (HidNpadButton_*) that press each GameCube button */
 } Settings;
 

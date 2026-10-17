@@ -140,12 +140,20 @@ void gx_texture_release(GxTexture *t);
 bool gx_texture_decode(const GxTexture *t, uint8_t *out);
 /* I4 / I8 / IA4 / IA8 as 1 (I) or 2 (I, A) bytes per texel; 0 for other formats (gx.c). */
 unsigned gx_texture_decode_compact(const GxTexture *t, uint8_t *out);
+/* CMPR as BC1 blocks (GL_COMPRESSED_RGBA_S3TC_DXT1_EXT), (w/4)*(h/4)*8 bytes; false: not CMPR or a
+ * size BC1 can't hold exactly. */
+bool gx_texture_cmpr_bc1(const GxTexture *t, uint8_t *out);
 
 /* Vertex idx (an index value) of batch b as a full GpuVertex. */
 void gx_vertex_unpack(const Frame *f, const Batch *b, uint32_t idx, GpuVertex *out);
 /* CPU reference of the XF vertex shader: GPU-path vertex in -> CPU-path vertex out. */
 void gx_xf_eval(const uint32_t *xf, const GpuVertex *in, GpuVertex *out);
 /* Transform on the CPU instead of in the vertex shader (Switch: sdmc:/switch/MKDD-NX/config/cpu_xform). */
+/* Guest memory written behind the GPU's back (cache flushes, DMA): cached vertex conversions that
+ * read it are redone. _all: everything (scene loads). g_gx_vcache: the vertex cache on (default). */
+void gx_mem_dirty(uint32_t addr, uint32_t len);
+void gx_mem_dirty_all(void);
+extern bool g_gx_vcache;
 extern bool g_gx_cpu_xform;
 extern bool g_gx_cpu_xform_forced; /* set by the renderer when the XF shader is unusable */
 void gx_xf_report(char *out, size_t n); /* MKDD_XFCHECK result */

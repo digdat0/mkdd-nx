@@ -5,6 +5,7 @@
 #include "rt.h"
 #include "plat.h"
 #include "table.h"
+#include "gx.h"
 
 /* ---- guest memory access through M (MEM1 fast path, MMIO / locked cache otherwise) ---- */
 ALWAYS_INLINE float ldf(Ctx *c, uint8_t *M, uint32_t a) {
@@ -1590,16 +1591,18 @@ static uint64_t i_FUN_8005826c(Ctx *c, uint8_t *M, ARGS) {
 
 /* ---- data cache maintenance: the dcbi / dcbf / dcbst loops are no-ops here (one coherent
  * memory); the flushing ones end with sc (counted). ---- */
-static uint64_t i_DCInvalidateRange(Ctx *c, uint8_t *M, ARGS) { (void)c; (void)M; UNUSED_ARGS; return 0; }
-static uint64_t i_DCFlushRange(Ctx *c, uint8_t *M, ARGS) { (void)c; (void)M; UNUSED_ARGS; if ((uint32_t)a1) g_syscalls++; return 0; }
-static uint64_t i_DCStoreRange(Ctx *c, uint8_t *M, ARGS) { (void)c; (void)M; UNUSED_ARGS; if ((uint32_t)a1) g_syscalls++; return 0; }
-static uint64_t i_DCFlushRangeNoSync(Ctx *c, uint8_t *M, ARGS) { (void)c; (void)M; UNUSED_ARGS; return 0; }
-static uint64_t i_DCStoreRangeNoSync(Ctx *c, uint8_t *M, ARGS) { (void)c; (void)M; UNUSED_ARGS; return 0; }
+static uint64_t i_DCInvalidateRange(Ctx *c, uint8_t *M, ARGS) { (void)c; (void)M; UNUSED_ARGS; gx_mem_dirty((uint32_t)a0, (uint32_t)a1); return 0; }
+/* (the flushes also tell the vertex cache which memory the CPU wrote: gx_mem_dirty) */
+static uint64_t i_DCFlushRange(Ctx *c, uint8_t *M, ARGS) { (void)c; (void)M; UNUSED_ARGS; if ((uint32_t)a1) g_syscalls++; gx_mem_dirty((uint32_t)a0, (uint32_t)a1); return 0; }
+static uint64_t i_DCStoreRange(Ctx *c, uint8_t *M, ARGS) { (void)c; (void)M; UNUSED_ARGS; if ((uint32_t)a1) g_syscalls++; gx_mem_dirty((uint32_t)a0, (uint32_t)a1); return 0; }
+static uint64_t i_DCFlushRangeNoSync(Ctx *c, uint8_t *M, ARGS) { (void)c; (void)M; UNUSED_ARGS; gx_mem_dirty((uint32_t)a0, (uint32_t)a1); return 0; }
+static uint64_t i_DCStoreRangeNoSync(Ctx *c, uint8_t *M, ARGS) { (void)c; (void)M; UNUSED_ARGS; gx_mem_dirty((uint32_t)a0, (uint32_t)a1); return 0; }
 /* GDFlushCurrToMem(): DCFlushRange(list start, length) */
 static uint64_t i_GDFlushCurrToMem(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t gd = ld32(c, M, (uint32_t)RD(c, REG_R13, 4) - 0x6238);
     if (ld32(c, M, gd + 4)) g_syscalls++;
+    gx_mem_dirty(ld32(c, M, gd), ld32(c, M, gd + 4));
     return 0;
 }
 

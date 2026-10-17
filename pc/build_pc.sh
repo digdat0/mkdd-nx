@@ -24,7 +24,7 @@ for f in "$GEN"/part_*.c "$GEN"/table.c; do
     o=$OUT/gen_$(basename "${f%.c}").o
     if [ ! -f "$o" ] || [ "$f" -nt "$o" ] || [ ../runtime/gc_core.h -nt "$o" ]; then jobs+=("gcc $GENF -c $f -o $o"); fi
 done
-if [ ! -f $OUT/gen_mem.o ] || [ "$GEN/mem.S" -nt $OUT/gen_mem.o ]; then (cd "$GEN" && gcc -c mem.S -o "$HERE/$OUT/gen_mem.o"); fi
+rm -f $OUT/gen_mem.o  # the memory image is loaded from the disc's main.dol now
 echo "${#jobs[@]} files to compile"
 printf '%s\n' "${jobs[@]}" | xargs -P "$JOBS" -I{} sh -c '{} || exit 255'
 gcc -o $OUT/mkdd_pc.exe $OUT/*.o -lm -lpthread -lwinmm -lpsapi

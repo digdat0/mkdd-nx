@@ -419,6 +419,7 @@ static const float *matrices(uint32_t pmtx) {
     return G.mtx_cache[i];
 }
 
+static void vc_frame(uint32_t frame_verts);
 static void end_frame(void) {
     /* a movie is playing while frames were decoded in the last half second */
     static uint64_t thp_seen;
@@ -436,6 +437,7 @@ static void end_frame(void) {
     f->clear[1] = (float)((gb >> 8) & 0xFF) / 255.0f;
     f->clear[2] = (float)(gb & 0xFF) / 255.0f;
     f->clear[3] = (float)((ar >> 8) & 0xFF) / 255.0f;
+    vc_frame((uint32_t)f->nverts);
     publish(f);
     s_vb_frame = s_rec_frame = s_tmi_frame = NULL;
     G.slot_frame = G.lblock_frame = NULL;
@@ -902,6 +904,8 @@ typedef struct {
     uint32_t rect[4];
     Frame *frame;
     uint32_t rec;              /* GPU path: texel offset of the XF record in frame->xf */
+    uint64_t vsig;             /* display-list cache: what the conversion depends on (vc_sig) */
+    bool vsig_dirty;
 } DrawSetup;
 static DrawSetup s_ds;
 
@@ -1371,6 +1375,384 @@ static bool s_vtxcheck;        /* PC: MKDD_VTXCHECK=1 runs vtx_fast and the gene
 static uint64_t s_vtxcheck_n, s_vtxcheck_bad;
 static bool s_vtxslow;          /* PC: MKDD_VTXSLOW=1 uses only the general loop (timing) */
 
+/* Material, lights and the draw setup for a draw command (cmd: its VAT in the low bits). */
+static DrawSetup *draw_prepare(uint32_t cmd, const VtxFormat **fo) {
+    const VtxFormat *f = format(cmd & 7);
+    *fo = f;
+    if (!G.mat_valid || G.mat_gen != G.state_gen) {
+        G.mat_uvs = material(&G.mat_tev);
+        G.mat_key = tev_key(&G.mat_tev);
+        G.mat_gen = G.state_gen;
+        G.mat_valid = true;
+    }
+    if (!G.light_valid || G.light_cache_gen != G.light_gen) {
+        light_setup(&G.light);
+        G.light_cache_gen = G.light_gen;
+        G.light_valid = true;
+    }
+    DrawSetup *S = &s_ds;
+    if (!S->valid || S->state_gen != G.state_gen || G.xf_dirty || S->light_gen != G.light_gen || S->vat != (cmd & 7) ||
+        S->vat_gen != G.vat_gen || S->uv_src != G.mat_uvs || S->cp30 != G.cp[0x30] || S->cp40 != G.cp[0x40] || S->frame != G.frame) {
+        draw_setup(S, f, G.mat_uvs);
+        build_ops(S, f);
+        S->valid = true;
+        S->state_gen = G.state_gen; S->cp_gen = G.cp_gen; S->light_gen = G.light_gen; S->vat_gen = G.vat_gen;
+        S->vat = cmd & 7; S->cp30 = G.cp[0x30]; S->cp40 = G.cp[0x40];
+        S->vsig_dirty = true;
+        g_gx_setups++;
+    } else if (S->cp_gen != G.cp_gen) {
+        setup_readers(S, f);
+        S->cp_gen = G.cp_gen;
+        S->vsig_dirty = true;
+    }
+    return S;
+}
+
+static inline unsigned prim_tris(uint32_t prim, unsigned n) {
+    switch (prim) {
+    case 0x80: case 0x88: return n / 4 * 2;
+    case 0x90: return n / 3;
+    case 0x98: case 0xA0: return n >= 2 ? n - 2 : 0;
+    default: return 0; /* lines and points are not drawn */
+    }
+}
+
+/* ---- display-list cache ----
+ * J3D draws each shape with a display list in guest RAM that holds nothing but draw commands
+ * (about 30 strips of a few vertices each; matrices and material state are loaded outside it),
+ * and calls the same lists with the same vertex arrays every frame: ~400 lists, ~13k draws a
+ * frame. Such a list's whole output (converted vertices, indices relative to its first vertex) is
+ * kept and appended in one go next time, instead of decoding every draw again. It is reused while
+ * the conversion setup is the same (S->vsig: VAT, attribute readers, ops), the list's bytes hash the
+ * same, and no memory it read (the list, the array ranges its indices reach) was written since.
+ * Writes are seen the way the GPU must see them: DCFlushRange / DCStoreRange (the CPU's vertex
+ * writes) and DVD / ARAM DMA into RAM; a large DVD read (a scene load, after which the CPU may
+ * unpack data into reused memory) drops everything. The XF record and matrix slots (per frame) are
+ * filled in on reuse. Lists with per-vertex texture matrices or 2D draws are not kept.
+ * config/novcache (Switch) or MKDD_NOVCACHE (PC) turns it off; MKDD_VCACHECK=1 (PC) decodes every
+ * reused list again and compares. */
+bool g_gx_vcache = true;
+#define VC_PAGE_SHIFT 12
+#define VC_PAGES (RAM_SIZE >> VC_PAGE_SHIFT)
+#define VC_SLOTS 8192u            /* hash slots (power of two) */
+#define VC_MAX_ENTRIES 4096u
+#define VC_MAX_BYTES (48u << 20)
+#define VC_RANGES 13
+static uint32_t s_page_gen[VC_PAGES];
+static volatile uint32_t s_dirty_counter = 1, s_dirty_all;
+typedef struct {
+    uint64_t key, sig, ihash;
+    uint32_t off, size, stamp, used;
+    uint32_t nverts, stride, nidx, ndraws;
+    uint32_t changes, skip_until; /* lists that change every frame are not kept for a while */
+    uint32_t nranges, lo[VC_RANGES], hi[VC_RANGES];
+    uint8_t *data;     /* nverts * stride converted bytes */
+    uint8_t *midx;     /* per-vertex position matrix index (formats with one), or NULL */
+    uint32_t *idx;     /* indices relative to the first vertex */
+} VcEntry;
+static VcEntry *s_vc;
+static uint32_t s_vc_n, s_vc_bytes, s_vc_frame;
+static int32_t s_vc_slot[VC_SLOTS]; /* entry index + 1, 0 = empty */
+static bool s_vc_check;
+static uint64_t s_vc_hit, s_vc_lists, s_vc_built, s_vc_changed, s_vc_verts, s_vc_bad;
+
+void gx_mem_dirty(uint32_t addr, uint32_t len) {
+    uint32_t off = addr & 0x01FFFFFFu;
+    if (!len || off >= RAM_SIZE) return;
+    if (len > RAM_SIZE - off) len = RAM_SIZE - off;
+    uint32_t gen = __atomic_add_fetch(&s_dirty_counter, 1, __ATOMIC_ACQ_REL);
+    for (uint32_t p = off >> VC_PAGE_SHIFT, e = (off + len - 1) >> VC_PAGE_SHIFT; p <= e; p++)
+        __atomic_store_n(&s_page_gen[p], gen, __ATOMIC_RELEASE);
+}
+void gx_mem_dirty_all(void) {
+    __atomic_store_n(&s_dirty_all, __atomic_add_fetch(&s_dirty_counter, 1, __ATOMIC_ACQ_REL), __ATOMIC_RELEASE);
+}
+
+static void vc_free(VcEntry *e) {
+    s_vc_bytes -= e->data ? e->nverts * e->stride + e->nidx * 4 : 0;
+    free(e->data); free(e->midx); free(e->idx);
+    e->data = e->midx = NULL;
+    e->idx = NULL;
+}
+static void vc_clear(void) {
+    for (uint32_t i = 0; i < s_vc_n; i++) vc_free(&s_vc[i]);
+    s_vc_n = s_vc_bytes = 0;
+    memset(s_vc_slot, 0, sizeof s_vc_slot);
+}
+
+static inline uint64_t vc_mix(uint64_t h, uint64_t w) {
+    h ^= w * 0x9E3779B97F4A7C15ull;
+    return (h << 31 | h >> 33) * 0xBF58476D1CE4E5B9ull;
+}
+static uint64_t vc_hash(const uint8_t *p, size_t n) {
+    uint64_t h = 0x243F6A8885A308D3ull ^ n;
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) { uint64_t w; memcpy(&w, p + i, 8); h = vc_mix(h, w); }
+    if (i < n) { uint64_t w = 0; memcpy(&w, p + i, n - i); h = vc_mix(h, w); }
+    return h ^ h >> 29;
+}
+
+/* What converting a draw depends on besides its bytes and the arrays' contents. */
+static uint64_t vc_sig(const DrawSetup *S, const VtxFormat *f, uint32_t stride) {
+    uint64_t h = vc_mix(0x13198A2E03707344ull, (uint64_t)S->nops | (uint64_t)stride << 8 | (uint64_t)f->size << 24);
+    for (unsigned k = 0; k < S->nops; k++) {
+        const VOp *op = &S->ops[k];
+        uint64_t a;
+        uint32_t sc;
+        memcpy(&a, op, 8);
+        memcpy(&sc, &op->scale, 4);
+        h = vc_mix(vc_mix(h, a), sc);
+        if (op->mode >= 2 && op->ri < 12) {
+            const Reader *r = &S->rd[op->ri];
+            h = vc_mix(vc_mix(h, (uint64_t)(uint32_t)(r->base - g_ram) | (uint64_t)r->stride << 32), r->elem);
+        }
+    }
+    return h;
+}
+
+static bool vc_clean(const VcEntry *e) {
+    if (__atomic_load_n(&s_dirty_all, __ATOMIC_ACQUIRE) > e->stamp) return false;
+    for (uint32_t r = 0; r < e->nranges; r++)
+        for (uint32_t p = e->lo[r] >> VC_PAGE_SHIFT, last = (e->hi[r] - 1) >> VC_PAGE_SHIFT; p <= last; p++)
+            if (__atomic_load_n(&s_page_gen[p], __ATOMIC_ACQUIRE) > e->stamp) return false;
+    return true;
+}
+
+static VcEntry *vc_find(uint64_t key) {
+    if (!s_vc) return NULL;
+    for (uint32_t i = (uint32_t)key & (VC_SLOTS - 1), probe = 0; probe < 16; probe++, i = (i + 1) & (VC_SLOTS - 1)) {
+        int32_t s = s_vc_slot[i];
+        if (!s) return NULL;
+        if (s_vc[s - 1].key == key) return &s_vc[s - 1];
+    }
+    return NULL;
+}
+
+/* Byte offset of the position-matrix index in a vertex, or -1. */
+static int vc_pnmtx_off(const DrawSetup *S) {
+    unsigned off = 0;
+    for (unsigned k = 0; k < S->nops; k++) {
+        if (S->ops[k].kind == OP_PNMTX) return (int)off;
+        off += S->ops[k].inl;
+    }
+    return -1;
+}
+
+/* The converted vertices with this frame's XF record and matrix slots. */
+static void vc_fill(const VcEntry *e, uint8_t *out, uint32_t rec, uint32_t fixed_slot) {
+    memcpy(out, e->data, (size_t)e->nverts * e->stride);
+    for (uint32_t v = 0; v < e->nverts; v++) {
+        uint8_t *ob = out + (size_t)v * e->stride;
+        uint32_t slot = e->midx ? mtx_slot(e->midx[v]) : fixed_slot;
+        memcpy(ob + 12, &rec, 4);
+        memcpy(ob + 16, &slot, 4);
+    }
+}
+
+/* Append a kept list's output to the frame, as decoding its draws one by one would have. False:
+ * not possible here (vertex cap), decode it instead. */
+static bool dl_apply(const VcEntry *e, const DrawSetup *S, const VtxFormat *f) {
+    Frame *fr = G.frame;
+    if (fr->nverts + e->nverts > 400000) return false;
+    const uint32_t layout = S->layout, stride = e->stride;
+    size_t start = s_vb_frame == fr && s_vb_layout == layout ? fr->vb.len : (fr->vb.len + stride - 1) / stride * stride;
+    vec_reserve(&fr->vb, start - fr->vb.len + (size_t)e->nverts * stride);
+    vc_fill(e, fr->vb.data + start, S->rec, !f->pnmtx ? mtx_slot(G.cp[0x30] & 0x3F) : 0);
+    Batch *bt = batch_for(G.mat_key, &G.mat_tev, S->rect, 0, layout, start);
+    if (!bt) return true; /* dropped, as each draw would have been */
+    uint32_t base = s_vb_frame == fr && s_vb_layout == layout && start == fr->vb.len ? s_vb_next : (uint32_t)(start / stride);
+    fr->vb.len = start + (size_t)e->nverts * stride;
+    s_vb_frame = fr; s_vb_layout = layout; s_vb_next = base + e->nverts;
+    fr->nverts += e->nverts;
+    vec_reserve(&fr->indices, e->nidx);
+    uint32_t *ix = fr->indices.data + fr->indices.len;
+    for (uint32_t i = 0; i < e->nidx; i++) ix[i] = e->idx[i] + base;
+    fr->indices.len += e->nidx;
+    bt->vert_count += e->nverts;
+    bt->index_count += e->nidx;
+    fr->draws += e->ndraws;
+    g_gx_draws += e->ndraws;
+    return true;
+}
+
+/* After decoding list d (addr, size) normally: keep its output if it is a list of draws only and
+ * came out as one contiguous run of vertices and indices. Before: the frame's counts before it. */
+static VcEntry *dl_store(uint64_t key, uint64_t sig, uint64_t ihash, const DrawSetup *S, const VtxFormat *f, uint32_t addr,
+                         uint32_t size, uint32_t stamp, size_t nverts0, size_t ix0, size_t nb0) {
+    const uint8_t *d = g_ram + addr;
+    Frame *fr = G.frame;
+    const uint32_t vat = d[0] & 7, stride = gx_layout_stride(S->layout);
+    /* the list: draws (same VAT) and NOPs only; vertices it draws; index ranges per reader */
+    uint32_t verts = 0, draws = 0, mn[12], mx[12];
+    for (int i = 0; i < 12; i++) { mn[i] = 0xFFFFFFFFu; mx[i] = 0; }
+    for (size_t p = 0; p < size;) {
+        uint32_t cmd = d[p];
+        if (cmd == 0) { p++; continue; }
+        if (cmd < 0x80 || cmd > 0xBF || (cmd & 7) != vat || p + 3 > size) return NULL;
+        unsigned n = be16(d + p + 1);
+        if (p + 3 + (size_t)n * f->size > size) return NULL;
+        if (prim_tris(cmd & 0xF8, n)) {
+            unsigned off = 0;
+            for (unsigned k = 0; k < S->nops; k++) {
+                const VOp *op = &S->ops[k];
+                if (op->mode >= 2 && op->kind != OP_SKIP && op->ri < 12)
+                    for (unsigned v = 0; v < n; v++) {
+                        const uint8_t *q = d + p + 3 + (size_t)v * f->size + off;
+                        uint32_t ix = op->mode == 2 ? q[0] : be16(q);
+                        if (ix < mn[op->ri]) mn[op->ri] = ix;
+                        if (ix > mx[op->ri]) mx[op->ri] = ix;
+                    }
+                off += op->inl;
+            }
+            verts += n;
+            draws++;
+        }
+        p += 3 + (size_t)n * f->size;
+    }
+    /* what decoding appended: all of it, in one batch, vertices contiguous */
+    size_t nidx = fr->indices.len - ix0;
+    if (!verts || fr->nverts - nverts0 != verts || fr->batches.len > nb0 + 1 || !nidx) return NULL;
+    uint32_t first = 0xFFFFFFFFu;
+    for (size_t i = ix0; i < fr->indices.len; i++) if (fr->indices.data[i] < first) first = fr->indices.data[i];
+    if ((size_t)(first + verts) * stride != fr->vb.len) return NULL;
+    size_t bytes = (size_t)verts * stride;
+    if (s_vc_n >= VC_MAX_ENTRIES || s_vc_bytes + bytes + nidx * 4 > VC_MAX_BYTES) vc_clear();
+    if (!s_vc) s_vc = calloc(VC_MAX_ENTRIES, sizeof *s_vc);
+    if (!s_vc) return NULL;
+    VcEntry *e = vc_find(key);
+    if (e) vc_free(e);
+    else {
+        uint32_t i = (uint32_t)key & (VC_SLOTS - 1), probe = 0;
+        while (s_vc_slot[i] && probe < 16) { i = (i + 1) & (VC_SLOTS - 1); probe++; }
+        if (s_vc_slot[i]) return NULL; /* crowded */
+        s_vc_slot[i] = (int32_t)s_vc_n + 1;
+        e = &s_vc[s_vc_n++];
+    }
+    memset(e, 0, sizeof *e);
+    e->key = key; e->sig = sig; e->ihash = ihash; e->off = addr; e->size = size; e->stamp = stamp; e->used = s_vc_frame;
+    e->nverts = verts; e->stride = stride; e->nidx = (uint32_t)nidx; e->ndraws = draws;
+    e->lo[0] = addr; e->hi[0] = addr + size; e->nranges = 1;
+    for (int r = 0; r < 12; r++) {
+        if (mn[r] > mx[r]) continue;
+        const Reader *rd = &S->rd[r];
+        uint64_t lo = (uint64_t)(uint32_t)(rd->base - g_ram) + (uint64_t)mn[r] * rd->stride;
+        uint64_t hi = (uint64_t)(uint32_t)(rd->base - g_ram) + (uint64_t)mx[r] * rd->stride + rd->elem;
+        if (hi > RAM_SIZE) hi = RAM_SIZE;
+        if (lo < hi) { e->lo[e->nranges] = (uint32_t)lo; e->hi[e->nranges] = (uint32_t)hi; e->nranges++; }
+    }
+    int pm = vc_pnmtx_off(S);
+    e->data = malloc(bytes);
+    e->idx = malloc(nidx * 4);
+    e->midx = pm >= 0 ? malloc(verts) : NULL;
+    if (!e->data || !e->idx || (pm >= 0 && !e->midx)) { vc_free(e); e->key = ~0ull; return NULL; }
+    memcpy(e->data, fr->vb.data + (size_t)first * stride, bytes);
+    for (size_t i = 0; i < nidx; i++) e->idx[i] = fr->indices.data[ix0 + i] - first;
+    if (pm >= 0) {
+        uint32_t v = 0;
+        for (size_t p = 0; p < size;) {
+            if (!d[p]) { p++; continue; }
+            unsigned n = be16(d + p + 1);
+            if (prim_tris(d[p] & 0xF8, n))
+                for (unsigned k = 0; k < n; k++) e->midx[v++] = d[p + 3 + (size_t)k * f->size + (unsigned)pm] & 0x3F;
+            p += 3 + (size_t)n * f->size;
+        }
+    }
+    s_vc_bytes += (uint32_t)(bytes + nidx * 4);
+    return e;
+}
+
+static size_t exec(const uint8_t *d, size_t len, unsigned depth);
+
+/* A display-list call (exec, command 0x40): reuse the list's kept output, or decode it and keep it.
+ * False: not handled here, decode it normally. */
+static bool dl_call(uint32_t addr, uint32_t size, unsigned depth) {
+    if (!g_gx_vcache || s_vtxcheck || s_xfcheck || s_vtxslow || size < 4) return false;
+    const uint8_t *d = g_ram + addr;
+    if (d[0] < 0x80 || d[0] > 0xBF) return false; /* material and state lists */
+    if (bits(G.bp[0x00], 14, 2) == 3) return false;
+    const VtxFormat *f;
+    DrawSetup *S = draw_prepare(d[0], &f);
+    if (!S->gpu || S->ortho) return false;
+    for (int i = 0; i < 8; i++) if (f->texmtx[i]) return false;
+    if (S->vsig_dirty) { S->vsig = vc_sig(S, f, gx_layout_stride(S->layout)); S->vsig_dirty = false; }
+    uint32_t stamp = __atomic_load_n(&s_dirty_counter, __ATOMIC_ACQUIRE);
+    uint64_t key = vc_mix(vc_mix(S->vsig, addr), size);
+    VcEntry *e = vc_find(key);
+    if (e && e->skip_until > s_vc_frame) return false;
+    uint64_t ihash = vc_hash(d, size);
+    bool hit = e && e->data && e->ihash == ihash && e->sig == S->vsig && e->off == addr && e->size == size && vc_clean(e);
+    if (hit && !s_vc_check) {
+        if (!dl_apply(e, S, f)) return false;
+        e->used = s_vc_frame;
+        e->changes = 0;
+        s_vc_hit += e->nverts;
+        s_vc_lists++;
+        return true;
+    }
+    Frame *fr = G.frame;
+    size_t nverts0 = fr->nverts, ix0 = fr->indices.len, nb0 = fr->batches.len;
+    exec(d, size, depth);
+    s_vc_verts += fr->nverts - nverts0;
+    if (hit) { /* MKDD_VCACHECK: what was kept must equal what was just decoded */
+        size_t nidx = fr->indices.len - ix0;
+        bool same = nidx == e->nidx && fr->nverts - nverts0 == e->nverts;
+        uint32_t first = 0xFFFFFFFFu;
+        for (size_t i = ix0; same && i < fr->indices.len; i++) if (fr->indices.data[i] < first) first = fr->indices.data[i];
+        for (size_t i = 0; same && i < nidx; i++) same = fr->indices.data[ix0 + i] - first == e->idx[i];
+        if (same) {
+            uint8_t *tmp = malloc((size_t)e->nverts * e->stride);
+            vc_fill(e, tmp, S->rec, !f->pnmtx ? mtx_slot(G.cp[0x30] & 0x3F) : 0);
+            same = !memcmp(tmp, fr->vb.data + (size_t)first * e->stride, (size_t)e->nverts * e->stride);
+            free(tmp);
+        }
+        if (!same && s_vc_bad++ < 20) rt_log("vcache: CHECK FAILED: list at %#x (%u bytes, %u vertices) differs", addr, size, e->nverts);
+        s_vc_hit += e->nverts;
+        e->used = s_vc_frame;
+        return true;
+    }
+    if (e) s_vc_changed++;
+    uint32_t changes = e ? e->changes + 1 : 0;
+    VcEntry *ne = dl_store(key, S->vsig, ihash, S, f, addr, size, stamp, nverts0, ix0, nb0);
+    if (ne) {
+        s_vc_built++;
+        ne->changes = changes;
+        if (changes >= 4) { vc_free(ne); ne->changes = 0; ne->skip_until = s_vc_frame + 600; } /* changes every frame */
+    }
+    return true;
+}
+
+/* Per frame (end_frame): statistics now and then; lists unused for 10 s go. */
+static void vc_frame(uint32_t frame_verts) {
+    s_vc_frame++;
+    static uint64_t all_verts;
+    all_verts += frame_verts;
+    if (s_vc_frame % 600 == 0 && s_vc) {
+        uint32_t keep = 0;
+        memset(s_vc_slot, 0, sizeof s_vc_slot);
+        for (uint32_t i = 0; i < s_vc_n; i++) {
+            VcEntry *e = &s_vc[i];
+            if ((!e->data && e->skip_until <= s_vc_frame) || s_vc_frame - e->used > 600) { vc_free(e); continue; }
+            uint32_t k = (uint32_t)e->key & (VC_SLOTS - 1), probe = 0;
+            while (s_vc_slot[k] && probe < 16) { k = (k + 1) & (VC_SLOTS - 1); probe++; }
+            if (s_vc_slot[k]) { vc_free(e); continue; }
+            s_vc[keep] = *e;
+            s_vc_slot[k] = (int32_t)keep + 1;
+            keep++;
+        }
+        s_vc_n = keep;
+    }
+    if (s_vc_frame % 300 == 0) {
+        if (g_gx_vcache)
+            rt_log("vcache: %.0f%% of vertices reused (%llu lists a frame reused, %llu kept, %llu changed), %u lists kept, %u KB%s",
+                   all_verts ? 100.0 * (double)s_vc_hit / (double)all_verts : 0.0, (unsigned long long)s_vc_lists / 300,
+                   (unsigned long long)s_vc_built, (unsigned long long)s_vc_changed, s_vc_n, s_vc_bytes >> 10,
+                   s_vc_check ? (s_vc_bad ? " CHECK FAILED" : " (checked)") : "");
+        s_vc_hit = s_vc_lists = s_vc_built = s_vc_changed = s_vc_verts = 0;
+        all_verts = 0;
+    }
+}
+
+
 static void draw(uint32_t cmd, const uint8_t *c) {
     uint32_t prim = cmd & 0xF8;
     if (bits(G.bp[0x00], 14, 2) == 3) return; /* cull all */
@@ -1391,31 +1773,8 @@ static void draw(uint32_t cmd, const uint8_t *c) {
         if (logged++ < 4) rt_log("gx: frame vertex cap reached (%lu + %u), dropping draws", (unsigned long)G.frame->nverts, n);
         return;
     }
-    const VtxFormat *f = format(cmd & 7);
-    if (!G.mat_valid || G.mat_gen != G.state_gen) {
-        G.mat_uvs = material(&G.mat_tev);
-        G.mat_key = tev_key(&G.mat_tev);
-        G.mat_gen = G.state_gen;
-        G.mat_valid = true;
-    }
-    if (!G.light_valid || G.light_cache_gen != G.light_gen) {
-        light_setup(&G.light);
-        G.light_cache_gen = G.light_gen;
-        G.light_valid = true;
-    }
-    DrawSetup *S = &s_ds;
-    if (!S->valid || S->state_gen != G.state_gen || G.xf_dirty || S->light_gen != G.light_gen || S->vat != (cmd & 7) ||
-        S->vat_gen != G.vat_gen || S->uv_src != G.mat_uvs || S->cp30 != G.cp[0x30] || S->cp40 != G.cp[0x40] || S->frame != G.frame) {
-        draw_setup(S, f, G.mat_uvs);
-        build_ops(S, f);
-        S->valid = true;
-        S->state_gen = G.state_gen; S->cp_gen = G.cp_gen; S->light_gen = G.light_gen; S->vat_gen = G.vat_gen;
-        S->vat = cmd & 7; S->cp30 = G.cp[0x30]; S->cp40 = G.cp[0x40];
-        g_gx_setups++;
-    } else if (S->cp_gen != G.cp_gen) {
-        setup_readers(S, f);
-        S->cp_gen = G.cp_gen;
-    }
+    const VtxFormat *f;
+    DrawSetup *S = draw_prepare(cmd, &f);
     const bool gpu = S->gpu;
     const Reader *rd = S->rd;
     const VOp *ops = S->ops;
@@ -1660,7 +2019,7 @@ static size_t exec(const uint8_t *d, size_t len, unsigned depth) {
         case 0x40: {
             uint32_t addr = be32(c + 1) & 0x03FFFFFFu, size = be32(c + 5);
             /* Decoded in place from RAM (J3D calls a display list per shape). */
-            if (depth < 4 && (uint64_t)addr + size <= RAM_SIZE) exec(g_ram + addr, size, depth + 1);
+            if (depth < 4 && (uint64_t)addr + size <= RAM_SIZE && !dl_call(addr, size, depth + 1)) exec(g_ram + addr, size, depth + 1);
             break;
         }
         case 0x61: bp_write(be32(c + 1)); break;
@@ -1759,6 +2118,8 @@ void gx_start_gpu(void) {
     s_xfcheck = getenv("MKDD_XFCHECK") != NULL;
     s_vtxcheck = getenv("MKDD_VTXCHECK") != NULL;
     s_vtxslow = getenv("MKDD_VTXSLOW") != NULL;
+    s_vc_check = getenv("MKDD_VCACHECK") != NULL;
+    if (getenv("MKDD_NOVCACHE")) g_gx_vcache = false;
     pmutex_init(&s_flock);
     pmutex_init(&s_pool_lock);
     pmutex_init(&s_tlock);
@@ -1803,6 +2164,29 @@ static void tlut_color(const uint8_t *tlut, unsigned idx, uint32_t fmt, uint8_t 
  * 2 (I, A), rows of w texels. The renderer uploads them as R8 / RG8 and swizzles back to
  * (I, I, I, I) / (I, I, I, A), the same values gx_texture_decode gives: a quarter (half) of the
  * upload. Movies are three I8 planes per frame. 0: other formats. */
+/* CMPR is S3TC/BC1 in another layout: 8x8 tiles of four 4x4 blocks (top left, top right, bottom
+ * left, bottom right), big-endian colours, the first texel of a row in an index byte's top bits.
+ * BC1 wants the blocks in rows, little-endian colours and the first texel in the low bits; the
+ * colour rules are the same (c0 > c1: four colours at thirds; else three and transparent black).
+ * Sizes that are not a multiple of 4: false. */
+bool gx_texture_cmpr_bc1(const GxTexture *t, uint8_t *out) {
+    uint32_t w = t->width, h = t->height;
+    if (t->fmt != 14 || (w & 3) || (h & 3) || !w || !h) return false;
+    uint32_t bw = w / 4, bh = h / 4, tiles_x = (w + 7) / 8;
+    if (t->raw_len < (size_t)tiles_x * ((h + 7) / 8) * 32) return false;
+    for (uint32_t by = 0; by < bh; by++)
+        for (uint32_t bx = 0; bx < bw; bx++) {
+            const uint8_t *s = t->raw + ((size_t)(by / 2) * tiles_x + bx / 2) * 32 + ((by & 1) * 2 + (bx & 1)) * 8;
+            uint8_t *o = out + ((size_t)by * bw + bx) * 8;
+            o[0] = s[1]; o[1] = s[0]; o[2] = s[3]; o[3] = s[2];
+            for (int r = 0; r < 4; r++) {
+                uint8_t v = s[4 + r];
+                o[4 + r] = (uint8_t)((v & 0x03) << 6 | (v & 0x0C) << 2 | (v & 0x30) >> 2 | (v & 0xC0) >> 6);
+            }
+        }
+    return true;
+}
+
 unsigned gx_texture_decode_compact(const GxTexture *t, uint8_t *out) {
     uint32_t w = t->width, h = t->height, fmt = t->fmt, bw, bh, bytes;
     if (fmt > 3 || !block_info(fmt, &bw, &bh, &bytes)) return 0;

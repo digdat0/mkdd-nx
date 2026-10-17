@@ -3,7 +3,8 @@
 C counterpart of MKDD-Recomp's tools/gen_rust.py, with the same semantics:
 
 sheets/instructions.csv (p-code per instruction) -> gen/part_NN.c
-sheets/memory.csv                                 -> gen/mem_<section>.bin (loaded via gen/mem.S)
+sheets/memory.csv                                 -> gen/table.c SECTIONS (addresses and sizes only: the
+                                                     runtime loads the bytes from main.dol on the user's disc)
 sheets/functions.csv + meta.csv + hle.csv         -> gen/table.c, gen/funcs.h
 
 Every function becomes `void f_<ADDR>(Ctx *c, uint32_t entry)` with one label per basic block.
@@ -1186,18 +1187,17 @@ def main():
             write_if_changed(OUT / f"part_{n:02}.c", fh.getvalue())
         print(f"part_{n:02}: {len(part)} functions", flush=True)
 
-    # Memory image from memory.csv, embedded with .incbin.
-    blobs, starts = defaultdict(bytearray), {}
+    # Memory sections from memory.csv: only where they go and how big they are. The bytes are not
+    # embedded: the runtime loads them from main.dol on the user's disc at boot (checked against
+    # DOL_SHA1), so the build carries no copy of the game's code or data.
+    sizes, starts = defaultdict(int), {}
     for r in read("memory.csv"):
         sec = r["section"]
         starts.setdefault(sec, int(r["addr"], 16))
-        blobs[sec] += bytes.fromhex(r["hex"])
-    ident = {sec: re.sub(r"\W", "_", sec) for sec in blobs}
-    for sec, data in blobs.items():
-        write_if_changed(OUT / f"mem_{ident[sec]}.bin", bytes(data))
-    write_if_changed(OUT / "mem.S", "".join(
-        f'    .section .rodata.mem_{ident[s]},"a"\n    .balign 32\n    .global mem_{ident[s]}\nmem_{ident[s]}:\n'
-        f'    .incbin "mem_{ident[s]}.bin"\n' for s in blobs))
+        sizes[sec] += len(r["hex"]) // 2
+    for stale in list(OUT.glob("mem_*.bin")) + [OUT / "mem.S"]:  # embedded by older versions
+        if stale.exists():
+            stale.unlink()
 
     regs = read("registers.csv")
     reg_space = max(int(r["offset"], 16) + int(r["size"]) for r in regs)
@@ -1207,12 +1207,10 @@ def main():
         fh.write(f"const unsigned REG_SPACE = 0x{reg_space:x};\n")
         fh.write(f"const char GAME_ID[] = \"{meta['game_id']}\";\n")
         fh.write(f"const char DOL_SHA1[] = \"{meta['main_dol_sha1']}\";\n\n")
-        for s in blobs:
-            fh.write(f"extern const uint8_t mem_{ident[s]}[];\n")
         fh.write("const MemSection SECTIONS[] = {\n")
         for s, start in starts.items():
-            fh.write(f"    {{0x{start:08x}u, mem_{ident[s]}, {len(blobs[s])}u}},\n")
-        fh.write(f"}};\nconst unsigned SECTION_COUNT = {len(blobs)};\n\n")
+            fh.write(f"    {{0x{start:08x}u, {sizes[s]}u}}, /* {s} */\n")
+        fh.write(f"}};\nconst unsigned SECTION_COUNT = {len(sizes)};\n\n")
         fh.write("const FuncEntry FUNCS[] = {\n")
         for e in entries:
             end = max(int(r["addr"], 16) + len(r["bytes"]) // 2 for r in by_func[e])

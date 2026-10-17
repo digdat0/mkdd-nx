@@ -4,13 +4,13 @@
 
 typedef void (*GuestFn)(Ctx *c, uint32_t entry);
 typedef struct { uint32_t start, end; GuestFn fn; } FuncEntry;
-typedef struct { uint32_t addr; const uint8_t *data; uint32_t size; } MemSection;
+typedef struct { uint32_t addr, size; } MemSection; /* bytes come from main.dol on the disc */
 typedef struct { uint32_t addr; const char *name; } NamedAddr;
 
 extern const uint32_t ENTRY_POINT;
 extern const unsigned REG_SPACE;
 extern const char GAME_ID[];
-extern const char DOL_SHA1[];
+extern const char DOL_SHA1[];     /* main.dol the code was generated from (lowercase hex) */
 extern const MemSection SECTIONS[];
 extern const unsigned SECTION_COUNT;
 extern const FuncEntry FUNCS[];   /* sorted by start address */

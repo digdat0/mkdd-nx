@@ -53,6 +53,8 @@ static void defaults(void) {
     g_set.fov[1] = 2; /* 16:9: wider */
     g_set.aniso = 0;
     g_set.border = false;
+    g_set.docked_res = 1;
+    g_set.profiler = false;
     memcpy(g_set.map, DEFAULT_MAP, sizeof g_set.map);
 }
 
@@ -85,6 +87,8 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "fov_16_9")) g_set.fov[1] = atoi(v) < 0 ? 0 : atoi(v) > 2 ? 2 : atoi(v);
         else if (!strcmp(k, "aniso")) g_set.aniso = atoi(v) < 0 ? 0 : atoi(v) > 4 ? 4 : atoi(v);
         else if (!strcmp(k, "border")) g_set.border = atoi(v) != 0;
+        else if (!strcmp(k, "docked_res")) g_set.docked_res = atoi(v) != 0;
+        else if (!strcmp(k, "profiler")) g_set.profiler = atoi(v) != 0;
         else
             for (int i = 0; i < GC_COUNT; i++)
                 if (!strcmp(k, GC_KEYS[i])) g_set.map[i] = strtoull(v, NULL, 16) & mappable();
@@ -98,9 +102,9 @@ void settings_load(const char *path) {
 void settings_save(void) {
     FILE *f = fopen(s_path, "w");
     if (!f) return;
-    fprintf(f, "display=%d\nshow_fps=%d\nlogging=%d\nrumble=%d\nunlock_all=%d\nhd_textures=%d\nfov_4_3=%d\nfov_16_9=%d\naniso=%d\nborder=%d\n",
-            g_set.wide, g_set.show_fps, g_set.logging, g_set.rumble, g_set.unlock_all, g_set.hd_textures, g_set.fov[0],
-            g_set.fov[1], g_set.aniso, g_set.border);
+    fprintf(f, "display=%d\nshow_fps=%d\nlogging=%d\nrumble=%d\nunlock_all=%d\nhd_textures=%d\nfov_4_3=%d\nfov_16_9=%d\naniso=%d\nborder=%d\n"
+            "docked_res=%d\nprofiler=%d\n", g_set.wide, g_set.show_fps, g_set.logging, g_set.rumble, g_set.unlock_all, g_set.hd_textures,
+            g_set.fov[0], g_set.fov[1], g_set.aniso, g_set.border, g_set.docked_res, g_set.profiler);
     for (int i = 0; i < GC_COUNT; i++) fprintf(f, "%s=%llx\n", GC_KEYS[i], (unsigned long long)g_set.map[i]);
     fclose(f);
 }
@@ -162,10 +166,10 @@ void color_adjust(float adj[3]) {
 /* Main page: what most players change. Advanced: picture and feel. Debugging: diagnostics. */
 enum { PAGE_MAIN, PAGE_MAP, PAGE_EXIT, PAGE_COLOR, PAGE_DEBUG, PAGE_ADV, PAGE_COUNT };
 enum { M_WIDE, M_HD, M_CTRL, M_MAP, M_ADV, M_DEBUG, M_EXIT, M_COUNT };
-enum { A_COLOR, A_RUMBLE, A_FOV, A_ANISO, A_BORDER, A_BACK, A_COUNT };
+enum { A_COLOR, A_RUMBLE, A_FOV, A_ANISO, A_DOCKED, A_BORDER, A_BACK, A_COUNT };
 static const char *FOV_NAMES[3] = {"NORMAL", "WIDE", "WIDER"};
 static const char *ANISO_NAMES[5] = {"NORMAL", "2X", "4X", "8X", "16X"};
-enum { D_FPS, D_UNLOCK, D_LOG, D_BACK, D_COUNT };
+enum { D_FPS, D_UNLOCK, D_LOG, D_PROF, D_BACK, D_COUNT };
 static const char *FPS_NAMES[3] = {"OFF", "FPS", "FPS + TIMES"};
 static const char *RUMBLE_NAMES[3] = {"OFF", "LOW", "HIGH"};
 static bool s_want_controllers;
@@ -285,6 +289,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
             apply_logging();
             settings_save();
             break;
+        case D_PROF: g_set.profiler = !g_set.profiler; settings_save(); break;
         case D_BACK: if (ok) s_page = PAGE_MAIN; break;
         }
         return true;
@@ -298,6 +303,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         case A_RUMBLE: g_set.rumble = (g_set.rumble + (left ? 2 : 1)) % 3; settings_save(); break;
         case A_FOV: g_set.fov[g_set.wide] = (g_set.fov[g_set.wide] + (left ? 2 : 1)) % 3; settings_save(); break;
         case A_ANISO: g_set.aniso = (g_set.aniso + (left ? 4 : 1)) % 5; settings_save(); break;
+        case A_DOCKED: g_set.docked_res = !g_set.docked_res; settings_save(); break;
         case A_BORDER: g_set.border = !g_set.border; settings_save(); break;
         case A_BACK: if (ok) s_page = PAGE_MAIN; break;
         }
@@ -714,25 +720,28 @@ void menu_draw(int w, int h, float fps, const char *perf) {
             float bs = 22 * k;
             mtext(x + pw - mtext_w(build, bs) - 24 * k, y + 10 * k + (60 * k - bs) / 2, bs, C_VAL_T, C_VAL_B, build);
         } else if (s_page == PAGE_ADV) {
-            static const char *labels[A_COUNT] = {"COLOR", "RUMBLE", "FIELD OF VIEW", "TEXTURE FILTERING", "BORDER", "BACK"};
+            static const char *labels[A_COUNT] = {"COLOR", "RUMBLE", "FIELD OF VIEW", "TEXTURE FILTERING", "DOCKED RESOLUTION", "BORDER", "BACK"};
             const char *values[A_COUNT] = {COLOR_NAMES[g_color.mode], RUMBLE_NAMES[g_set.rumble % 3], FOV_NAMES[g_set.fov[g_set.wide] % 3],
-                                           ANISO_NAMES[g_set.aniso % 5], g_set.border ? "ON" : "OFF", NULL};
-            static const bool more[A_COUNT] = {true, false, false, false, false, false};
+                                           ANISO_NAMES[g_set.aniso % 5], g_set.docked_res ? "2X" : "NATIVE",
+                                           g_set.border ? "ON" : "OFF", NULL};
+            static const bool more[A_COUNT] = {true, false, false, false, false, false, false};
             for (int i = 0; i < A_COUNT; i++, ry += rh) mrow(x, ry, pw, rh, k, s_sel[PAGE_ADV] == i, labels[i], values[i], more[i]);
             hint = s_sel[PAGE_ADV] == A_COLOR    ? "A: ADJUST   LEFT/RIGHT: ACCURATE, VIVID, CUSTOM"
                    : s_sel[PAGE_ADV] == A_RUMBLE ? "CONTROLLER VIBRATION"
                    : s_sel[PAGE_ADV] == A_FOV    ? (g_set.wide ? "RACE CAMERA IN 16:9, DEFAULT WIDER" : "RACE CAMERA IN 4:3, DEFAULT NORMAL")
                    : s_sel[PAGE_ADV] == A_ANISO  ? "SHARPER TEXTURES AT ANGLES: ROADS AND WALLS IN THE DISTANCE"
+                   : s_sel[PAGE_ADV] == A_DOCKED ? "ON THE TV: 2X RENDER, 1080P OUTPUT. HANDHELD STAYS NATIVE"
                    : s_sel[PAGE_ADV] == A_BORDER ? "4:3: CHECKERED BORDER BESIDE THE RACE"
                                                  : "B: BACK";
         } else if (s_page == PAGE_DEBUG) {
-            static const char *labels[D_COUNT] = {"SHOW FPS", "UNLOCK ALL", "LOGGING", "BACK"};
+            static const char *labels[D_COUNT] = {"SHOW FPS", "UNLOCK ALL", "LOGGING", "PROFILER", "BACK"};
             const char *values[D_COUNT] = {FPS_NAMES[g_set.show_fps % 3], g_set.unlock_all ? "ON" : "OFF",
-                                           LOG_NAMES[g_set.logging & 3], NULL};
+                                           LOG_NAMES[g_set.logging & 3], g_set.profiler ? "ON" : "OFF", NULL};
             for (int i = 0; i < D_COUNT; i++, ry += rh) mrow(x, ry, pw, rh, k, s_sel[PAGE_DEBUG] == i, labels[i], values[i], false);
             hint = s_sel[PAGE_DEBUG] == D_FPS      ? "TIMES: MS PER FRAME OF GAME, GRAPHICS AND RENDER THREADS"
                    : s_sel[PAGE_DEBUG] == D_UNLOCK ? "ALL CHARACTERS, KARTS, CUPS: NEVER WRITTEN TO YOUR SAVE"
                    : s_sel[PAGE_DEBUG] == D_LOG    ? "DEBUG LOGS ON THE SD CARD, FOR BUG REPORTS"
+                   : s_sel[PAGE_DEBUG] == D_PROF   ? "PERFORMANCE SAMPLES FOR REPORTS: COSTS A LITTLE SPEED. NEXT START"
                                                    : "B: BACK";
         } else if (s_page == PAGE_COLOR) {
             int v[3];

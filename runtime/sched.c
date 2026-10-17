@@ -41,6 +41,7 @@ typedef struct {
     int prio;
     int state;
     uint32_t wait_queue;
+    uint32_t wait_lr, wait_sp; /* where it went to sleep (for the trace's thread dump) */
     uint64_t seq;
     int suspend;
     bool started;
@@ -350,7 +351,12 @@ void sched_sleep(Ctx *c, uint32_t queue) {
     if (c->in_irq || me < 0x80000000u) return; /* sleeping outside a real thread: just continue */
     pmutex_lock(&s_lock);
     Th *th = find(me);
-    if (th) { th->state = TS_WAITING; th->wait_queue = queue; }
+    if (th) {
+        th->state = TS_WAITING;
+        th->wait_queue = queue;
+        th->wait_lr = (uint32_t)RD(c, REG_LR, 4);
+        th->wait_sp = ctx_gpr(c, 1);
+    }
     set_gstate(me, GS_WAITING);
     switch_to_next(me);
     pmutex_unlock(&s_lock);
@@ -650,7 +656,20 @@ void sched_describe(char *out, size_t n) {
     static const char *names[] = {"Ready", "Running", "Waiting", "Suspended", "Dead"};
     for (int i = 0; i < MAX_THREADS && k < n; i++) {
         Th *t = &s_threads[i];
-        if (t->used) k += (size_t)snprintf(out + k, n - k, "[%#010x p%d %s s%d] ", t->addr, t->prio, names[t->state], t->suspend);
+        if (!t->used) continue;
+        k += (size_t)snprintf(out + k, n - k, "[%#010x p%d %s s%d", t->addr, t->prio, names[t->state], t->suspend);
+        if (t->state == TS_WAITING && k < n) {
+            /* what it waits on: the queue, the caller of the sleep and the stack's saved-LR chain */
+            k += (size_t)snprintf(out + k, n - k, " q%#x lr%#x", t->wait_queue, t->wait_lr);
+            uint32_t fp = t->wait_sp;
+            for (int d = 0; d < 6 && k < n; d++) {
+                uint32_t next = (uint32_t)m_read_be(fp, 4);
+                if (next < 0x80000000u || next >= 0x81800000u || next <= fp) break;
+                k += (size_t)snprintf(out + k, n - k, "<%#x", (uint32_t)m_read_be(next + 4, 4));
+                fp = next;
+            }
+        }
+        if (k < n) k += (size_t)snprintf(out + k, n - k, "] ");
     }
     pmutex_unlock(&s_lock);
 }
