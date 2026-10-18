@@ -179,6 +179,6 @@ size_t tev_gen_fs(const TevState *t, char *dst, size_t cap) {
         if (fsel == 7) out(b, "f = exp2(-8.0 * (1.0 - f) * (1.0 - f));");
         out(b, "rgb = mix(rgb, tev.fog_color.rgb, f);\n");
     }
-    out(b, "o_color = vec4(rgb, res.a);\n}\n");
+    out(b, "o_color = vec4(rgb, (tev.params.w & 0x100u) != 0u ? float(tev.params.w & 0xFFu) / 255.0 : res.a);\n}\n");
     return B.len < cap ? B.len : 0;
 }

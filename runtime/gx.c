@@ -71,7 +71,8 @@ static struct {
     uint64_t light_gen, light_cache_gen;
     bool light_valid;
     LightSetup light;
-    U64Map copy_targets;
+    U64Map copy_targets;   /* EFB copy destination -> signature of its RAM at the copy (copy_sig) */
+    U64Map copy_len;       /* ... -> bytes the signature covers */
     Frame *frame;
     float efb[2];
     unsigned unknown_logged;
@@ -177,6 +178,12 @@ GxTexture *gx_texture_acquire(uint64_t key) {
     if (t) __atomic_add_fetch(&t->refs, 1, __ATOMIC_ACQ_REL);
     pmutex_unlock(&s_tlock);
     return t;
+}
+static bool store_has(uint64_t key) {
+    pmutex_lock(&s_tlock);
+    bool has = u64map_get(&s_textures, key, NULL);
+    pmutex_unlock(&s_tlock);
+    return has;
 }
 static void add_texture(GxTexture *t) {
     size_t bytes = t->raw_len + (t->tlut ? 512 : 0);
@@ -445,6 +452,7 @@ static void end_frame(void) {
     s_frames_decoded++;
 }
 
+static uint64_t copy_sig(uint32_t addr, size_t len);
 static void bp_write(uint32_t v) {
     G.state_gen++;
     uint32_t reg = v >> 24, val = v & 0xFFFFFF;
@@ -462,7 +470,16 @@ static void bp_write(uint32_t v) {
         vec_push(&G.frame->copies, cp);
         if (nw & (1u << 14)) end_frame();
         else {
-            u64map_put(&G.copy_targets, gx_phys(G.bp[0x4B]), 1);
+            uint32_t dst = gx_phys(G.bp[0x4B]), sz = G.bp[0x4A];
+            size_t cw = bits(sz, 0, 10) + 1, ch = bits(sz, 10, 10) + 1;
+            if ((nw >> 9) & 1) { cw = cw / 2 ? cw / 2 : 1; ch = ch / 2 ? ch / 2 : 1; }
+            size_t len = cw * ch / 2; /* the smallest copy format (4 bits a pixel): inside the copy */
+            if (len < 8) len = 8;
+            if (dst < RAM_SIZE && len > RAM_SIZE - dst) len = RAM_SIZE - dst;
+            if (dst < RAM_SIZE) {
+                u64map_put(&G.copy_targets, dst, copy_sig(dst, len));
+                u64map_put(&G.copy_len, dst, len);
+            }
             u64map_clear(&G.tex_memo);
             G.state_gen++;
         }
@@ -495,6 +512,20 @@ static void bp_write(uint32_t v) {
         }
     }
 }
+
+/* Sampled signature of RAM at an EFB copy's destination. Copies go to GL render targets, never
+ * to RAM, so while the RAM there is unchanged a texture read from that address means the copy.
+ * Once the CPU writes new data there (the memory reused after a scene change: character skins,
+ * the title picture), it is an ordinary texture again: treating every address that ever received
+ * a copy as a render target for good drew those textures as an old shadow buffer (flat white). */
+static uint64_t copy_sig(uint32_t addr, size_t len) {
+    const uint8_t *d = g_ram + addr;
+    uint64_t h = 0xCBF29CE484222325ull ^ len;
+    size_t words = len / 8, step = words / 64 ? words / 64 : 1;
+    for (size_t i = 0; i < words; i += step) { uint64_t w; memcpy(&w, d + 8 * i, 8); h = (h ^ w) * 0x100000001B3ull; h ^= h >> 29; }
+    return h | 1;
+}
+uint64_t g_gx_copy_targets_dropped;
 
 /* (block width, block height, bytes per block) for a GX texture format. */
 static bool block_info(uint32_t fmt, uint32_t *bw, uint32_t *bh, uint32_t *bytes) {
@@ -556,7 +587,13 @@ static uint64_t texture_inner(unsigned map) {
     uint32_t w = bits(img0, 0, 10) + 1, h = bits(img0, 10, 10) + 1, fmt = bits(img0, 20, 4);
     uint32_t addr = gx_phys(G.bp[img3_r]);
     if (!addr) return 0;
-    if (u64map_get(&G.copy_targets, addr, NULL)) return rt_key(addr, G.bp[mode_r]); /* EFB copy target */
+    uint64_t sig, clen;
+    if (u64map_get(&G.copy_targets, addr, &sig)) { /* EFB copy target, while its RAM is untouched */
+        if (u64map_get(&G.copy_len, addr, &clen) && copy_sig(addr, (size_t)clen) == sig) return rt_key(addr, G.bp[mode_r]);
+        u64map_del(&G.copy_targets, addr);
+        u64map_del(&G.copy_len, addr);
+        if (g_gx_copy_targets_dropped++ < 20) rt_log("gx: %#x held an EFB copy, now new data: an ordinary texture again", addr);
+    }
     size_t size = tex_size(fmt, w, h);
     if (!size || addr + size > RAM_SIZE) {
         static unsigned logged; /* a texture the draw can't show (it samples as black/transparent) */
@@ -578,9 +615,13 @@ static uint64_t texture_inner(unsigned map) {
     }
     uint32_t ck_parts[6] = {addr, fmt, w, h, paletted ? tlut_addr : 0, tlut_fmt};
     uint64_t ck = fnv_bytes(FNV_INIT, ck_parts, sizeof ck_parts), cached;
+    /* Seen before: reuse the key while the store still holds the texture. The store evicts the
+     * oldest additions past its budget, also textures still in use; the renderer keeps its own
+     * GL copy only while they are drawn, so after a few demos (characters and the title picture
+     * unused for a while) it found nothing for the key and drew them white. Re-captured here. */
     if (u64map_get(&G.tex_cache_hash, ck, &cached) && cached == h64) {
         uint64_t key;
-        if (u64map_get(&G.tex_cache_key, ck, &key)) return key;
+        if (u64map_get(&G.tex_cache_key, ck, &key) && store_has(key)) return key;
     }
     uint32_t mode = G.bp[mode_r];
     GxTexture *t = calloc(1, sizeof *t);
@@ -602,6 +643,7 @@ static uint64_t texture_inner(unsigned map) {
     t->linear = bits(mode, 4, 1);
     uint64_t key = h64 ^ ((uint64_t)mode << 40);
     if (!key) key = 1;
+    if ((key & 0xFFFF000000000000ull) == RT_TAG) key ^= 1ull << 63; /* never mistaken for a render target */
     t->key = key;
     add_texture(t);
     u64map_put(&G.tex_cache_hash, ck, h64);
@@ -1988,6 +2030,37 @@ static void draw(uint32_t cmd, const uint8_t *c) {
     g_gx_draws++;
 }
 
+/* Is this display list well formed: only known commands, each inside the list, no nested call?
+ * A list the game rewrote or freed before the decoder got to it (it trails the game) is other data:
+ * executing it wrote random BP/CP/XF registers, and the wrong state stayed (flat or missing
+ * models, broken menus) until the game set those registers again. Such a list is skipped. A real
+ * list never fails this (they are padded with NOPs); after a VAT write inside the list the vertex
+ * sizes are unknown here, so the rest is accepted. */
+uint64_t g_gx_dl_rejected;
+static bool dl_valid(const uint8_t *d, size_t len) {
+    size_t p = 0;
+    while (p < len) {
+        uint32_t cmd = d[p];
+        size_t need;
+        if (cmd == 0x00 || cmd == 0x44 || cmd == 0x48) need = 1;
+        else if (cmd == 0x08) {
+            if (p + 6 > len) return false;
+            if (d[p + 1] >= 0x50 && d[p + 1] < 0xA0) return true;
+            need = 6;
+        } else if (cmd == 0x10) {
+            if (p + 5 > len) return false;
+            need = 5 + 4 * (size_t)(((be32(d + p + 1) >> 16) & 0xFFFF) + 1);
+        } else if (cmd == 0x20 || cmd == 0x28 || cmd == 0x30 || cmd == 0x38 || cmd == 0x61) need = 5;
+        else if (cmd >= 0x80 && cmd <= 0xBF) {
+            if (p + 3 > len) return false;
+            need = 3 + (size_t)be16(d + p + 1) * format(cmd & 7)->size;
+        } else return false; /* unknown, or a call (0x40) inside a list */
+        if (p + need > len) return false;
+        p += need;
+    }
+    return true;
+}
+
 /* Execute commands; returns bytes consumed (stops at an incomplete command). */
 static size_t exec(const uint8_t *d, size_t len, unsigned depth) {
     size_t p = 0;
@@ -2041,7 +2114,12 @@ static size_t exec(const uint8_t *d, size_t len, unsigned depth) {
         case 0x40: {
             uint32_t addr = be32(c + 1) & 0x03FFFFFFu, size = be32(c + 5);
             /* Decoded in place from RAM (J3D calls a display list per shape). */
-            if (depth < 4 && (uint64_t)addr + size <= RAM_SIZE && !dl_call(addr, size, depth + 1)) exec(g_ram + addr, size, depth + 1);
+            if (depth >= 4 || (uint64_t)addr + size > RAM_SIZE) break;
+            if (!dl_valid(g_ram + addr, size)) {
+                if (g_gx_dl_rejected++ < 20) rt_log("gx: display list at %#x (%u bytes) is not commands (memory reused before it was drawn): skipped", addr, size);
+                break;
+            }
+            if (!dl_call(addr, size, depth + 1)) exec(g_ram + addr, size, depth + 1);
             break;
         }
         case 0x61: bp_write(be32(c + 1)); break;
@@ -2082,6 +2160,26 @@ static uint64_t s_bytes_since, s_bytes_frame;
 void gx_stop_gpu(void) { s_gpu_stop = true; }
 
 volatile uint32_t g_gx_gpu_host;
+
+/* The decoder trails the game (GXDrawDone doesn't wait for it), so queued commands may still
+ * read display lists, vertex arrays and textures in guest RAM. Before a DMA overwrites RAM (a
+ * scene load reuses the old scene's memory) the decoder must have read everything queued, or it
+ * decodes the new data as commands and its state stays corrupt (flat-coloured or missing models,
+ * broken menus). Called by the DVD and ARAM DMA paths, after hw_gx_flush. */
+uint64_t g_gx_drains, g_gx_drain_ns;
+void gx_drain(void) {
+    if (s_gpu_stop || plat_thread_handle() == g_gx_gpu_host) return;
+    pmutex_lock(&s_qlock);
+    if (s_qlen || s_qheld) {
+        uint64_t t0 = plat_now_ns();
+        /* bounded: a stuck decoder must not hang the game (the old behaviour is the fallback) */
+        while ((s_qlen || s_qheld) && !s_gpu_stop && plat_now_ns() - t0 < 500000000ull)
+            pcond_wait_ns(&s_qspace, &s_qlock, 50000000ull);
+        g_gx_drains++;
+        g_gx_drain_ns += plat_now_ns() - t0;
+    }
+    pmutex_unlock(&s_qlock);
+}
 
 static void gpu_thread(void *arg) {
     (void)arg;
@@ -2468,4 +2566,85 @@ void gx_xf_report(char *out, size_t n) {
     snprintf(out, n, "xfcheck: %llu vertices compared, %llu mismatches; vtxcheck: %llu vertices, %llu draws differ",
              (unsigned long long)s_xfcheck_n, (unsigned long long)s_xfcheck_bad, (unsigned long long)s_vtxcheck_n,
              (unsigned long long)s_vtxcheck_bad);
+}
+
+/* Debug menu DUMP FRAME: the latest presented frame as text (every batch's pixel pipeline, its
+ * textures with their average colour, and a few vertices through the XF stage), for comparing a
+ * frame that draws wrong with one that draws right. */
+bool gx_dump_frame(const char *path) {
+    Frame *f = gx_frame_acquire();
+    if (!f) return false;
+    FILE *o = fopen(path, "w");
+    if (!o) { gx_frame_release(f); return false; }
+    fprintf(o, "frame: %zu batches, %u verts, %zu copies, efb %.0fx%.0f, clear %.3f %.3f %.3f %.3f, xf %zu texels\n",
+            f->batches.len, f->nverts, f->copies.len, f->efb[0], f->efb[1], f->clear[0], f->clear[1], f->clear[2], f->clear[3], f->xf.len / 4);
+    for (size_t i = 0; i < f->copies.len; i++) {
+        const EfbCopy *e = &f->copies.data[i];
+        fprintf(o, "copy %zu at batch %u: cmd %#x src %#x size %ux%u dst %#x\n", i, e->at_batch, e->bp52, e->src,
+                (e->size & 0x3FF) + 1, ((e->size >> 10) & 0x3FF) + 1, gx_phys(e->dst));
+    }
+    static uint8_t *pix;
+    for (size_t i = 0; i < f->batches.len; i++) {
+        const Batch *b = &f->batches.data[i];
+        const TevState *t = &b->tev;
+        fprintf(o, "\nbatch %zu: verts %u idx %u layout %u hud %u rect %u,%u-%u,%u z %#x blend %#x cull %u pix %#x stages %u acmp %#x swap %#x\n",
+                i, b->vert_count, b->index_count, b->layout, b->hud, b->rect[0], b->rect[1], b->rect[2], b->rect[3],
+                t->pipe[0], t->pipe[1], t->pipe[2], t->pipe[3], t->params[0], t->params[1], t->params[2]);
+        for (unsigned s = 0; s < t->params[0] && s < 16; s++)
+            fprintf(o, "  stage %u: c %#08x a %#08x order %#x ksel %#x\n", s, t->stages[s][0], t->stages[s][1], t->stages[s][2], t->stages[s][3]);
+        fprintf(o, "  regs");
+        for (int r = 0; r < 4; r++) fprintf(o, " [%.2f %.2f %.2f %.2f]", t->regs[r][0], t->regs[r][1], t->regs[r][2], t->regs[r][3]);
+        fprintf(o, "\n  konst");
+        for (int r = 0; r < 4; r++) fprintf(o, " [%.2f %.2f %.2f %.2f]", t->konst[r][0], t->konst[r][1], t->konst[r][2], t->konst[r][3]);
+        fprintf(o, "\n  fog A %g C %g B %g shift %g colour %.3f %.3f %.3f sel %u\n", t->fog[0], t->fog[1], t->fog[2], t->fog[3],
+                t->fog_color[0], t->fog_color[1], t->fog_color[2], (unsigned)t->fog_color[3]);
+        for (int m = 0; m < 8; m++) {
+            uint64_t k = t->textures[m];
+            if (!k) continue;
+            if ((k & 0xFFFF000000000000ull) == RT_TAG) { fprintf(o, "  tex %d: render target %#x mode %#x\n", m, (uint32_t)k, (uint32_t)(k >> 32) & 0xFFFF); continue; }
+            GxTexture *tx = gx_texture_acquire(k);
+            if (!tx) { fprintf(o, "  tex %d: key %#llx NOT IN STORE\n", m, (unsigned long long)k); continue; }
+            double sum[4] = {0};
+            size_t n = (size_t)tx->width * tx->height;
+            pix = realloc(pix, n * 4);
+            if (pix && gx_texture_decode(tx, pix))
+                for (size_t p = 0; p < n; p++) for (int c = 0; c < 4; c++) sum[c] += pix[p * 4 + c];
+            fprintf(o, "  tex %d: key %#llx fmt %u %ux%u tlut %u wrap %u/%u subst %u movie %u avg %.0f %.0f %.0f %.0f\n", m, (unsigned long long)k,
+                    tx->fmt, tx->width, tx->height, tx->tlut_fmt, tx->wrap_s, tx->wrap_t, tx->subst, tx->movie,
+                    sum[0] / (double)(n ? n : 1), sum[1] / (double)(n ? n : 1), sum[2] / (double)(n ? n : 1), sum[3] / (double)(n ? n : 1));
+            gx_texture_release(tx);
+        }
+        /* a few vertices through the XF stage: lit colours and texture coordinates */
+        float umin[2] = {1e30f, 1e30f}, umax[2] = {-1e30f, -1e30f};
+        for (uint32_t q = 0; q < b->index_count && q < 256; q++) {
+            GpuVertex in, e;
+            gx_vertex_unpack(f, b, f->indices.data[b->index_first + q], &in);
+            gx_xf_eval(f->xf.data, &in, &e);
+            for (int c = 0; c < 2; c++) { if (e.uv[0][c] < umin[c]) umin[c] = e.uv[0][c]; if (e.uv[0][c] > umax[c]) umax[c] = e.uv[0][c]; }
+            if (q == 0 || q == b->index_count / 2)
+                fprintf(o, "  v%u: rec %#x clip %.3f %.3f %.3f %.3f c0 %02x%02x%02x%02x c1 %02x%02x%02x%02x uv0 %.3f %.3f uv1 %.3f %.3f\n", q, in.rec,
+                        e.pos[0], e.pos[1], e.pos[2], e.pos[3], e.color0[0], e.color0[1], e.color0[2], e.color0[3],
+                        e.color1[0], e.color1[1], e.color1[2], e.color1[3], e.uv[0][0], e.uv[0][1], e.uv[1][0], e.uv[1][1]);
+        }
+        if (b->index_count) fprintf(o, "  uv0 range %.3f..%.3f, %.3f..%.3f\n", umin[0], umax[0], umin[1], umax[1]);
+        {   /* depth: z/w range of every vertex, and how many fall outside the clip volume */
+            float zmin = 1e30f, zmax = -1e30f;
+            unsigned behind = 0, nearc = 0, farc = 0;
+            for (uint32_t q = 0; q < b->index_count; q++) {
+                GpuVertex in, e;
+                gx_vertex_unpack(f, b, f->indices.data[b->index_first + q], &in);
+                gx_xf_eval(f->xf.data, &in, &e);
+                if (e.pos[3] <= 0) { behind++; continue; }
+                float z = e.pos[2] / e.pos[3];
+                if (z < zmin) zmin = z;
+                if (z > zmax) zmax = z;
+                if (e.pos[2] < 0) nearc++;
+                if (e.pos[2] > e.pos[3]) farc++;
+            }
+            if (b->index_count) fprintf(o, "  depth z/w %.6f..%.6f, w<=0 %u, before near %u, past far %u (of %u)\n", zmin, zmax, behind, nearc, farc, b->index_count);
+        }
+    }
+    fclose(o);
+    gx_frame_release(f);
+    return true;
 }

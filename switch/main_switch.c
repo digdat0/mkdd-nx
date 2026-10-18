@@ -85,19 +85,29 @@ void __libnx_exception_handler(ThreadExceptionDump *ctx) {
 }
 
 /* ---- clocks (CPU / GPU / memory, MHz), for the log ---- */
-static bool s_clk_ok;
+static bool s_clk_ok, s_clk_init, s_clk_open[3];
 static ClkrstSession s_clk[3];
 static void clocks_init(void) {
     if (!hosversionAtLeast(8, 0, 0) || R_FAILED(clkrstInitialize())) return;
+    s_clk_init = true;
     static const PcvModuleId ids[3] = {PcvModuleId_CpuBus, PcvModuleId_GPU, PcvModuleId_EMC};
     s_clk_ok = true;
-    for (int i = 0; i < 3; i++) s_clk_ok &= R_SUCCEEDED(clkrstOpenSession(&s_clk[i], ids[i], 3));
+    for (int i = 0; i < 3; i++) s_clk_ok &= (s_clk_open[i] = R_SUCCEEDED(clkrstOpenSession(&s_clk[i], ids[i], 3)));
 }
 static void clocks_log(const char *why) {
     if (!s_clk_ok) return;
     u32 hz[3] = {0};
     for (int i = 0; i < 3; i++) clkrstGetClockRate(&s_clk[i], &hz[i]);
     rt_log("clocks (%s): CPU %u MHz, GPU %u MHz, memory %u MHz", why, hz[0] / 1000000, hz[1] / 1000000, hz[2] / 1000000);
+}
+/* The .nro runs inside the loader's process, which lives on after exit: sessions left open stay
+ * open. pcv has few of them, and leaked ones made it abort (2011-0102, out of session memory) and
+ * take ptm and clock sysmodules with it, locking the console. */
+static void clocks_exit(void) {
+    s_clk_ok = false;
+    for (int i = 0; i < 3; i++)
+        if (s_clk_open[i]) clkrstCloseSession(&s_clk[i]), s_clk_open[i] = false;
+    if (s_clk_init) clkrstExit(), s_clk_init = false;
 }
 
 /* ---- loading / message screen (menu.c draws it in the menu's style) ---- */
@@ -362,6 +372,7 @@ static void update_pads(void) {
         if (src >= 0 && !menu) {
             PadState *pad = &s_src[src];
             u64 b = padGetButtons(pad);
+            if (pad == p1) b &= ~menu_blocked();
             u32 st = s_player_style[p];
             bool single = (st & (HidNpadStyleTag_NpadJoyLeft | HidNpadStyleTag_NpadJoyRight)) &&
                           !(st & (HidNpadStyleTag_NpadJoyDual | HidNpadStyleTag_NpadFullKey | HidNpadStyleTag_NpadHandheld));
@@ -389,6 +400,44 @@ static void game_thread(void *arg) {
     (void)arg;
     sched_note_host();
     machine_run(&s_boot);
+}
+
+/* At exit, after the threads are paused: every region of our address space that is not plain
+ * heap / code / unmapped, logged. The loader (hbl) takes the heap back after we exit and aborts
+ * with 2001-0106 when any of it is still mapped elsewhere, borrowed or attributed (thread stack
+ * mirrors, transfer memory, GPU-mapped buffers): this names what is left. */
+static void exit_memory_report(void) {
+    u64 addr = 0;
+    unsigned n = 0, odd = 0;
+    for (int guard = 0; guard < 4096; guard++) {
+        MemoryInfo mi;
+        u32 pi;
+        if (R_FAILED(svcQueryMemory(&mi, &pi, addr))) break;
+        u32 type = mi.type & 0xFF;
+        if (type != MemType_Unmapped) {
+            n++;
+            bool plain = (type == MemType_Heap || type == MemType_CodeStatic || type == MemType_CodeMutable ||
+                          type == MemType_ModuleCodeStatic || type == MemType_ModuleCodeMutable || type == MemType_Io ||
+                          type == MemType_ThreadLocal || type == MemType_Reserved) && mi.attr == 0;
+            if (!plain && odd++ < 64)
+                rt_log("exit memory: %#lx-%#lx (%lu KB) type %#x attr %#x perm %#x ipc %u device %u",
+                       (unsigned long)mi.addr, (unsigned long)(mi.addr + mi.size), (unsigned long)(mi.size >> 10),
+                       mi.type, mi.attr, mi.perm, mi.ipc_refcount, mi.device_refcount);
+        }
+        u64 next = mi.addr + mi.size;
+        if (next <= addr) break;
+        addr = next;
+    }
+    rt_log("exit memory: %u regions, %u not plain heap/code", n, odd);
+    {
+        extern int g_plat_stacks, g_plat_unmap_ok, g_plat_unmap_fail, g_plat_unmap_gone;
+        extern unsigned g_plat_unmap_rc;
+        extern uint64_t g_plat_unmap_addr[3];
+        rt_log("exit memory: thread stacks recorded %d, unmapped %d, already gone %d, failed %d (first rc %#x: mirror %#llx mem %#llx size %#llx)",
+               g_plat_stacks, g_plat_unmap_ok, g_plat_unmap_gone, g_plat_unmap_fail, g_plat_unmap_rc,
+               (unsigned long long)g_plat_unmap_addr[0], (unsigned long long)g_plat_unmap_addr[1], (unsigned long long)g_plat_unmap_addr[2]);
+    }
+    diag_flush();
 }
 
 int main(int argc, char **argv) {
@@ -672,9 +721,12 @@ out:
     prof_stop();
     gx_stop_gpu();
     if (perf_set) apmSetPerformanceConfiguration(ApmPerformanceMode_Normal, perf_prev);
+    clocks_exit();
+    apmExit();
     diag_flush();
     SDL_Quit();
     /* The game, guest and decoder threads would keep running on memory the loader takes back. */
     plat_pause_threads();
+    exit_memory_report();
     _Exit(0);
 }

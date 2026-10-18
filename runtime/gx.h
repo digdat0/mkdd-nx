@@ -156,14 +156,17 @@ void gx_xf_eval(const uint32_t *xf, const GpuVertex *in, GpuVertex *out);
 /* Guest memory written behind the GPU's back (cache flushes, DMA): cached vertex conversions that
  * read it are redone. _all: everything (scene loads). g_gx_vcache: the vertex cache on (default). */
 void gx_mem_dirty(uint32_t addr, uint32_t len);
+void gx_drain(void); /* wait for the decoder to read all queued commands (before DMA into RAM) */
 void gx_mem_dirty_all(void);
 extern bool g_gx_vcache;
 extern bool g_gx_cpu_xform;
 extern bool g_gx_cpu_xform_forced; /* set by the renderer when the XF shader is unusable */
 void gx_xf_report(char *out, size_t n); /* MKDD_XFCHECK result */
+bool gx_dump_frame(const char *path); /* debug: the latest frame as text */
 
 /* Decoder statistics: time spent decoding, draw commands decoded, draw setups rebuilt, vertices
  * transformed on the CPU, time the game waited for queue space. */
+extern uint64_t g_gx_drains, g_gx_drain_ns;
 extern uint64_t g_gx_busy_ns, g_gx_draws, g_gx_setups, g_gx_cpu_verts, g_gx_qwait_ns;
 /* sched.c: time the guest core idled (no guest thread runnable), and the part of it while the
  * decoder was still busy. */

@@ -44,6 +44,9 @@ void settings_save(void);
 /* Feed one frame of controller state. Returns true while the menu is open (the game then gets
  * a neutral pad). *quit is set when the player chose Exit. */
 bool menu_input(uint64_t down, uint64_t held, bool *quit);
+/* Player 1's buttons the game must not see yet: pressed in the menu (A, B, -) and still held
+ * after it closed. Buttons held from before the menu opened (gas) reach the game at once. */
+uint64_t menu_blocked(void);
 /* The menu (or a button capture) is on screen: the game is paused meanwhile. */
 bool menu_is_open(void);
 /* Player chose CONTROLLERS: returns true once, the caller shows the system controller screen. */

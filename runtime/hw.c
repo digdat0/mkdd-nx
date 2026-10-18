@@ -165,7 +165,7 @@ static void aram_dma(void) {
     uint32_t len = cnt & 0x7FFFFFE0u;
     if (len > RAM_SIZE - mm) len = RAM_SIZE - mm;
     if (len > ARAM_SIZE - ar) len = ARAM_SIZE - ar;
-    if (cnt & 0x80000000u) { memcpy(g_ram + mm, g_aram + ar, len); gx_mem_dirty(mm, len); }
+    if (cnt & 0x80000000u) { hw_gx_flush(); gx_drain(); memcpy(g_ram + mm, g_aram + ar, len); gx_mem_dirty(mm, len); }
     else memcpy(g_aram + ar, g_ram + mm, len);
     set16(DSP_CR, get16(DSP_CR) | 0x0020);
     sched_raise(IRQ_DSP_ARAM);
@@ -240,6 +240,8 @@ static void di_command(void) {
         if (dst > RAM_SIZE) dst = RAM_SIZE;
         uint32_t len = get32(DI_LEN);
         if (len > RAM_SIZE - dst) len = RAM_SIZE - dst;
+        hw_gx_flush();
+        gx_drain();
         disc_read(off, g_ram + dst, len);
         gx_mem_dirty(dst, len);
         if (len >= (256u << 10)) gx_mem_dirty_all();

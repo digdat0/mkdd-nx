@@ -98,14 +98,17 @@ static void watchdog(void *arg) {
         n += snprintf(buf + n, sizeof buf - (size_t)n, "gx decoder: %.0f%% busy, %llu draws/5s; %llu thread switches/5s, %llu deliveries/5s\n",
                       (double)(busy - prev_busy) / 5e7, (unsigned long long)(draws - prev_draws),
                       (unsigned long long)(g_sched_switches - prev_sw), (unsigned long long)(g_sched_deliveries - prev_dl));
+        static uint64_t prev_drains, prev_drain_ns;
         static uint64_t prev_idle, prev_idle_gpu, prev_qw, prev_setups, prev_cpuv;
         n += snprintf(buf + n, sizeof buf - (size_t)n,
-                      "game core: %.0f%% busy, idle %.0f%% (%.0f%% while the decoder was busy), queue-full waits %.0f ms/5s; "
+                      "game core: %.0f%% busy, idle %.0f%% (%.0f%% while the decoder was busy), queue-full waits %.0f ms/5s, DMA drains %llu (%.1f ms)/5s; "
                       "gx setups %llu/5s, CPU-transformed verts %llu/5s\n",
                       100.0 - (double)(g_guest_idle_ns - prev_idle) / 5e7, (double)(g_guest_idle_ns - prev_idle) / 5e7,
                       (double)(g_guest_idle_gpu_ns - prev_idle_gpu) / 5e7, (double)(g_gx_qwait_ns - prev_qw) / 1e6,
+                      (unsigned long long)(g_gx_drains - prev_drains), (double)(g_gx_drain_ns - prev_drain_ns) / 1e6,
                       (unsigned long long)(g_gx_setups - prev_setups), (unsigned long long)(g_gx_cpu_verts - prev_cpuv));
         prev_idle = g_guest_idle_ns; prev_idle_gpu = g_guest_idle_gpu_ns; prev_qw = g_gx_qwait_ns;
+        prev_drains = g_gx_drains; prev_drain_ns = g_gx_drain_ns;
         prev_setups = g_gx_setups; prev_cpuv = g_gx_cpu_verts;
         prev_sw = g_sched_switches;
         prev_dl = g_sched_deliveries;

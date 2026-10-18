@@ -118,6 +118,8 @@ static void dvd_read(uint64_t off, uint32_t dst, uint32_t len) {
     int64_t o = ram_off(dst);
     if (o < 0) return;
     if (len > RAM_SIZE - (uint64_t)o) len = (uint32_t)(RAM_SIZE - (uint64_t)o);
+    hw_gx_flush();
+    gx_drain();
     disc_read(off, g_ram + o, len);
     gx_mem_dirty((uint32_t)o, len);
     if (len >= (256u << 10)) gx_mem_dirty_all(); /* a scene load: see gx_mem_dirty_all */

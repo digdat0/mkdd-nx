@@ -35,13 +35,19 @@ static const struct { uint64_t bit; int badge; } BITS[] = {
 };
 
 /* Substitution ids (1 = the picture) and the GameCube button each icon shows. */
-enum { S_CONSOLE = 1, S_L, S_R, S_Z, S_X, S_Y, S_STICK, S_A, S_B, S_COUNT };
-static const struct { const char *file; int gc; int w, h; } SLOTS[S_COUNT] = {
+enum { S_CONSOLE = 1, S_L, S_R, S_Z, S_X, S_Y, S_STICK, S_A, S_B, S_MENUPAD, S_COUNT };
+/* S_MENUPAD: the GameCube controller the "how many players" screen shows once per player
+ * (menu.arc, 80x56), drawn as the pause screen's Switch at the same height. Ours is 2x the size
+ * for a sharper picture: same shape, so the game's pane shows it the same. */
+#define PAD_W 160
+#define PAD_H 112
+static const struct { const char *file; int gc; int w, h; const char *arc; } SLOTS[S_COUNT] = {
     [S_CONSOLE] = {"fs_gc_contorollerop_s3tc.bti", -1, CON_W, CON_H},
     [S_L] = {"l_trigger.bti", GC_L, 64, 64},       [S_R] = {"r_trigger.bti", GC_R, 64, 64},
     [S_Z] = {"fs_btz_s3tc.bti", GC_Z, 64, 64},     [S_X] = {"fs_btx_ia4.bti", GC_X, 64, 96},
     [S_Y] = {"fs_bty_ia4.bti", GC_Y, 96, 64},      [S_STICK] = {"fs_btcst_ia4.bti", -1, 128, 60},
     [S_A] = {"fs_bta_s3tc.bti", GC_A, 64, 64},     [S_B] = {"fs_btb_s3tc.bti", GC_B, 64, 64},
+    [S_MENUPAD] = {"gc_controller.bti", -1, PAD_W, PAD_H, "SceneData/English/menu.arc"},
 };
 static GLuint s_tex[S_COUNT];
 /* The game's own stick icon (decoded at start-up): a GameCube controller's STEER icon, centred in
@@ -111,7 +117,11 @@ void pause_art_init(void) {
     unsigned n = 0;
     for (unsigned id = 1; id < S_COUNT; id++) {
         uint32_t size = 0;
-        uint8_t *b = race2d_read(SLOTS[id].file, &size);
+        uint8_t *b = NULL;
+        if (SLOTS[id].arc) {
+            uint64_t off;
+            if (arc_locate(SLOTS[id].arc, SLOTS[id].file, &off, &size) && size < (1u << 20) && (b = malloc(size))) disc_read(off, b, size);
+        } else b = race2d_read(SLOTS[id].file, &size);
         if (!b) continue;
         uint32_t fmt = b[0], w = (uint32_t)(b[2] << 8 | b[3]), h = (uint32_t)(b[4] << 8 | b[5]), off = be32(b + 0x1C);
         size_t bytes = gx_tex_size(fmt, w, h);
@@ -192,7 +202,7 @@ static void refresh_icons(int kind) {
     uint64_t key = fnv_bytes(FNV_INIT, g_set.map, sizeof g_set.map) ^ (uint64_t)kind;
     if (key == s_key) return;
     s_key = key;
-    for (unsigned id = S_L; id < S_COUNT; id++) {
+    for (unsigned id = S_L; id <= S_B; id++) {
         int w = SLOTS[id].w, h = SLOTS[id].h, s = w < h ? w : h;
         if (kind == PAUSE_GC && id != S_STICK) continue; /* the game's own icons */
         uint8_t *px = calloc((size_t)w * h, 4);
@@ -222,8 +232,39 @@ static void refresh_icons(int kind) {
     }
 }
 
+/* The pause screen's Switch, fitted to the full height of a PAD_W x PAD_H picture and centred. */
+static void build_menupad(void) {
+    uint8_t *px = calloc((size_t)PAD_W * PAD_H, 4);
+    if (!px) return;
+    float sc = (float)CON_H / PAD_H;
+    int dw = (int)(CON_W / sc + 0.5f), x0 = (PAD_W - dw) / 2;
+    for (int j = 0; j < PAD_H; j++)
+        for (int i = 0; i < dw && x0 + i < PAD_W; i++) {
+            /* box filter over the source pixels this one covers, premultiplied */
+            float sx0 = i * sc, sy0 = j * sc, acc[4] = {0}, wsum = 0;
+            for (int y = (int)sy0; y < (int)(sy0 + sc) && y < CON_H; y++)
+                for (int x = (int)sx0; x < (int)(sx0 + sc) && x < CON_W; x++) {
+                    const uint8_t *q = pause_console_rgba + ((size_t)y * CON_W + x) * 4;
+                    float a = q[3] / 255.0f;
+                    for (int c = 0; c < 3; c++) acc[c] += q[c] * a;
+                    acc[3] += a;
+                    wsum += 1;
+                }
+            if (wsum <= 0 || acc[3] <= 0) continue;
+            uint8_t *o = px + ((size_t)j * PAD_W + x0 + i) * 4;
+            for (int c = 0; c < 3; c++) o[c] = (uint8_t)(acc[c] / acc[3] + 0.5f);
+            o[3] = (uint8_t)(acc[3] / wsum * 255.0f + 0.5f);
+        }
+    upload(S_MENUPAD, px);
+    free(px);
+}
+
 unsigned pause_art_texture(unsigned id) {
     int kind = g_pause_kind;
+    if (id == S_MENUPAD) {
+        if (!s_tex[id]) build_menupad();
+        return s_tex[id];
+    }
     if (id == 0 || id >= S_COUNT || (kind == PAUSE_GC && id != S_STICK)) return 0;
     if (id == S_CONSOLE) {
         if (!s_tex[id]) upload(id, pause_console_rgba);

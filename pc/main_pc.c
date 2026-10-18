@@ -88,6 +88,14 @@ int main(int argc, char **argv) {
             }
             gx_frame_release(f);
         }
+        /* MKDD_DUMP4P=n: dump n frames of the 4-player demo (45 EFB copies a frame) as frame4p_k.txt */
+        if (getenv("MKDD_DUMP4P") && step % 120 == 0) {
+            static int done;
+            Frame *f = gx_frame_acquire();
+            bool four = f && f->copies.len == 45;
+            if (f) gx_frame_release(f);
+            if (four && done < atoi(getenv("MKDD_DUMP4P"))) { char p[64]; snprintf(p, sizeof p, "frame4p_%d.txt", ++done); gx_dump_frame(p); }
+        }
         if (getenv("MKDD_WIDE_AT") && step == atoi(getenv("MKDD_WIDE_AT")) * 60) g_aspect_scale = 4.0f / 3.0f;
         if (getenv("MKDD_ALPHASTAT") && step % 300 == 0) {
             Frame *f = gx_frame_acquire();

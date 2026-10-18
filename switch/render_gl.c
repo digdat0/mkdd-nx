@@ -55,7 +55,7 @@ static const char *TEV_FS =
     "    uvec4 stages[16];\n"
     "    vec4 regs[4];\n"
     "    vec4 konst[4];\n"
-    "    uvec4 params;   // x stages, y alpha compare, z swap tables\n"
+    "    uvec4 params;   // x stages, y alpha compare, z swap tables, w constant alpha (bit 8 on, bits 0-7)\n"
     "    vec4 fog;       // A, C, B magnitude, B shift\n"
     "    vec4 fog_color; // rgb, w = fsel | proj << 3\n"
     "} tev;\n"
@@ -211,7 +211,7 @@ static const char *TEV_FS =
     "        if (fsel == 7u) f = exp2(-8.0 * (1.0 - f) * (1.0 - f));\n"
     "        rgb = mix(rgb, tev.fog_color.rgb, f);\n"
     "    }\n"
-    "    o_color = vec4(rgb, res.a);\n"
+    "    o_color = vec4(rgb, (tev.params.w & 0x100u) != 0u ? float(tev.params.w & 0xFFu) / 255.0 : res.a);\n"
     "}\n";
 
 /* Full-screen triangle; v_uv has v = 0 at the top of the screen / target. */
@@ -405,7 +405,7 @@ static const char *MOVIE_CHROMA_FS =
     "    o_color = vec4(sum / max(wsum, 1e-5));\n"
     "}\n";
 
-typedef struct { GLuint tex, fbo; uint32_t w, h; } Target;
+typedef struct { GLuint tex, fbo; uint32_t w, h, addr; uint64_t used; } Target; /* addr / used: EFB copy targets */
 /* Streamed per-frame data: NSLOT buffers of each kind used round-robin, each slot guarded by a
  * fence, written through unsynchronised maps (re-specifying a buffer with glBufferData every
  * frame makes switch-mesa wait for the GPU). */
@@ -450,7 +450,7 @@ static struct {
     uint64_t compile_ns;
     GLuint cur_tex[8], cur_smp[8], cur_prog;
     int cur_unit;
-    uint32_t cur_z, cur_blend, cur_cull;
+    uint32_t cur_z, cur_blend, cur_cull, cur_pix;
     bool pipe_valid;
     GLint ubo_align;
     size_t ubo_stride;
@@ -480,6 +480,8 @@ static struct {
     uint8_t *rgba;
     size_t rgba_cap;
     uint32_t stat_batches, stat_verts;
+    uint64_t white_rt, white_tex;   /* binds that fell back to white: render target / texture missing */
+    unsigned rt_recycled;
 } R;
 
 static void target_init(Target *t, uint32_t w, uint32_t h);
@@ -731,6 +733,7 @@ static void target_init(Target *t, uint32_t w, uint32_t h) {
     if (!t->tex) glGenTextures(1, &t->tex);
     if (!t->fbo) glGenFramebuffers(1, &t->fbo);
     glBindTexture(GL_TEXTURE_2D, t->tex);
+    if (R.cur_unit >= 0) R.cur_tex[R.cur_unit] = t->tex; /* bound behind unit_bind's back: keep its record true */
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, (GLsizei)w, (GLsizei)h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -870,18 +873,33 @@ static void ensure_efb(uint32_t w, uint32_t h) {
     R.efb_h = h;
 }
 
+/* The render target of an EFB copy destination. When the table is full, the target unused the
+ * longest is given to the new address (it used to return NULL for good: every new copy
+ * destination after 512 was dropped and its texture drawn white). */
 static Target *rt_for(uint32_t addr, uint32_t w, uint32_t h) {
     uint64_t idx;
     if (u64map_get(&R.rts, addr, &idx)) {
         Target *t = &R.rt[idx];
         if (t->w != w || t->h != h) target_init(t, w, h);
+        t->used = R.tick;
         return t;
     }
-    if (R.nrt >= sizeof R.rt / sizeof *R.rt) return NULL;
-    Target *t = &R.rt[R.nrt];
-    memset(t, 0, sizeof *t);
-    target_init(t, w, h);
-    u64map_put(&R.rts, addr, R.nrt++);
+    Target *t;
+    if (R.nrt < sizeof R.rt / sizeof *R.rt) {
+        idx = R.nrt++;
+        t = &R.rt[idx];
+        memset(t, 0, sizeof *t);
+    } else {
+        idx = 0;
+        for (unsigned i = 1; i < R.nrt; i++) if (R.rt[i].used < R.rt[idx].used) idx = i;
+        t = &R.rt[idx];
+        u64map_del(&R.rts, t->addr);
+        if (R.rt_recycled++ < 5) rt_log("render: render target table full, %#x reuses the one of %#x", addr, t->addr);
+    }
+    target_init(t, w, h); /* keeps the GL texture and framebuffer of a reused entry */
+    t->addr = addr;
+    t->used = R.tick;
+    u64map_put(&R.rts, addr, idx);
     return t;
 }
 
@@ -946,7 +964,13 @@ static void bind_slot(unsigned unit, uint64_t key) {
         unsigned ws = mode & 3, wt = (mode >> 2) & 3;
         if (ws > 2) ws = 0;
         if (wt > 2) wt = 0;
-        unit_bind(unit, u64map_get(&R.rts, (uint32_t)key, &idx) ? R.rt[idx].tex : R.white, R.samplers[ws][wt][(mode >> 4) & 1]);
+        if (u64map_get(&R.rts, (uint32_t)key, &idx)) {
+            R.rt[idx].used = R.tick;
+            unit_bind(unit, R.rt[idx].tex, R.samplers[ws][wt][(mode >> 4) & 1]);
+        } else {
+            R.white_rt++;
+            unit_bind(unit, R.white, R.samplers[ws][wt][(mode >> 4) & 1]);
+        }
         return;
     }
     uint64_t idx;
@@ -955,6 +979,7 @@ static void bind_slot(unsigned unit, uint64_t key) {
     else {
         GxTexture *t = gx_texture_acquire(key);
         if (!t) {
+            R.white_tex++;
             unit_bind(unit, R.white, R.samplers[0][0][0]);
             return;
         }
@@ -1182,11 +1207,32 @@ static void apply_cull(uint32_t mode) {
     }
 }
 
-static void apply_pipe(uint32_t zmode, uint32_t blend) {
-    if (R.pipe_valid && R.cur_z == zmode && R.cur_blend == blend) return;
+/* pix: EFB pixel format | BP 0x42 << 8 (TevState.pipe[3]). BP 0x42 bit 8 = constant destination
+ * alpha: the EFB stores alpha bits 0-7 instead of the pixel's alpha, while blending still uses the
+ * pixel's alpha. MKDD's 4-player races draw the scene with alpha 255 this way, then tint every
+ * pixel whose stored alpha is low (its shadows) with a full-screen blend by destination alpha:
+ * without it the karts, characters and sky kept their texture alpha and came out navy. Done with a
+ * shader that outputs the constant (TEV params.w, see const_alpha_word); a GL constant-alpha blend
+ * factor would multiply the shader alpha instead of replacing it (characters with TEV alpha 0 came
+ * out with stored alpha 0, and dark). */
+static bool blend_uses_src_alpha(uint32_t blend) {
+    uint32_t sf = (blend >> 8) & 7, df = (blend >> 5) & 7;
+    return (blend & 1) && !((blend >> 11) & 1) && (sf == 4 || sf == 5 || df == 4 || df == 5);
+}
+/* TEV uniform params.w: bit 8 = the shader writes alpha bits 0-7 instead of its own alpha (GX
+ * constant destination alpha, BP 0x42, with alpha updates on and a blend that does not read the
+ * pixel's alpha). */
+static uint32_t const_alpha_word(uint32_t blend, uint32_t pix) {
+    bool ca = ((blend >> 4) & 1) && ((pix >> 16) & 1);
+    return ca && !blend_uses_src_alpha(blend) ? 0x100u | ((pix >> 8) & 0xFFu) : 0u;
+}
+
+static void apply_pipe(uint32_t zmode, uint32_t blend, uint32_t pix) {
+    if (R.pipe_valid && R.cur_z == zmode && R.cur_blend == blend && R.cur_pix == pix) return;
     R.pipe_valid = true;
     R.cur_z = zmode;
     R.cur_blend = blend;
+    R.cur_pix = pix;
     if (zmode & 1) {
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(compare((zmode >> 1) & 7));
@@ -1198,28 +1244,30 @@ static void apply_pipe(uint32_t zmode, uint32_t blend) {
     bool color = (blend >> 3) & 1, alpha = (blend >> 4) & 1;
     bool enabled = blend & 1, logic = (blend >> 1) & 1, subtract = (blend >> 11) & 1;
     uint32_t logic_op = (blend >> 12) & 15;
+    bool ca = alpha && ((pix >> 16) & 1);
+    /* constant alpha: the shader outputs the constant (const_alpha_word) and the alpha channel
+     * takes it as is; when the colour blend needs the pixel's own alpha the shader keeps that,
+     * and the alpha channel keeps what the EFB held instead (the scene's constant under it) */
+    bool keep = ca && blend_uses_src_alpha(blend);
+    GLenum sa = keep ? GL_ZERO : GL_ONE, da = keep ? GL_ONE : GL_ZERO;
+#define BLEND(sf, df, eq) do { glEnable(GL_BLEND);         glBlendFuncSeparate(sf, df, ca ? sa : (sf), ca ? da : (df));         glBlendEquationSeparate(eq, ca ? GL_FUNC_ADD : (eq)); } while (0)
     if (subtract) {
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ONE, GL_ONE);
-        glBlendEquation(GL_FUNC_REVERSE_SUBTRACT);
+        BLEND(GL_ONE, GL_ONE, GL_FUNC_REVERSE_SUBTRACT);
     } else if (enabled) {
-        glEnable(GL_BLEND);
-        glBlendFunc(blend_factor((blend >> 8) & 7, true), blend_factor((blend >> 5) & 7, false));
-        glBlendEquation(GL_FUNC_ADD);
+        BLEND(blend_factor((blend >> 8) & 7, true), blend_factor((blend >> 5) & 7, false), GL_FUNC_ADD);
     } else if (logic && logic_op == 0) {
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ZERO, GL_ZERO);
-        glBlendEquation(GL_FUNC_ADD);
+        BLEND(GL_ZERO, GL_ZERO, GL_FUNC_ADD);
     } else if (logic && logic_op == 5) {
         glDisable(GL_BLEND);
         color = alpha = false;
     } else if (logic && logic_op == 15) {
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ONE, GL_ONE);
-        glBlendEquation(GL_MAX);
+        BLEND(GL_ONE, GL_ONE, GL_MAX);
+    } else if (ca) {
+        BLEND(GL_ONE, GL_ZERO, GL_FUNC_ADD);
     } else {
         glDisable(GL_BLEND);
     }
+#undef BLEND
     glColorMask(color, color, color, alpha);
 }
 
@@ -1383,7 +1431,9 @@ static void tev_bytes(const TevState *t, uint8_t *b) {
     memcpy(b, t->stages, 256);
     memcpy(b + 256, t->regs, 64);
     memcpy(b + 320, t->konst, 64);
-    memcpy(b + 384, t->params, 16);
+    memcpy(b + 384, t->params, 12);
+    uint32_t cw = const_alpha_word(t->pipe[1], t->pipe[3]);
+    memcpy(b + 396, &cw, 4);
     memcpy(b + 400, t->fog, 16);
     memcpy(b + 416, t->fog_color, 16);
 }
@@ -1398,7 +1448,13 @@ bool render_update(int scale_in) {
     if (R.hd_flush) { R.hd_flush = false; evict_textures(0); } /* HD switched on/off: everything reloads */
     if (hdtex_available()) hd_upload();
     /* Normally textures live 10 s unused; when many pile up (movies, screen effects), 2 s. */
-    if (R.tick % 600 == 0) evict_textures(600);
+    if (R.tick % 600 == 0) {
+        evict_textures(600);
+        if (R.white_rt || R.white_tex) /* a texture the game drew that the renderer could not show */
+            rt_log("render: %llu texture binds drawn white in 10 s (%llu without a render target, %llu not in the store)",
+                   (unsigned long long)(R.white_rt + R.white_tex), (unsigned long long)R.white_rt, (unsigned long long)R.white_tex);
+        R.white_rt = R.white_tex = 0;
+    }
     else if (R.tick % 30 == 0 && R.ntex > 768) evict_textures(120);
     uint32_t scale = scale_in < 1 ? 1 : scale_in > 4 ? 4 : (uint32_t)scale_in;
     ensure_efb((uint32_t)f->efb[0] * scale, (uint32_t)f->efb[1] * scale);
@@ -1497,7 +1553,7 @@ bool render_update(int scale_in) {
                     glScissor((GLint)x0, (GLint)y0, (GLsizei)(x1 - x0), (GLsizei)(y1 - y0));
                     sc[0] = x0; sc[1] = y0; sc[2] = x1; sc[3] = y1;
                 }
-                apply_pipe(b->tev.pipe[0], b->tev.pipe[1]);
+                apply_pipe(b->tev.pipe[0], b->tev.pipe[1], b->tev.pipe[3]);
                 apply_cull(b->tev.pipe[2]);
                 use_tev(tev_program(&b->tev));
                 if (!um || ub_off[i] != cur_ub) {

@@ -16,15 +16,52 @@ volatile int g_plat_nthreads;
 #endif
 #ifdef __SWITCH__
 #include <switch.h>
-/* Handles of the threads started here, paused at exit (plat_pause_threads). */
-static Handle s_handles[128];
-static int s_nhandles;
+/* The threads started here (NULL once they returned), paused at exit (plat_pause_threads). */
+static Thread *s_threads[128];
+static int s_nthreads;
+/* Every started thread's stack mapping, kept after it returns: a detached thread that finished
+ * (the updater's worker) can leave its mirror mapped too. */
+static struct { void *mirror, *mem; size_t size; } s_stacks[128];
+/* Pause them, then unmap their stacks. libnx maps every thread stack (heap memory, here) at a
+ * mirror address with svcMapMemory, which locks the heap pages until threadClose. The loader
+ * (hbl) gets the heap back at exit and reads the next .nro into it: a paused thread's stack
+ * still mapped inside that range made hbl abort (2001-0106, invalid memory state) when the
+ * updater's RESTART NOW asked it to start the new 50 MB .nro. */
+/* what the last plat_pause_threads did with the stacks (logged by the exit report) */
+int g_plat_stacks, g_plat_unmap_ok, g_plat_unmap_fail, g_plat_unmap_gone;
+unsigned g_plat_unmap_rc;
+uint64_t g_plat_unmap_addr[3];
 void plat_pause_threads(void) {
-    int n = __atomic_load_n(&s_nhandles, __ATOMIC_ACQUIRE);
-    for (int i = 0; i < n && i < 128; i++) {
-        Handle h = __atomic_load_n(&s_handles[i], __ATOMIC_ACQUIRE);
-        if (h) svcSetThreadActivity(h, ThreadActivity_Paused);
+    int n = __atomic_load_n(&s_nthreads, __ATOMIC_ACQUIRE);
+    if (n > 128) n = 128;
+    for (int i = 0; i < n; i++) {
+        Thread *t = __atomic_load_n(&s_threads[i], __ATOMIC_ACQUIRE);
+        if (t) svcSetThreadActivity(t->handle, ThreadActivity_Paused);
     }
+    svcSleepThread(20000000); /* a thread in the middle of a system call stops when it returns */
+    /* every stack still mapped (a mapping already gone just fails: harmless) */
+    int unmapped = 0;
+    for (int i = 0; i < n; i++) {
+        __atomic_store_n(&s_threads[i], NULL, __ATOMIC_RELEASE);
+        if (!s_stacks[i].mirror || !s_stacks[i].mem || !s_stacks[i].size) continue;
+        MemoryInfo mi;
+        u32 pi;
+        g_plat_stacks++;
+        if (R_FAILED(svcQueryMemory(&mi, &pi, (u64)(uintptr_t)s_stacks[i].mirror)) || mi.type == MemType_Unmapped) { g_plat_unmap_gone++; continue; }
+        /* the mapping covers whole pages: libnx keeps the requested size (0xf950 failed with 0xca01,
+         * invalid size), so round it up */
+        size_t sz = (s_stacks[i].size + 0xFFF) & ~(size_t)0xFFF;
+        Result rc = svcUnmapMemory(s_stacks[i].mirror, s_stacks[i].mem, sz);
+        if (R_SUCCEEDED(rc)) unmapped++;
+        else if (!g_plat_unmap_fail++) {
+            g_plat_unmap_rc = rc;
+            g_plat_unmap_addr[0] = (uint64_t)(uintptr_t)s_stacks[i].mirror;
+            g_plat_unmap_addr[1] = (uint64_t)(uintptr_t)s_stacks[i].mem;
+            g_plat_unmap_addr[2] = s_stacks[i].size;
+        }
+        s_stacks[i].mirror = NULL;
+    }
+    g_plat_unmap_ok = unmapped;
 }
 #endif
 
@@ -53,9 +90,13 @@ static void *thread_main(void *p) {
     }
 #endif
 #ifdef __SWITCH__
-    {
-        int i = __atomic_fetch_add(&s_nhandles, 1, __ATOMIC_ACQ_REL);
-        if (i < 128) __atomic_store_n(&s_handles[i], threadGetCurHandle(), __ATOMIC_RELEASE);
+    int slot = __atomic_fetch_add(&s_nthreads, 1, __ATOMIC_ACQ_REL);
+    if (slot < 128) {
+        Thread *self = threadGetSelf();
+        s_stacks[slot].mem = self->stack_mem;
+        s_stacks[slot].size = self->stack_sz;
+        s_stacks[slot].mirror = self->stack_mirror;
+        __atomic_store_n(&s_threads[slot], self, __ATOMIC_RELEASE);
     }
     if (s.core >= 0) svcSetThreadCoreMask(CUR_THREAD_HANDLE, s.core, 1u << s.core);
     if (s.prio_bias) {
@@ -65,6 +106,9 @@ static void *thread_main(void *p) {
     }
 #endif
     s.fn(s.arg);
+#ifdef __SWITCH__
+    if (slot < 128) __atomic_store_n(&s_threads[slot], NULL, __ATOMIC_RELEASE); /* libnx closes it now */
+#endif
     return NULL;
 }
 
