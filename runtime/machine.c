@@ -9,6 +9,7 @@
 #include "table.h"
 
 uint8_t *g_ram, *g_aram;
+bool g_mod; /* running a mod's code (table.h MOD_*) */
 
 void core_build_dispatch(void);
 bool core_dispatch(Ctx *c, uint32_t addr);
@@ -126,6 +127,25 @@ static bool load_dol(const char *disc_path, char *err, size_t errlen) {
     disc_read(dol_off, dol, dol_size);
     char sha[41];
     sha1_hex(dol, dol_size, sha);
+    /* a mod (disc_overlay) brings its own main.dol: the one its code was generated from */
+    const char *mod = disc_overlay_name();
+    if (mod) {
+        if (!MOD_DOL_SHA1[0] || strcmp(sha, MOD_DOL_SHA1) != 0) {
+            free(dol);
+            rt_log("boot: %s's main.dol SHA-1 %s, supported: %s", mod, sha, MOD_DOL_SHA1[0] ? MOD_DOL_SHA1 : "none");
+            snprintf(err, errlen, "%s: main.dol is not the supported version of the mod (%s, SHA-1 %.8s)", mod, MOD_NAME, sha);
+            return false;
+        }
+        /* every section: a mod can add some (MKDD Plus: code at 0x803e2300) */
+        unsigned loaded = 0;
+        for (int i = 0; i < 18; i++)
+            if (size[i]) m_load(addr[i], dol + off[i], size[i]), loaded++;
+        free(dol);
+        g_mod = true;
+        rt_log("boot: %s's main.dol loaded (%u bytes, %u sections, SHA-1 ok)", mod, dol_size, loaded);
+        plus_class_order(); /* the only mod this build knows (MOD_DOL_SHA1) */
+        return true;
+    }
     if (strcmp(sha, DOL_SHA1) != 0) {
         free(dol);
         rt_log("boot: main.dol SHA-1 %s, expected %s", sha, DOL_SHA1);
@@ -160,14 +180,17 @@ bool machine_boot(const char *disc_path, Ctx *boot, char *err, size_t errlen) {
     memset(g_ram, 0, RAM_SIZE);
     memset(g_aram, 0, ARAM_SIZE);
     if (!disc_open(disc_path, err, errlen)) return false;
+    /* MKDD_MOD=<folder>: play a mod (the Switch front end calls disc_overlay itself) */
+    const char *mod_dir = plat_getenv("MKDD_MOD");
+    if (mod_dir && *mod_dir && !disc_overlay(mod_dir, err, errlen)) return false;
     char id[7] = {0};
     disc_read(0, id, 6);
     if (memcmp(id, GAME_ID, 6) != 0) {
         snprintf(err, errlen, "%s is game %s, not %s (Mario Kart: Double Dash!! USA)", disc_path, id, GAME_ID);
         return false;
     }
-    core_build_dispatch();
     if (!load_dol(disc_path, err, errlen)) return false;
+    core_build_dispatch(); /* after load_dol: a mod's functions join the table */
 
     uint8_t header[0x20];
     disc_read(0, header, sizeof header);

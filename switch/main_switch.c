@@ -1,6 +1,7 @@
 /* Nintendo Switch front end: SD folder + logs, crash.log, loading screen, disc lookup, boot,
  * render loop (GLES via SDL2 + Mesa), controller input (libnx HID) and audio (SDL2).
  * Platform glue adapted from the gcNX template (gc-decomp-switch-port skill). */
+#include <ctype.h>
 #include <dirent.h>
 #include <malloc.h>
 #include <math.h>
@@ -25,12 +26,17 @@
 #include "update.h"
 const char g_build_stamp[] = __DATE__ " " __TIME__;
 #include "../runtime/native.h"
+#include "../runtime/table.h"
 
 #define APP_DIR "sdmc:/switch/MKDD-NX"
 /* The app folder holds only the .nro, the disc image and these three folders. */
 #define LOG_DIR APP_DIR "/logs"
 #define CFG_DIR APP_DIR "/config"
 #define SAVE_DIR APP_DIR "/save"
+#define MODS_DIR APP_DIR "/mods"
+#define HD_PATH MODS_DIR "/hd/" HD_FILE
+#define PLUS_DIR MODS_DIR "/plus"
+#define MOD_SAVE_DIR SAVE_DIR "/plus" /* a mod's saves: MKDD Plus keeps its records in another layout */
 #define APP_TITLE "MARIO KART DOUBLE DASH"
 
 static SDL_Window *s_window;
@@ -160,6 +166,105 @@ static bool find_disc(char *out, size_t n) {
     closedir(d);
     if (best < 99) rt_log("disc: using %s", out);
     return best < 99;
+}
+
+/* MKDD Plus extracted to mods/plus (sys/main.dol, sys/fst.bin, files/). Only when this build
+ * carries a mod's code (MOD_NAME). */
+static bool find_mod(void) {
+    if (!MOD_NAME[0]) return false;
+    struct stat st;
+    bool ok = stat(PLUS_DIR "/sys/main.dol", &st) == 0 && stat(PLUS_DIR "/sys/fst.bin", &st) == 0 &&
+              stat(PLUS_DIR "/files", &st) == 0 && S_ISDIR(st.st_mode);
+    if (ok) rt_log("mod: found " PLUS_DIR);
+    else if (stat(PLUS_DIR, &st) == 0) rt_log("mod: " PLUS_DIR " needs sys/main.dol, sys/fst.bin and files/");
+    return ok;
+}
+
+/* A choice of two on the loading screen: up/down, then A. */
+static int choose(const char *title, const char *a, const char *b, int sel, const char *hint) {
+    const char *opts[2] = {a, b};
+    PadState pad;
+    padInitializeDefault(&pad);
+    padUpdate(&pad);
+    while (appletMainLoop()) {
+        padUpdate(&pad);
+        u64 down = padGetButtonsDown(&pad);
+        if (down & (HidNpadButton_AnyUp | HidNpadButton_StickLUp)) sel = 0;
+        if (down & (HidNpadButton_AnyDown | HidNpadButton_StickLDown)) sel = 1;
+        if (down & HidNpadButton_A) break;
+        int w = 0, h = 0;
+        SDL_GL_GetDrawableSize(s_window, &w, &h);
+        menu_choice(w, h, title, opts, 2, sel, hint);
+        SDL_GL_SwapWindow(s_window);
+        SDL_PumpEvents();
+    }
+    return sel;
+}
+
+/* Standard game or the mod, the last choice preselected. */
+static bool choose_mod(void) {
+    char name[80];
+    size_t k = 0;
+    for (const char *c = MOD_NAME; *c && k + 1 < sizeof name; c++) name[k++] = (char)toupper((unsigned char)*c);
+    name[k] = 0;
+    int sel = choose("WHICH GAME?", "MARIO KART: DOUBLE DASH!!", name, g_set.play_mod ? 1 : 0, "UP / DOWN TO CHOOSE, A TO START");
+    if (g_set.play_mod != (sel == 1)) {
+        g_set.play_mod = sel == 1;
+        settings_save();
+    }
+    rt_log("mod: playing %s", sel ? MOD_NAME : "the standard game");
+    return sel == 1;
+}
+
+/* The standard game's save file (unlocks, records, options; ghosts are files of their own). */
+#define SYSTEM_GCI "/card_a/01-GM4E-MarioKart Double Dash!!.gci"
+
+static bool has_gci(const char *dir) {
+    DIR *d = opendir(dir);
+    if (!d) return false;
+    struct dirent *e;
+    bool found = false;
+    while (!found && (e = readdir(d))) {
+        const char *dot = strrchr(e->d_name, '.');
+        found = dot && !strcasecmp(dot, ".gci");
+    }
+    closedir(d);
+    return found;
+}
+
+static bool copy_file(const char *from, const char *to) {
+    char tmp[600];
+    snprintf(tmp, sizeof tmp, "%s.tmp", to);
+    FILE *in = fopen(from, "rb"), *out = in ? fopen(tmp, "wb") : NULL;
+    bool ok = in && out;
+    char buf[16384];
+    size_t n;
+    while (ok && (n = fread(buf, 1, sizeof buf, in)) > 0) ok = fwrite(buf, 1, n, out) == n;
+    ok = ok && !ferror(in);
+    if (in) fclose(in);
+    if (out && fclose(out) != 0) ok = false;
+    if (ok) {
+        remove(to);
+        ok = rename(tmp, to) == 0;
+    }
+    if (!ok) remove(tmp);
+    return ok;
+}
+
+/* Plus with no save yet and a standard save there: offer to start Plus from a copy of it. Plus
+ * keeps the game's save format, so the copy loads as it is; the standard save is left alone. */
+static void offer_save_copy(void) {
+    struct stat st;
+    if (has_gci(MOD_SAVE_DIR "/card_a") || stat(SAVE_DIR SYSTEM_GCI, &st) != 0) return;
+    if (choose("PLUS HAS NO SAVE YET", "COPY MY MARIO KART SAVE", "START A NEW SAVE", 0,
+               "UNLOCKS AND RECORDS; YOUR SAVE STAYS AS IT IS") != 0) {
+        rt_log("plus: new save");
+        return;
+    }
+    mkdir(MOD_SAVE_DIR "/card_a", 0777);
+    bool ok = copy_file(SAVE_DIR SYSTEM_GCI, MOD_SAVE_DIR SYSTEM_GCI);
+    rt_log("plus: copying the standard save %s", ok ? "done" : "FAILED");
+    if (!ok) screen("COULD NOT COPY THE SAVE", "STARTING WITH A NEW ONE", -1), svcSleepThread(2500000000ll);
 }
 
 /* ---- audio: SDL pulls from the AI queue, resampled from the game rate (32/48 kHz) ---- */
@@ -497,6 +602,17 @@ int main(int argc, char **argv) {
     if (!find_disc(disc, sizeof disc)) fatal("NO DISC IMAGE FOUND", "PUT YOUR GM4E01 .ISO OR .RVZ IN /SWITCH/MKDD-NX/");
     if (disc_open(disc, err, sizeof err)) {
         menu_font_load();  /* the loading screen's letters */
+        /* a mod in mods/: the player picks; from here on the disc is the mod's */
+        if (find_mod() && choose_mod()) {
+            screen("LOADING THE MOD", NULL, 0.1f);
+            if (!disc_overlay(PLUS_DIR, err, sizeof err)) {
+                rt_log("mod: %s", err);
+                fatal("COULD NOT LOAD THE MOD", "A FILE IS MISSING: SEE LOGS/MKDD.LOG");
+            }
+            mkdir(MOD_SAVE_DIR, 0777);
+            offer_save_copy();
+            memcard_set_path(MOD_SAVE_DIR "/slotA.bin");
+        }
         pause_art_init();  /* the pause screen's controller picture, drawn as a Switch */
         render_set_subst(pause_art_texture);
     } else {
@@ -506,10 +622,11 @@ int main(int argc, char **argv) {
     }
     screen("STARTING", NULL, 0.3f);
     if (!render_init()) fatal("GRAPHICS INIT FAILED", "SEE MKDD.LOG");
-    hdtex_open(APP_DIR "/" HD_FILE);
+    hdtex_open(HD_PATH);
     render_shader_cache(CFG_DIR "/shaders.bin", shader_progress);
     if (!machine_boot(disc, &s_boot, err, sizeof err)) {
         rt_log("boot failed: %s", err);
+        if (disc_overlay_active()) fatal("THIS VERSION OF THE MOD IS NOT SUPPORTED", "NEEDS MKDD PLUS 3.3 (NTSC): SEE LOGS/MKDD.LOG");
         fatal("COULD NOT START THE GAME", "WRONG DISC: NEEDS MARIO KART DOUBLE DASH USA (GM4E01)");
     }
     diag_start_watchdog(LOG_DIR "/mkdd_trace.log");

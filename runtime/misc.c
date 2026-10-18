@@ -179,3 +179,30 @@ void cheats_after_load(void) {
     s_earned[1] = (uint16_t)m_read_be(SECRET_GAME, 2);
     apply_unlock();
 }
+
+/* ---- MKDD Plus 3.3: class order ----
+ * Plus turns 100cc into 200cc but keeps its place, so the select-mode screen cycles 50cc, 200cc,
+ * 150cc, Mirror. The screen's position is SceneMenu+0x2104 (0-3, Mirror skipped while locked); it
+ * picks the race class (SceneMenu::mLevelID), the class picture (Entry_Engine<n>.bti) and its
+ * caption (Power_Mozi.<n>.bti) from three tables in memory, and the menu's constructor turns the
+ * last race's class back into a position with "li r0,<position>" per class (two of them generated
+ * to read their immediate from memory: tools/gen_mod.py). Swapping positions 1 and 2 in all of
+ * them lists 150cc before 200cc; every check below must match first, else nothing changes. */
+void plus_class_order(void) {
+    static const uint32_t TABLES[3] = {0x8032E4F8u /* mLevelID: 0, 1, 2, 3 */,
+                                       0x8034B6A8u /* Entry_Engine1-4.bti */, 0x8034B698u /* Power_Mozi.1-4.bti */};
+    static const struct { uint32_t addr, word, swapped; } LI[2] = {
+        {0x80158EF0u, 0x38000001u, 0x38000002u}, /* class 1 (200cc) -> position 2 */
+        {0x80158EFCu, 0x38000002u, 0x38000001u}, /* class 2 (150cc) -> position 1 */
+    };
+    bool ok = m_read_be(TABLES[0] + 4, 4) == 1 && m_read_be(TABLES[0] + 8, 4) == 2;
+    for (int i = 0; i < 2; i++) ok = ok && m_read_be(LI[i].addr, 4) == LI[i].word;
+    if (!ok) { rt_log("plus: class order left as it is (unexpected main.dol contents)"); return; }
+    for (int t = 0; t < 3; t++) {
+        uint32_t a = (uint32_t)m_read_be(TABLES[t] + 4, 4), b = (uint32_t)m_read_be(TABLES[t] + 8, 4);
+        m_write_be(TABLES[t] + 4, 4, b);
+        m_write_be(TABLES[t] + 8, 4, a);
+    }
+    for (int i = 0; i < 2; i++) m_write_be(LI[i].addr, 4, LI[i].swapped);
+    rt_log("plus: classes listed 50cc, 150cc, 200cc, Mirror");
+}

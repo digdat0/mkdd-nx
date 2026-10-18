@@ -209,7 +209,7 @@ class App:
             self.bar.configure(value=1, maximum=1)
             msg = (f"Done: {r['textures']:,} textures, {r['bytes'] / 2**20:,.0f} MB, in {fmt_time(r['seconds'])}.\n\n"
                    f"Saved: {r['out']}\n\n"
-                   f"Copy {OUT_NAME} to the SD card, into sdmc:/switch/MKDD-NX/ next to MKDD-NX.nro, "
+                   f"Copy {OUT_NAME} to the SD card, into sdmc:/switch/MKDD-NX/mods/hd/, "
                    "then turn on HD TEXTURES in the game's - menu.")
             if r["failed"]:
                 msg += f"\n\n{len(r['failed'])} damaged texture file(s) were skipped; the game shows those textures as normal."

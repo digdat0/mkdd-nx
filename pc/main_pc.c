@@ -29,7 +29,8 @@ int main(int argc, char **argv) {
     int secs = argc > 2 ? atoi(argv[2]) : 60;
     const char *script = argc > 3 ? argv[3] : "";
     diag_set_log_file("mkdd_pc.log");
-    memcard_set_path("memcard/slotA.bin");
+    /* MKDD_MOD=<folder>: play a mod (machine_boot), with its own saves */
+    memcard_set_path(getenv("MKDD_MOD") ? "memcard_mod/slotA.bin" : "memcard/slotA.bin");
     char err[512];
     if (!machine_boot(argv[1], &s_boot, err, sizeof err)) {
         fprintf(stderr, "boot failed: %s\n", err);

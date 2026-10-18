@@ -18,11 +18,12 @@ typedef struct {
     bool border;       /* 4:3: checkered border art in the side bars during races */
     bool profiler;     /* sampling profiler (logs/mkdd_prof.bin), from the next start */
     int docked_res;    /* docked (TV): 0 native (the game's 640x480-ish frame), 1 rendered at 2x, 1080p output */
+    bool play_mod;     /* last start-up choice with a mod in mods/: the mod (else the standard game) */
     uint64_t map[GC_COUNT]; /* Switch buttons (HidNpadButton_*) that press each GameCube button */
 } Settings;
 
 extern Settings g_set;
-/* HD textures converted by tools/hdtex_pack.py, in the app folder */
+/* HD textures converted by tools/hdtex_pack.py, in the app folder's mods/hd/ */
 #define HD_FILE "hd-textures.bin"
 
 /* Colour option, kept in its own file (save/color.ini) apart from settings.ini and the game save.
@@ -55,6 +56,8 @@ bool menu_take_controllers(void);
 void menu_draw(int w, int h, float fps, const char *perf);
 /* Read the MarioFont letters from the (opened) disc; later calls do nothing. */
 void menu_font_load(void);
+/* Start-up choice in the loading screen's style: title, n options (sel highlighted), hint line. */
+void menu_choice(int w, int h, const char *title, const char *const *opts, int n, int sel, const char *hint);
 /* Start-up / message screen in the menu's style: logo, two lines, progress bar (< 0: none). */
 void menu_loading(int w, int h, const char *line1, const char *line2, float progress);
 /* The 4:3 border art in the side bars beside a w x h screen's 4:3 picture (after render_present). */

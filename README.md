@@ -4,6 +4,36 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 **No game code or data is in this repository.** 
 **Bring your own legally dumped disc image of Mario Kart: Double Dash!! (USA, GM4E01). We do not condone piracy and will not respond to requests for game image files!**
 
+## Features
+
+**Game**
+
+- Close to 60 fps at stock Switch clocks; the heaviest moments drop a few frames. No overclock
+  needed (it doesn't hurt either).
+- Plays the USA release (GM4E01) from an `.iso`, `.gcm`, `.ciso` or `.rvz` disc image.
+- 4:3 or 16:9. In 16:9 the game camera is genuinely wider rather than stretched.
+- Field of view options: Normal, Wide, Wider.
+- Texture filtering: 2x, 4x, 8x or 16x anisotropic.
+- Docked: 1080p output, rendered at 2x the original resolution for a sharper picture.
+- Colour options: Accurate, Vivid, or your own brightness, contrast and saturation.
+- Up to 4 players, controller syncing from the game menu, and button remapping.
+- Unlock-all option that never touches your save.
+- In-game updater that installs the latest GitHub release.
+- On-screen FPS counter, and debug logging for bug reports (both under Debugging).
+
+**Resolution**
+
+- **Handheld:** the game renders at its original GameCube resolution (about 640×480), scaled to the
+  1280×720 screen. 4:3 shows a 960×720 picture with bars at the sides. 16:9 fills the screen with a
+  wider camera, not a stretch; the field of view setting picks how wide.
+- **Docked:** the output is 1080p, and by default the game renders at 2× (1280×960).
+
+**Mods**
+
+- The [MKDD HD texture pack](https://sites.google.com/view/mkddhd/home-page): see [HD textures](#hd-textures).
+- The [Mario Kart: Double Dash!! Plus](https://mkdd.org/wiki/Mario_Kart:_Double_Dash!!_Plus) mod (v3.3 NTSC):
+  see [MKDD Plus](#mkdd-plus).
+
 ## Getting started
 
 **You need:**
@@ -22,7 +52,8 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 3. Copy your disc image into the same folder. If there is more than one, the game uses an `.iso` /
    `.gcm` first, then `.ciso`, then `.rvz`. Swapping an `.iso` for an `.rvz` (or back) is fine: saves,
    settings and HD textures carry over.
-4. Optional: add `hd-textures.bin` there too (see [HD textures](#hd-textures)).
+4. Optional: HD textures in `mods/hd/` and the MKDD Plus mod in `mods/plus/` (see [HD textures](#hd-textures)
+   and [MKDD Plus](#mkdd-plus)).
 5. Start it from the homebrew menu with **title takeover**: hold **R** while starting any game
    from the HOME menu, then pick MKDD-NX. (The album / applet mode has too little memory.)
 
@@ -30,7 +61,8 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 sdmc:/switch/MKDD-NX/
     MKDD-NX.nro
     Mario Kart - Double Dash!! (USA).iso     (or .rvz)
-    hd-textures.bin          (optional)
+    mods/hd/hd-textures.bin  (optional)
+    mods/plus/files, sys     (optional: MKDD Plus)
 ```
 
 The first start takes longer while shaders are compiled; later starts reuse them. Press **-** at
@@ -72,32 +104,31 @@ also opens by itself when a controller in use disconnects; reconnect it and clos
 | Option | |
 |---|---|
 | Display | 16:9 (default): wider game camera, race HUD at the screen edges, menus 4:3 in the middle; or 4:3 |
-| HD textures | Off (default) / On when `hd-textures.bin` is in the app folder (see [HD textures](#hd-textures)), else NO PACK |
-| Controllers | the system controller screen |
-| Button mapping | pick a GameCube button, press the Switch button for it |
+| HD textures | Off (default) / On when `mods/hd/hd-textures.bin` is in the app folder (see [HD textures](#hd-textures)), else NO PACK |
 | Advanced | the page below |
+| Controllers | **Sync controllers** (the system screen for pairing, the player order and single Joy-Cons) and **Button mapping** (pick a GameCube button, press the Switch button for it) |
 | Debugging | the page below |
-| Exit game | |
+| Update | shows this version and the latest release; **Check for updates** downloads and installs the newest `MKDD-NX.nro`, then **Restart now** starts it (save your progress first) |
+| Exit game | back to the homebrew menu |
 
 **Advanced**
 
 | Option | |
 |---|---|
 | Color | Accurate / Vivid / Custom brightness, contrast, saturation (hold Y on that page to preview); saved to `config/color.ini` |
-| Rumble | Off (default) / Low / High |
 | Field of view | Normal / Wide / Wider race camera, kept separately for 4:3 (default Normal) and 16:9 (default Wider); the row changes the current display mode's |
 | Texture filtering | Normal / 2x / 4x / 8x / 16x anisotropic filtering: sharper roads and walls at a distance (most visible with HD textures, which have mipmaps) |
 | Docked resolution | 2X (default) / Native: on the TV the game renders at twice its size (1280x960 instead of 640x480) and outputs 1080p; handheld always renders at the game's own size |
-| Border | Off / On: checkered border art in the side bars during races in 4:3 (menus keep black bars) |
+| 4:3 edge border | Off / On: checkered border art in the side bars during races in 4:3 (menus keep black bars) |
+| Rumble | Off (default) / Low / High |
+| Unlock all | every character, kart, cup and mode while it is on; never written to your save, so your own progress stays as it is |
 
 **Debugging**
 
 | Option | |
 |---|---|
 | Show FPS | Off / FPS / FPS + times: ms per game frame of the game thread (GAME), the graphics thread (GX) and the render thread (RENDER); 16.7 is the 60 fps budget |
-| Unlock all | every character, kart, cup and mode while it is on; never written to your save, so your own progress stays as it is |
 | Logging | debug logs on the SD card, for bug reports |
-| Profiler | Off / On: performance samples in `logs/mkdd_prof.bin` for reports (`tools/prof_report.py`); costs a little speed, takes effect at the next start |
 
 Settings are saved to `config/settings.ini`.
 
@@ -125,8 +156,8 @@ Silicon / Intel). Nothing else needs installing.
 4. **Output folder:** choose where to save `hd-textures.bin` (about 800 MB).
 5. **Convert.** It takes about 5-15 minutes depending on the computer, and keeps the computer awake, so you
    can walk away. When it's done, the window says so and where the file is.
-6. Copy `hd-textures.bin` to `sdmc:/switch/MKDD-NX/`, next to `MKDD-NX.nro` (the name must be exactly
-   `hd-textures.bin`).
+6. Copy `hd-textures.bin` to `sdmc:/switch/MKDD-NX/mods/hd/` (create the folders; the name must be
+   exactly `hd-textures.bin`).
 7. Start the game: **HD TEXTURES** in the - menu now shows ON (switch it off to compare during a race). The
    hint on that row counts the textures currently shown in HD.
 
@@ -155,6 +186,43 @@ original texture), so other packs in Dolphin's `tex1_` format work the same way.
 in the background from the SD card: a texture shows in its original form for a moment, then
 switches to HD. Up to about 80 MB of GPU memory is used at a time; races run at 60 fps as with
 the original textures.
+
+## MKDD Plus
+
+MKDD-NX can also play the **Mario Kart: Double Dash!! Plus** mod (version **3.3, NTSC**), with its
+extra cups and courses, from the files the mod comes as. Nothing is patched: your disc image stays
+as it is, and the standard game stays playable.
+
+1. Get MKDD Plus 3.3 [NTSC] (see the [MKDD Plus wiki page](https://mkdd.org/wiki/Mario_Kart:_Double_Dash!!_Plus)) and extract it. You get a folder with `files` and `sys` in it.
+2. On the SD card, create `sdmc:/switch/MKDD-NX/mods/plus/` and copy the mod's `files` and `sys`
+   folders into it:
+
+   ```
+   sdmc:/switch/MKDD-NX/
+       MKDD-NX.nro
+       Mario Kart - Double Dash!! (USA).iso
+       mods/
+           hd/
+               hd-textures.bin   (optional)
+           plus/
+               files/
+               sys/
+   ```
+
+   Copy it as it is: don't delete `Course`, `CourseName`, `Movie` or `StaffGhosts` (the mod's
+   folders don't have them; the steps for building a modded ISO on a PC don't apply here).
+3. Start the game: it asks which one to play (up / down, A). The choice is remembered for the next
+   start.
+
+Plus keeps its own saves in `save/plus/`, apart from the standard game's. The first time you play
+Plus, if you have a standard save, the game offers to start Plus from a copy of it (unlocks and
+records; ghosts aren't copied, and your standard save stays as it is). On the select-mode screen
+the classes are listed 50cc, 150cc, 200cc, Mirror (the mod itself puts 200cc second). In a cup,
+X and Y switch between the mod's course sets. Its intro movie doesn't
+play (the mod removes it). HD textures still apply where the mod uses the game's own textures
+(characters, karts, menus it didn't change); its new courses show their original textures. Only
+version 3.3 NTSC works: the game's code is built for that exact version, and another one is
+refused with a message.
 
 ## Reporting bugs
 
@@ -185,6 +253,8 @@ come from the [doldecomp/mkdd](https://github.com/doldecomp/mkdd) decompilation 
 - [GameCubeLoader](https://github.com/Cuyler36/Ghidra-GameCube-Loader), Ghidra, devkitPro.
 - The [MKDD HD texture pack](https://sites.google.com/view/mkddhd/home-page) team, for the textures
   `tools/hdtex_pack.py` converts (not included here).
+- **That1loser4**, creator of [Mario Kart: Double Dash!! Plus](https://mkdd.org/wiki/Mario_Kart:_Double_Dash!!_Plus),
+  and everyone who contributed courses to it. The mod is not included here: get it from its own release.
 
 The code in this repository is released under the MIT licence (`LICENSE`). Mario Kart:
 Double Dash!! and its characters are Nintendo's; this project is not affiliated with Nintendo.

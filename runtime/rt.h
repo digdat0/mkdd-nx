@@ -40,6 +40,11 @@ bool rvz_open(FILE *f, uint64_t *disc_size, char *err, size_t errlen);
 void rvz_read(uint64_t off, uint8_t *out, size_t n);
 uint32_t disc_read_u32(uint64_t off);
 bool disc_find(const char *path, uint64_t *off, uint32_t *size); /* file in the disc's FST */
+/* Play a mod extracted to mod_dir (sys/main.dol, sys/fst.bin, files/) over the open image: from
+ * then on the disc is the mod's, its missing files taken from the image. */
+bool disc_overlay(const char *mod_dir, char *err, size_t errlen);
+bool disc_overlay_active(void);
+const char *disc_overlay_name(void); /* the mod folder's name, NULL without one */
 /* Replace n bytes at disc offset off in every later read (front-end layout fixes; at most 1024 bytes). */
 void disc_patch(uint64_t off, const void *bytes, size_t n);
 
@@ -147,6 +152,9 @@ extern volatile bool g_pad_hold;
 /* ---- psmtx.c / cheats.c / memcard.c / thp.c ---- */
 bool psmtx_call(Ctx *c, int which);
 enum { MTX_COPY, MTX_CONCAT, MTX_MULTVEC, VEC_CROSS, VEC_MAG, MTX_INVERSE };
+/* MKDD Plus 3.3: engine classes listed 50cc, 150cc, 200cc, Mirror (the mod has 200cc second). Run
+ * once the mod's main.dol is in memory. */
+void plus_class_order(void);
 void cheats_unlock_all(void);
 void cheats_set(bool on); /* on: unlock_all; off: the earned bits back */
 bool cheats_active(void);

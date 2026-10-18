@@ -24,5 +24,11 @@ extern const uint8_t ABI_CAND_SIZE[];
 extern const unsigned ABI_CAND_COUNT;
 extern const uint32_t ABI_SUSPECT[];  /* sorted; read non-argument registers at entry */
 extern const unsigned ABI_SUSPECT_COUNT;
+/* A mod's code (part_mod.c, tools/gen_mod.py; empty without one): the main.dol it was generated
+ * from and its functions, which take over these addresses while g_mod is set. */
+extern const char MOD_DOL_SHA1[];
+extern const char MOD_NAME[];
+extern const FuncEntry MOD_FUNCS[]; /* sorted by start address */
+extern const unsigned MOD_FUNC_COUNT;
 extern const NamedAddr NAMES[];   /* sorted by address */
 extern const unsigned NAME_COUNT;

@@ -1,5 +1,5 @@
 /* HD texture replacements: a Dolphin HD texture pack converted by tools/hdtex_pack.py (BC7, full
- * mipmap chains) in hd-textures.bin next to the .nro. Game textures are matched as Dolphin matches them
+ * mipmap chains) in mods/hd/hd-textures.bin in the app folder. Game textures are matched as Dolphin matches them
  * (format, size and XXH64 of the level-0 bytes); a loader thread reads replacements from the SD
  * card while the game texture stays on screen. */
 #pragma once

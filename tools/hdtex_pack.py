@@ -6,7 +6,7 @@
 <pack folder> is the folder Dolphin reads (Load/Textures/GM4E01). Every texture is kept at its full
 size and BC7-compressed (the Switch GPU samples BC7 directly) with a full mipmap chain: the pack's
 own _mipN files where it has them, box-filtered levels otherwise. Copy the output to
-sdmc:/switch/MKDD-NX/ (as hd-textures.bin) next to the .nro. Nothing from the pack belongs in the repository.
+sdmc:/switch/MKDD-NX/mods/hd/ (as hd-textures.bin). Nothing from the pack belongs in the repository.
 
 Dolphin names a replacement tex1_<w>x<h>[_m]_<xxh64 of level 0>[_<xxh64 of the palette>|_$]_<format>
 [_arb][_mipN].png; the game texture is matched by the same hash at run time. Other files (copies,

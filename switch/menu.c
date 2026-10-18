@@ -57,6 +57,7 @@ static void defaults(void) {
     g_set.border = false;
     g_set.docked_res = 1;
     g_set.profiler = false;
+    g_set.play_mod = false;
     memcpy(g_set.map, DEFAULT_MAP, sizeof g_set.map);
 }
 
@@ -90,6 +91,7 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "aniso")) g_set.aniso = atoi(v) < 0 ? 0 : atoi(v) > 4 ? 4 : atoi(v);
         else if (!strcmp(k, "border")) g_set.border = atoi(v) != 0;
         else if (!strcmp(k, "docked_res")) g_set.docked_res = atoi(v) != 0;
+        else if (!strcmp(k, "play_mod")) g_set.play_mod = atoi(v) != 0;
         else
             for (int i = 0; i < GC_COUNT; i++)
                 if (!strcmp(k, GC_KEYS[i])) g_set.map[i] = strtoull(v, NULL, 16) & mappable();
@@ -104,8 +106,8 @@ void settings_save(void) {
     FILE *f = fopen(s_path, "w");
     if (!f) return;
     fprintf(f, "display=%d\nshow_fps=%d\nlogging=%d\nrumble=%d\nunlock_all=%d\nhd_textures=%d\nfov_4_3=%d\nfov_16_9=%d\naniso=%d\nborder=%d\n"
-            "docked_res=%d\nprofiler=%d\n", g_set.wide, g_set.show_fps, g_set.logging, g_set.rumble, g_set.unlock_all, g_set.hd_textures,
-            g_set.fov[0], g_set.fov[1], g_set.aniso, g_set.border, g_set.docked_res, g_set.profiler);
+            "docked_res=%d\nprofiler=%d\nplay_mod=%d\n", g_set.wide, g_set.show_fps, g_set.logging, g_set.rumble, g_set.unlock_all,
+            g_set.hd_textures, g_set.fov[0], g_set.fov[1], g_set.aniso, g_set.border, g_set.docked_res, g_set.profiler, g_set.play_mod);
     for (int i = 0; i < GC_COUNT; i++) fprintf(f, "%s=%llx\n", GC_KEYS[i], (unsigned long long)g_set.map[i]);
     fclose(f);
 }
@@ -894,13 +896,14 @@ void menu_border(int w, int h) {
 #define TITLE_B "DOUBLE DASH!! "
 #define TITLE_C "NX"
 
-void menu_loading(int w, int h, const char *line1, const char *line2, float progress) {
+/* The loading screen's background and title; false if GL isn't up. */
+static bool loading_back(int w, int h) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, w, h);
     glDisable(GL_SCISSOR_TEST);
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
-    if (!init_gl()) return;
+    if (!init_gl()) return false;
     begin(w, h);
     float k = (float)h / 720.0f, fw = (float)w, fh = (float)h;
 
@@ -935,6 +938,31 @@ void menu_loading(int w, int h, const char *line1, const char *line2, float prog
     mtext((fw - tw1) / 2, ty0, tsz, C_TITLE_T, C_TITLE_B, TITLE_A);
     tx += mtext(tx, ty0 + tsz, tsz, 0xFFFFFFFFu, 0xD8DCF0FFu, TITLE_B);
     mtext(tx, ty0 + tsz, tsz, 0xFF5A4AFFu, 0xC81414FFu, TITLE_C);
+    return true;
+}
+
+/* A choice on the loading screen (which game to play): a title line and the options, sel
+ * highlighted, in the message box grown to fit them. */
+void menu_choice(int w, int h, const char *title, const char *const *opts, int n, int sel, const char *hint) {
+    if (!loading_back(w, h)) return;
+    float k = (float)h / 720.0f, fw = (float)w;
+    float rh = 58 * k, bw = 860 * k, bh = (78 + (float)n * 58 + (hint ? 44 : 14)) * k, bx = (fw - bw) / 2, by = 360 * k;
+    round_box(bx - 8 * k, by - 8 * k, bw + 16 * k, bh + 16 * k, 22 * k, 0xD61C1CFFu);
+    round_box(bx - 3 * k, by - 3 * k, bw + 6 * k, bh + 6 * k, 18 * k, 0xFFFFFFFFu);
+    round_box(bx, by, bw, bh, 16 * k, 0x102268F8u);
+    float ts = 40 * k, tw = mtext_w(title, ts);
+    mtext((fw - tw) / 2, by + 20 * k, ts, C_TITLE_T, C_TITLE_B, title);
+    for (int i = 0; i < n; i++) mrow(bx + 40 * k, by + 74 * k + (float)i * rh, bw - 80 * k, rh, k, i == sel, opts[i], NULL, false);
+    if (hint) {
+        float hs = 26 * k, hw = mtext_w(hint, hs);
+        mtext((fw - hw) / 2, by + bh - 38 * k, hs, C_DIM, C_DIM, hint);
+    }
+    end();
+}
+
+void menu_loading(int w, int h, const char *line1, const char *line2, float progress) {
+    if (!loading_back(w, h)) return;
+    float k = (float)h / 720.0f, fw = (float)w;
 
     /* message box: red border, white rim, navy, like the - menu */
     float bw = 860 * k, bh = 190 * k, bx = (fw - bw) / 2, by = 420 * k;
