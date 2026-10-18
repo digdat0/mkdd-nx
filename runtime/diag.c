@@ -39,6 +39,7 @@ void diag_flush(void) {
 }
 
 void rt_log(const char *fmt, ...) {
+    if (!g_log_mask) return; /* Logging off: don't even format the line */
     char msg[1024];
     va_list ap;
     va_start(ap, fmt);
@@ -119,6 +120,10 @@ static void watchdog(void *arg) {
             n += snprintf(buf + n, sizeof buf - (size_t)n, "intrinsic %s x%llu\n", s_intr[i].name, (unsigned long long)s_intr[i].n);
         if (g_syscalls && n < (int)sizeof buf - 64)
             n += snprintf(buf + n, sizeof buf - (size_t)n, "intrinsic syscall x%llu (inline)\n", (unsigned long long)g_syscalls);
+        extern uint64_t g_disc_ahead_hits, g_disc_reads_direct;
+        if (n < (int)sizeof buf - 96)
+            n += snprintf(buf + n, sizeof buf - (size_t)n, "disc: %llu reads from the read-ahead window, %llu direct\n",
+                          (unsigned long long)g_disc_ahead_hits, (unsigned long long)g_disc_reads_direct);
         if (s_log) fflush(s_log);
         pmutex_unlock(&s_lock);
         if (f && g_log_mask) { fputs(buf, f); fflush(f); }

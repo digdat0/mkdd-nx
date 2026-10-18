@@ -14,6 +14,7 @@
 #include "render_gl.h"
 #include "hdtex.h"
 #include "ui_font.h"
+#include "update.h"
 #include "../runtime/rt.h"
 
 Settings g_set;
@@ -164,8 +165,10 @@ void color_adjust(float adj[3]) {
 
 /* ---- menu state ---- */
 /* Main page: what most players change. Advanced: picture and feel. Debugging: diagnostics. */
-enum { PAGE_MAIN, PAGE_MAP, PAGE_EXIT, PAGE_COLOR, PAGE_DEBUG, PAGE_ADV, PAGE_COUNT };
-enum { M_WIDE, M_HD, M_CTRL, M_MAP, M_ADV, M_DEBUG, M_EXIT, M_COUNT };
+enum { PAGE_MAIN, PAGE_MAP, PAGE_EXIT, PAGE_COLOR, PAGE_DEBUG, PAGE_ADV, PAGE_UPDATE, PAGE_COUNT };
+enum { M_WIDE, M_HD, M_CTRL, M_MAP, M_ADV, M_DEBUG, M_UPDATE, M_EXIT, M_COUNT };
+enum { U_THIS, U_LATEST, U_ACTION, U_BACK, U_COUNT };
+static bool s_restart_manual; /* installed, but the loader can't relaunch: the player restarts */
 enum { A_COLOR, A_RUMBLE, A_FOV, A_ANISO, A_DOCKED, A_BORDER, A_BACK, A_COUNT };
 static const char *FOV_NAMES[3] = {"NORMAL", "WIDE", "WIDER"};
 static const char *ANISO_NAMES[5] = {"NORMAL", "2X", "4X", "8X", "16X"};
@@ -200,6 +203,7 @@ static int page_rows(int page) {
     case PAGE_COLOR: return K_COUNT;
     case PAGE_DEBUG: return D_COUNT;
     case PAGE_ADV: return A_COUNT;
+    case PAGE_UPDATE: return U_COUNT;
     default: return 1;
     }
 }
@@ -317,12 +321,24 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         case M_MAP: if (ok) { s_page = PAGE_MAP; s_sel[PAGE_MAP] = 0; } break;
         case M_ADV: if (ok) { s_page = PAGE_ADV; s_sel[PAGE_ADV] = 0; } break;
         case M_DEBUG: if (ok) { s_page = PAGE_DEBUG; s_sel[PAGE_DEBUG] = 0; } break;
+        case M_UPDATE: if (ok) { s_page = PAGE_UPDATE; s_sel[PAGE_UPDATE] = U_ACTION; } break;
         case M_EXIT: if (ok) s_page = PAGE_EXIT; break;
         }
     } else if (s_page == PAGE_MAP && ok) {
         if (*sel < GC_COUNT) { s_capture = *sel; s_capture_armed = false; }
         else if (*sel == P_RESET) { memcpy(g_set.map, DEFAULT_MAP, sizeof g_set.map); settings_save(); }
         else s_page = PAGE_MAIN;
+    } else if (s_page == PAGE_UPDATE && ok) {
+        if (*sel == U_BACK) s_page = PAGE_MAIN;
+        else if (*sel == U_ACTION) {
+            UpdateStatus st;
+            update_status(&st);
+            if (st.state == UPD_READY) {
+                /* the loader starts the new .nro as soon as this one exits */
+                if (update_relaunch()) *quit = true;
+                else s_restart_manual = true;
+            } else update_start();
+        }
     } else if (s_page == PAGE_EXIT && ok) {
         *quit = true;
     }
@@ -691,15 +707,18 @@ void menu_draw(int w, int h, float fps, const char *perf) {
         if (s_page != PAGE_COLOR) rect(0, 0, (float)w, (float)h, 0x00000070u); /* colour page: the image undimmed */
         const char *title = s_page == PAGE_MAP ? "BUTTON MAPPING" : s_page == PAGE_EXIT ? "EXIT THE GAME?"
                             : s_page == PAGE_COLOR ? "COLOR" : s_page == PAGE_DEBUG ? "DEBUGGING"
-                            : s_page == PAGE_ADV ? "ADVANCED" : "OPTIONS";
+                            : s_page == PAGE_ADV ? "ADVANCED" : s_page == PAGE_UPDATE ? "UPDATE" : "OPTIONS";
         panel(x, y, pw, ph, k, title);
         float ry = y + top;
         const char *hint = NULL;
         if (s_page == PAGE_MAIN) {
-            static const char *labels[M_COUNT] = {"DISPLAY", "HD TEXTURES", "CONTROLLERS", "BUTTON MAPPING", "ADVANCED", "DEBUGGING", "EXIT GAME"};
+            static const char *labels[M_COUNT] = {"DISPLAY", "HD TEXTURES", "CONTROLLERS", "BUTTON MAPPING", "ADVANCED", "DEBUGGING", "UPDATE", "EXIT GAME"};
+            UpdateStatus us;
+            update_status(&us);
             const char *values[M_COUNT] = {g_set.wide ? "16:9" : "4:3", !hdtex_available() ? "NO PACK" : g_set.hd_textures ? "ON" : "OFF",
-                                           NULL, NULL, NULL, NULL, NULL};
-            static const bool more[M_COUNT] = {false, false, true, true, true, true, false};
+                                           NULL, NULL, NULL, NULL,
+                                           us.state == UPD_AVAILABLE ? "NEW" : us.state == UPD_READY ? "RESTART" : update_version(), NULL};
+            static const bool more[M_COUNT] = {false, false, true, true, true, true, true, false};
             char hd_hint[64];
             if (!hdtex_available()) snprintf(hd_hint, sizeof hd_hint, "PUT HD-TEXTURES.BIN IN THE MKDD-NX FOLDER");
             else if (!g_set.hd_textures) snprintf(hd_hint, sizeof hd_hint, "COMMUNITY HD TEXTURE PACK");
@@ -711,6 +730,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s_sel[PAGE_MAIN] == M_CTRL  ? "PAIR CONTROLLERS, SET THE PLAYER ORDER, SINGLE JOY-CONS"
                    : s_sel[PAGE_MAIN] == M_ADV   ? "COLOR, RUMBLE, FIELD OF VIEW, TEXTURE FILTERING, BORDER"
                    : s_sel[PAGE_MAIN] == M_DEBUG ? "FPS AND FRAME TIMES, UNLOCK ALL, LOGS"
+                   : s_sel[PAGE_MAIN] == M_UPDATE ? "DOWNLOAD AND INSTALL THE LATEST RELEASE"
                                                  : "GAME PAUSED   A: SELECT   B OR -: CLOSE";
             /* "Oct 15 2026 14:08:52" -> "BUILD 1408" (the name of the build's saved .elf), in the
              * title band's top right */
@@ -733,6 +753,31 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s_sel[PAGE_ADV] == A_DOCKED ? "ON THE TV: 2X RENDER, 1080P OUTPUT. HANDHELD STAYS NATIVE"
                    : s_sel[PAGE_ADV] == A_BORDER ? "4:3: CHECKERED BORDER BESIDE THE RACE"
                                                  : "B: BACK";
+        } else if (s_page == PAGE_UPDATE) {
+            UpdateStatus us;
+            update_status(&us);
+            char action[48], latest[32];
+            const char *lv = "?";
+            if (us.version[0] && us.state != UPD_IDLE && us.state != UPD_CHECKING) lv = us.version;
+            snprintf(latest, sizeof latest, "%s", us.state == UPD_CHECKING ? "CHECKING..." : lv);
+            switch (us.state) {
+            case UPD_AVAILABLE: snprintf(action, sizeof action, "INSTALL %s", us.version); break;
+            case UPD_DOWNLOADING: snprintf(action, sizeof action, "DOWNLOADING %d%%", (int)(us.progress * 100 + 0.5f)); break;
+            case UPD_READY: snprintf(action, sizeof action, "RESTART NOW"); break;
+            case UPD_CHECKING: snprintf(action, sizeof action, "CHECKING..."); break;
+            default: snprintf(action, sizeof action, "CHECK FOR UPDATES"); break;
+            }
+            const char *labels[U_COUNT] = {"THIS VERSION", "LATEST RELEASE", action, "BACK"};
+            const char *values[U_COUNT] = {update_version(), latest, NULL, NULL};
+            for (int i = 0; i < U_COUNT; i++, ry += rh) mrow(x, ry, pw, rh, k, s_sel[PAGE_UPDATE] == i, labels[i], values[i], false);
+            hint = us.state == UPD_ERROR         ? us.msg
+                   : us.state == UPD_CURRENT     ? "YOU HAVE THE LATEST RELEASE"
+                   : us.state == UPD_AVAILABLE   ? "A: DOWNLOAD AND INSTALL (THE OLD ONE IS KEPT AS .NRO.OLD)"
+                   : us.state == UPD_DOWNLOADING ? "YOU CAN KEEP PLAYING: CLOSE THE MENU WITH B"
+                   : us.state == UPD_READY       ? (s_restart_manual ? "INSTALLED: CLOSE THE GAME AND START IT AGAIN"
+                                                                     : "INSTALLED: A RESTARTS THE GAME (SAVE YOUR PROGRESS FIRST)")
+                   : us.state == UPD_CHECKING    ? "CONNECTING TO GITHUB..."
+                                                 : "NEEDS AN INTERNET CONNECTION";
         } else if (s_page == PAGE_DEBUG) {
             static const char *labels[D_COUNT] = {"SHOW FPS", "UNLOCK ALL", "LOGGING", "PROFILER", "BACK"};
             const char *values[D_COUNT] = {FPS_NAMES[g_set.show_fps % 3], g_set.unlock_all ? "ON" : "OFF",

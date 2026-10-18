@@ -22,6 +22,7 @@
 #include "menu.h"
 #include "pause_art.h"
 #include "hdtex.h"
+#include "update.h"
 const char g_build_stamp[] = __DATE__ " " __TIME__;
 #include "../runtime/native.h"
 
@@ -391,7 +392,7 @@ static void game_thread(void *arg) {
 }
 
 int main(int argc, char **argv) {
-    (void)argc; (void)argv;
+    update_init(argc > 0 ? argv[0] : NULL);
     mkdir("sdmc:/switch", 0777);
     mkdir(APP_DIR, 0777);
     mkdir(LOG_DIR, 0777);
@@ -575,7 +576,7 @@ int main(int argc, char **argv) {
                 last_w = cw; last_h = ch; last_scale = scale;
             }
         }
-        render_gpu_timer_begin();
+        if (g_log_mask) render_gpu_timer_begin(); /* a timed frame makes the GPU drain first: only for the logs */
         bool got = render_update(docked && g_set.docked_res ? 2 : 1);
         t_render += armTicksToNs(armGetSystemTick() - r0);
         if (got) {

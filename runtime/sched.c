@@ -97,12 +97,21 @@ void sched_set_idle_stack(uint32_t sp) { s_idle_sp = sp; }
 
 static bool pending(void) { return __atomic_load_n(&s_pending_irq, __ATOMIC_RELAXED) != 0 || s_alarm_due; }
 
+/* The idle thread shares the game's core and has work only while no guest thread holds the
+ * token: a running thread delivers interrupts itself (g_attention). Waking it otherwise took the
+ * game's core and the scheduler lock hundreds of times a second (timer ticks, every interrupt).
+ * Pairs with give_token's store: an event raised before the token is dropped is seen by the idle
+ * thread, which the drop wakes (kick_token). */
+static void wake_idle(void) {
+    if (__atomic_load_n(&s_running, __ATOMIC_SEQ_CST) == SCHED_NONE) pcond_broadcast(&s_cv);
+}
+
 void sched_raise(int irq) {
-    __atomic_fetch_or(&s_pending_irq, 1u << irq, __ATOMIC_RELAXED);
+    __atomic_fetch_or(&s_pending_irq, 1u << irq, __ATOMIC_SEQ_CST);
     g_attention = true;
     /* If every guest thread is asleep (e.g. waiting for this very interrupt), only the idle
      * thread can deliver it: wake it now instead of at its next timed tick. */
-    pcond_broadcast(&s_cv);
+    wake_idle();
 }
 
 /* VI beam position as the hardware reports it: (vertical count 1..525 over a full interlaced
@@ -176,12 +185,26 @@ static void adopt(Ctx *c) {
     }
 }
 
+/* The thread's current priority, from its OSThread. The SDK also changes it without
+ * SetEffectivePriority: OSUnlockMutex ends priority inheritance by writing thread->priority
+ * itself. Going by a cached copy kept the low-priority loader task (18) at an inherited 4 for
+ * the whole session, so every queued load preempted the main thread (16) at once: after the
+ * title demo, loadTask then ran inside SequenceApp's constructor, before mspSequenceApp was
+ * set, read its heap through a null pointer (0x30310000, the "01" of the disc ID) and left the
+ * title scene without its background. Lock held. */
+static int prio_of(Th *t) {
+    if (t->addr >= 0x80000000u) t->prio = (int)(int32_t)m_read_be(t->addr + T_PRIORITY, 4);
+    return t->prio;
+}
+
 static Th *pick(void) {
     Th *best = NULL;
+    int bp = 0;
     for (int i = 0; i < MAX_THREADS; i++) {
         Th *t = &s_threads[i];
         if (!t->used || t->state != TS_READY) continue;
-        if (!best || t->prio < best->prio || (t->prio == best->prio && t->seq < best->seq)) best = t;
+        int p = prio_of(t);
+        if (!best || p < bp || (p == bp && t->seq < best->seq)) { best = t; bp = p; }
     }
     return best;
 }
@@ -221,7 +244,7 @@ static void give_token(void) {
             set_gstate(n->addr, GS_RUNNING);
         }
     } else {
-        s_running = SCHED_NONE;
+        __atomic_store_n(&s_running, SCHED_NONE, __ATOMIC_SEQ_CST);
     }
 }
 
@@ -245,7 +268,7 @@ static void switch_to_next(uint32_t me) {
 static void maybe_preempt(Ctx *c) {
     if (c->in_irq || c->thread < 0x80000000u) return;
     Th *me = find(c->thread);
-    int my = me ? me->prio : 0x7FFFFFFF;
+    int my = me ? prio_of(me) : 0x7FFFFFFF;
     Th *best = pick();
     if (best && best->prio < my) {
         make_ready(c->thread);
@@ -443,7 +466,7 @@ void sched_set_alarm(uint32_t ptr, uint32_t handler, uint64_t fire, uint64_t per
         s_nalarms++;
     }
     s_alarms[i] = (Alarm){ptr, handler, fire, period};
-    pcond_broadcast(&s_cv);
+    wake_idle();
     pmutex_unlock(&s_lock);
 }
 
@@ -591,7 +614,7 @@ static void timer_loop(void *arg) {
         pmutex_lock(&s_lock);
         uint64_t wait = tick();
         pmutex_unlock(&s_lock);
-        pcond_broadcast(&s_cv);
+        wake_idle(); /* due alarms (tick sets s_alarm_due) */
         uint64_t deadline = plat_now_ns() + wait;
 #ifdef __SWITCH__
         /* Horizon's sleeps are accurate; never spin (a spinning thread starves its core). */
@@ -634,7 +657,7 @@ static void idle_loop(void *arg) {
         /* statistics: no guest thread runnable, and whether the decoder still had work */
         bool idle = s_running == SCHED_NONE, gpu = idle && gx_gpu_busy_hint();
         uint64_t t0 = idle ? plat_now_ns() : 0;
-        pcond_wait_ns(&s_cv, &s_lock, 2000000);
+        pcond_wait_ns(&s_cv, &s_lock, idle ? 2000000 : 20000000); /* while the game runs, only a backstop */
         if (idle) {
             uint64_t d = plat_now_ns() - t0;
             g_guest_idle_ns += d;
@@ -648,6 +671,14 @@ void sched_start_idle(void) {
     /* The timer runs at a higher priority than the GX decoder sharing its core. */
     pthread_start("mkdd-idle", idle_loop, NULL, GUEST_STACK, GUEST_CORE, 0);
     pthread_start("mkdd-timer", timer_loop, NULL, 64 << 10, 2, -2);
+}
+
+bool sched_waiting_on(uint32_t t, uint32_t queue) {
+    pmutex_lock(&s_lock);
+    Th *th = find(t);
+    bool w = th && th->state == TS_WAITING && th->wait_queue == queue;
+    pmutex_unlock(&s_lock);
+    return w;
 }
 
 void sched_describe(char *out, size_t n) {

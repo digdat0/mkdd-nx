@@ -324,9 +324,11 @@ static const char *BLIT_FS =
 
 /* Movie frames (THP: the picture as Y, U, V I8 planes, colour at half size), redrawn at twice the
  * plane size before the game's draw samples them: MOVIE_DEBLOCK_FS smooths the JPEG 8x8 block
- * edges in flat areas, MOVIE_LUMA_FS scales brightness with Catmull-Rom plus light sharpening,
- * MOVIE_CHROMA_FS scales each colour plane guided by brightness (a sample counts less the more
- * its brightness differs), so colour edges follow the picture's edges instead of bleeding. */
+ * edges in flat areas, MOVIE_LUMA_FS scales brightness 2x with Catmull-Rom plus light sharpening,
+ * MOVIE_CHROMA_FS brings each colour plane to the brightness plane's size guided by brightness (a
+ * sample counts less the more its brightness differs), so colour edges follow the picture's edges
+ * instead of bleeding. Kept cheap for the Switch GPU: 5 taps for brightness, colour at 1x from 9
+ * (the first version, colour at 2x from 16 with exp(), took the intro down to ~31 fps). */
 static const char *MOVIE_DEBLOCK_FS =
     "#version 320 es\n"
     "precision highp float;\n"
@@ -355,22 +357,24 @@ static const char *MOVIE_DEBLOCK_FS =
 static const char *MOVIE_LUMA_FS =
     "#version 320 es\n"
     "precision highp float;\n"
-    "precision highp int;\n"
-    "uniform highp sampler2D u_y;\n"
+    "uniform highp sampler2D u_y;\n" /* deblocked brightness, linear filtering */
     "out vec4 o_color;\n"
-    "float Y(ivec2 p) { return texelFetch(u_y, clamp(p, ivec2(0), textureSize(u_y, 0) - 1), 0).r; }\n"
+    /* Catmull-Rom in 5 bilinear taps (the corner taps' weights are tiny and dropped) */
     "void main() {\n"
-    "    vec2 s = gl_FragCoord.xy * 0.5 - 0.5, b = floor(s), f = s - b;\n"
-    "    vec2 w[4];\n"
-    "    w[0] = f * (-0.5 + f * (1.0 - 0.5 * f));\n"
-    "    w[1] = 1.0 + f * f * (-2.5 + 1.5 * f);\n"
-    "    w[2] = f * (0.5 + f * (2.0 - 1.5 * f));\n"
-    "    w[3] = f * f * (-0.5 + 0.5 * f);\n"
-    "    ivec2 i = ivec2(b);\n"
-    "    float c = 0.0;\n"
-    "    for (int y = 0; y < 4; y++)\n"
-    "        for (int x = 0; x < 4; x++) c += w[x].x * w[y].y * Y(i + ivec2(x - 1, y - 1));\n"
-    "    float l = mix(mix(Y(i), Y(i + ivec2(1, 0)), f.x), mix(Y(i + ivec2(0, 1)), Y(i + ivec2(1, 1)), f.x), f.y);\n"
+    "    vec2 n = vec2(textureSize(u_y, 0)), inv = 1.0 / n;\n"
+    "    vec2 s = gl_FragCoord.xy * 0.5, t1 = floor(s - 0.5) + 0.5, f = s - t1;\n"
+    "    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));\n"
+    "    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);\n"
+    "    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));\n"
+    "    vec2 w3 = f * f * (-0.5 + 0.5 * f);\n"
+    "    vec2 w12 = w1 + w2, t12 = (t1 + w2 / w12) * inv, t0 = (t1 - 1.0) * inv, t3 = (t1 + 2.0) * inv;\n"
+    "    float c = texture(u_y, vec2(t12.x, t0.y)).r * w12.x * w0.y\n"
+    "            + texture(u_y, vec2(t0.x, t12.y)).r * w0.x * w12.y\n"
+    "            + texture(u_y, t12).r * w12.x * w12.y\n"
+    "            + texture(u_y, vec2(t3.x, t12.y)).r * w3.x * w12.y\n"
+    "            + texture(u_y, vec2(t12.x, t3.y)).r * w12.x * w3.y;\n"
+    "    c /= w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;\n"
+    "    float l = texture(u_y, s * inv).r;\n"
     "    o_color = vec4(clamp(c + 0.35 * (c - l), 0.0, 1.0));\n"
     "}\n";
 
@@ -378,23 +382,23 @@ static const char *MOVIE_CHROMA_FS =
     "#version 320 es\n"
     "precision highp float;\n"
     "precision highp int;\n"
-    "uniform highp sampler2D u_c;\n" /* U or V plane */
-    "uniform highp sampler2D u_g;\n" /* deblocked brightness, linear filtering */
-    "uniform vec2 u_out;\n"
+    "uniform highp sampler2D u_c;\n" /* U or V plane (half size) */
+    "uniform highp sampler2D u_g;\n" /* deblocked brightness (this pass's size), linear filtering */
     "out vec4 o_color;\n"
     "void main() {\n"
-    "    vec2 uv = gl_FragCoord.xy / u_out;\n"
     "    ivec2 n = textureSize(u_c, 0);\n"
-    "    float g0 = texture(u_g, uv).r;\n"
-    "    vec2 s = uv * vec2(n) - 0.5, b = floor(s), f = s - b;\n"
+    "    vec2 nf = vec2(n), uv = gl_FragCoord.xy / vec2(textureSize(u_g, 0));\n"
+    "    float g0 = texelFetch(u_g, ivec2(gl_FragCoord.xy), 0).r;\n"
+    "    vec2 s = uv * nf - 0.5;\n"
+    "    ivec2 b = ivec2(floor(s + 0.5));\n"
     "    float sum = 0.0, wsum = 0.0;\n"
-    "    for (int y = -1; y <= 2; y++)\n"
-    "        for (int x = -1; x <= 2; x++) {\n"
-    "            ivec2 t = clamp(ivec2(b) + ivec2(x, y), ivec2(0), n - 1);\n"
-    "            vec2 d = abs(vec2(float(x), float(y)) - f);\n"
+    "    for (int y = -1; y <= 1; y++)\n"
+    "        for (int x = -1; x <= 1; x++) {\n"
+    "            ivec2 t = clamp(b + ivec2(x, y), ivec2(0), n - 1);\n"
+    "            vec2 d = abs(vec2(t) - s);\n"
     "            float ws = max(0.0, 1.0 - d.x / 1.5) * max(0.0, 1.0 - d.y / 1.5);\n"
-    "            float dg = (g0 - texture(u_g, (vec2(t) + 0.5) / vec2(n)).r) / 0.06;\n"
-    "            float w = ws * (exp(-0.5 * dg * dg) + 0.002);\n"
+    "            float dg = (g0 - texture(u_g, (vec2(t) + 0.5) / nf).r) * 16.0;\n" /* ~1/0.06 */
+    "            float w = ws * (1.0 / (1.0 + dg * dg) + 0.002);\n"
     "            sum += w * texelFetch(u_c, t, 0).r;\n"
     "            wsum += w;\n"
     "        }\n"
@@ -910,7 +914,6 @@ void render_set_subst(unsigned (*texture)(unsigned id)) { s_subst = texture; }
 #define MOVIE_SETS 4
 static struct {
     GLuint prog_deblock, prog_luma, prog_chroma;
-    GLint chroma_out;
     int state;          /* 0 not tried, 1 ready, -1 shaders failed (movies drawn as before) */
     GLuint fbo, yd;     /* yd: deblocked brightness at the plane size */
     uint32_t w, h;
@@ -1272,11 +1275,10 @@ static bool movie_ready(void) {
     glUseProgram(M.prog_chroma);
     glUniform1i(glGetUniformLocation(M.prog_chroma, "u_c"), 0);
     glUniform1i(glGetUniformLocation(M.prog_chroma, "u_g"), 1);
-    M.chroma_out = glGetUniformLocation(M.prog_chroma, "u_out");
     R.cur_prog = ~0u;
     glGenFramebuffers(1, &M.fbo);
     M.state = 1;
-    rt_log("render: movie frames are redrawn (deblocked, scaled 2x, colour guided by brightness)");
+    rt_log("render: movie frames are redrawn (deblocked, brightness 2x, colour guided by brightness)");
     return true;
 }
 
@@ -1307,8 +1309,8 @@ static void movie_enhance(GlTexture *y, GlTexture *u, GlTexture *v) {
         movie_tex(&M.yd, w, h);
         for (unsigned s = 0; s < MOVIE_SETS; s++) {
             movie_tex(&M.set[s].y, W, H);
-            movie_tex(&M.set[s].u, W, H);
-            movie_tex(&M.set[s].v, W, H);
+            movie_tex(&M.set[s].u, w, h);
+            movie_tex(&M.set[s].v, w, h);
             M.set[s].gen = 0;
         }
         M.w = w;
@@ -1326,15 +1328,13 @@ static void movie_enhance(GlTexture *y, GlTexture *u, GlTexture *v) {
     unit_bind(1, 0, 0); /* yd is the next target: not bound for sampling meanwhile */
     unit_bind(0, y->tex, R.samplers[0][0][0]);
     movie_pass(M.prog_deblock, M.yd, w, h);
-    unit_bind(0, M.yd, R.samplers[0][0][0]);
+    unit_bind(0, M.yd, R.samplers[0][0][1]); /* linear: the 5-tap Catmull-Rom relies on it */
     movie_pass(M.prog_luma, M.set[s].y, W, H);
-    use_program(M.prog_chroma);
-    glUniform2f(M.chroma_out, (float)W, (float)H);
     unit_bind(1, M.yd, R.samplers[0][0][1]);
     unit_bind(0, u->tex, R.samplers[0][0][0]);
-    movie_pass(M.prog_chroma, M.set[s].u, W, H);
+    movie_pass(M.prog_chroma, M.set[s].u, w, h);
     unit_bind(0, v->tex, R.samplers[0][0][0]);
-    movie_pass(M.prog_chroma, M.set[s].v, W, H);
+    movie_pass(M.prog_chroma, M.set[s].v, w, h);
     M.set[s].gen = ++M.gen;
     y->enh_set = u->enh_set = v->enh_set = (uint8_t)s;
     y->enh_gen = u->enh_gen = v->enh_gen = M.gen;

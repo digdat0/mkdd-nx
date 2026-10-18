@@ -12,6 +12,7 @@ static uint64_t s_bs;          /* CISO block size, 0 for plain ISO */
 static int64_t *s_map;         /* CISO block -> stored slot, -1 = missing */
 static size_t s_nblocks;
 static bool s_rvz;             /* RVZ image: reads go through rvz.c */
+static void ahead_start(void);
 /* Reads land here first, never straight in guest RAM: on Switch a large fread becomes an fs
  * IPC receive buffer, and the kernel unmaps its whole pages from the process until the read
  * returns, so the GX decoder thread faulted reading a display list in those pages. */
@@ -58,19 +59,17 @@ bool disc_open(const char *path, char *err, size_t errlen) {
         s_rvz = true;
     }
     free(hdr);
+    ahead_start();
     return true;
 }
 
 bool disc_present(void) { return s_file != NULL; }
 
-/* Read n bytes at disc offset off. Missing CISO blocks and reads past the end are zero. */
-void disc_read(uint64_t off, void *out, size_t n) {
-    uint8_t *dst = out;
-    if (!s_file) { memset(out, 0, n); return; }
-    pmutex_lock(&s_lock);
-    const uint64_t start = off;
-    size_t done = s_rvz ? n : 0;
-    if (s_rvz) rvz_read(off, dst, n); /* decompresses into its own cache, never straight into guest RAM */
+/* Read n bytes at disc offset off into dst, lock held. Missing CISO blocks and reads past the
+ * end are zero. */
+static void raw_read(uint64_t off, uint8_t *dst, size_t n) {
+    if (s_rvz) { rvz_read(off, dst, n); return; } /* decompresses into its own cache, never straight into guest RAM */
+    size_t done = 0;
     while (done < n) {
         int64_t pos;
         size_t take;
@@ -91,8 +90,90 @@ void disc_read(uint64_t off, void *out, size_t n) {
         done += take;
         off += take;
     }
+}
+
+/* ---- read-ahead ----
+ * In a race the music streams from the disc in small reads at consecutive offsets (20 KB at a
+ * time). After a small read, a worker on another core fetches the next AHEAD bytes (decompressing
+ * them, for an RVZ) into a window, so the game thread's next reads are copies instead of SD card
+ * reads. The worker reads in AHEAD_CHUNK pieces and drops the lock between them, so a game read
+ * elsewhere waits for one piece at most. Large reads (scene loads) don't start it. */
+#define AHEAD (512u << 10)
+#define AHEAD_CHUNK (64u << 10)
+#define NO_REQ UINT64_MAX
+static struct { uint64_t off; size_t len; uint8_t *data; } s_win; /* ready data */
+static uint8_t *s_stage;
+static uint64_t s_want = NO_REQ, s_fetching = NO_REQ; /* requested start; start being fetched */
+static PCond s_ahead_cv;
+static bool s_ahead;
+uint64_t g_disc_ahead_hits, g_disc_reads_direct;
+
+static void ahead_worker(void *arg) {
+    (void)arg;
+    pmutex_lock(&s_lock);
+    for (;;) {
+        while (s_want == NO_REQ) pcond_wait(&s_ahead_cv, &s_lock);
+        uint64_t start = s_want;
+        s_want = NO_REQ;
+        s_fetching = start;
+        size_t got = 0;
+        if (s_win.len && start >= s_win.off && start < s_win.off + s_win.len) { /* keep what the window already has */
+            got = (size_t)(s_win.off + s_win.len - start);
+            memcpy(s_stage, s_win.data + (start - s_win.off), got);
+        }
+        while (got < AHEAD) {
+            size_t k = AHEAD - got < AHEAD_CHUNK ? AHEAD - got : AHEAD_CHUNK;
+            raw_read(start + got, s_stage + got, k);
+            got += k;
+            pmutex_unlock(&s_lock); /* let a waiting game read in */
+            pmutex_lock(&s_lock);
+            if (s_want != NO_REQ && (s_want < start || s_want > start + got)) break; /* the stream moved elsewhere */
+        }
+        uint8_t *t = s_win.data;
+        s_win.data = s_stage;
+        s_stage = t;
+        s_win.off = start;
+        s_win.len = got;
+        s_fetching = NO_REQ;
+    }
+}
+
+static void ahead_start(void) {
+    if (plat_getenv("MKDD_NO_AHEAD")) return; /* A/B timing */
+    s_win.data = malloc(AHEAD);
+    s_stage = malloc(AHEAD);
+    pcond_init(&s_ahead_cv);
+    s_ahead = s_win.data && s_stage && pthread_start("mkdd-disc", ahead_worker, NULL, 64 << 10, 0, 0);
+}
+
+/* Read n bytes at disc offset off. Missing CISO blocks and reads past the end are zero. */
+void disc_read(uint64_t off, void *out, size_t n) {
+    uint8_t *dst = out;
+    if (!s_file) { memset(out, 0, n); return; }
+    pmutex_lock(&s_lock);
+    size_t done = 0;
+    if (s_win.len && off >= s_win.off && off < s_win.off + s_win.len) {
+        done = (size_t)(s_win.off + s_win.len - off);
+        if (done > n) done = n;
+        memcpy(dst, s_win.data + (off - s_win.off), done);
+        g_disc_ahead_hits++;
+    }
+    if (done < n) {
+        raw_read(off + done, dst + done, n - done);
+        g_disc_reads_direct++;
+    }
+    uint64_t end = off + n;
+    if (s_ahead && n <= AHEAD / 4) {
+        bool in_win = s_win.len && end >= s_win.off && end <= s_win.off + s_win.len;
+        uint64_t want = in_win ? s_win.off + s_win.len : end;
+        bool enough = in_win && s_win.off + s_win.len - end >= AHEAD / 2;
+        if (!enough && want != s_fetching && want != s_want) {
+            s_want = want;
+            pcond_signal(&s_ahead_cv);
+        }
+    }
     for (unsigned i = 0; i < s_npatch; i++)
-        if (s_patch[i].off >= start && s_patch[i].off - start < n) dst[s_patch[i].off - start] = s_patch[i].b;
+        if (s_patch[i].off >= off && s_patch[i].off - off < n) dst[s_patch[i].off - off] = s_patch[i].b;
     pmutex_unlock(&s_lock);
 }
 

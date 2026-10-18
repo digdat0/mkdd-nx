@@ -10,6 +10,8 @@ set(CMAKE_C_USE_RESPONSE_FILE_FOR_OBJECTS ON)
 set(CMAKE_C_RESPONSE_FILE_LINK_FLAG "@")
 
 set(ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
+# The app's version: the NACP's and the updater's (only update.c sees it, so a bump rebuilds one file)
+set(MKDD_VERSION "1.2.0")
 if(NOT GEN_DIR)
     message(FATAL_ERROR "set -DGEN_DIR=<output of tools/gen_c.py>")
 endif()
@@ -21,7 +23,7 @@ link_directories(${DEVKITPRO}/portlibs/switch/lib)
 
 file(GLOB RT_SOURCES CONFIGURE_DEPENDS "${ROOT}/runtime/*.c")
 file(GLOB GEN_SOURCES CONFIGURE_DEPENDS "${GEN_DIR}/part_*.c")
-set(SW_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/main_switch.c ${CMAKE_CURRENT_SOURCE_DIR}/render_gl.c ${CMAKE_CURRENT_SOURCE_DIR}/tev_gen.c ${CMAKE_CURRENT_SOURCE_DIR}/prof_switch.c ${CMAKE_CURRENT_SOURCE_DIR}/menu.c ${CMAKE_CURRENT_SOURCE_DIR}/ui_font.c ${CMAKE_CURRENT_SOURCE_DIR}/pause_art.c ${CMAKE_CURRENT_SOURCE_DIR}/hdtex.c)
+set(SW_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/main_switch.c ${CMAKE_CURRENT_SOURCE_DIR}/render_gl.c ${CMAKE_CURRENT_SOURCE_DIR}/tev_gen.c ${CMAKE_CURRENT_SOURCE_DIR}/prof_switch.c ${CMAKE_CURRENT_SOURCE_DIR}/menu.c ${CMAKE_CURRENT_SOURCE_DIR}/ui_font.c ${CMAKE_CURRENT_SOURCE_DIR}/pause_art.c ${CMAKE_CURRENT_SOURCE_DIR}/hdtex.c ${CMAKE_CURRENT_SOURCE_DIR}/update.c)
 
 # Generated code: -O2 (big functions; -O3 mostly costs compile time). Runtime hot paths -O3.
 set_source_files_properties(${GEN_SOURCES} ${GEN_DIR}/table.c PROPERTIES COMPILE_OPTIONS "-O2;-w")
@@ -31,14 +33,15 @@ set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/pause_art_data.S PROPERT
     OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/pause_console.rgba;${CMAKE_CURRENT_SOURCE_DIR}/pause_badges.rgba")
 
 add_executable(MKDD-NX ${SW_SOURCES} ${RT_SOURCES} ${GEN_SOURCES} ${GEN_DIR}/table.c ${CMAKE_CURRENT_SOURCE_DIR}/pause_art_data.S)
-target_link_libraries(MKDD-NX SDL2 EGL GLESv2 glapi drm_nouveau zstd nx m)
+set_property(SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/update.c APPEND PROPERTY COMPILE_DEFINITIONS MKDD_VERSION="${MKDD_VERSION}")
+target_link_libraries(MKDD-NX SDL2 EGL GLESv2 glapi drm_nouveau curl z zstd nx m)
 # Mesa is C++: link with the C++ driver so libstdc++ / libsupc++ come in
 set_target_properties(MKDD-NX PROPERTIES LINKER_LANGUAGE CXX)
 
 nx_generate_nacp(MKDD-NX.nacp
     NAME "Mario Kart: Double Dash!! (recomp)"
     AUTHOR "digdat0"
-    VERSION "1.1.0"
+    VERSION "${MKDD_VERSION}"
 )
 nx_create_nro(MKDD-NX
     NACP MKDD-NX.nacp

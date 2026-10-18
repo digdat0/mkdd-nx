@@ -3823,6 +3823,883 @@ static uint64_t i_GXBegin(Ctx *c, uint8_t *M, ARGS) {
     return 0;
 }
 
+/* ---- batch 1 (race 4 profile): object collision ---- */
+/* Single-precision add / subtract as the recompiled code does them: in double, rounded once. */
+ALWAYS_INLINE float fadd(float a, float b) { return (float)((double)a + b); }
+ALWAYS_INLINE float fsub(float a, float b) { return (float)((double)a - b); }
+/* frsqrte as the recompiled code models it (exact 1/sqrt in double), times x, rounded: fsqrt. */
+ALWAYS_INLINE float rsqrt_mul(float x) { return (float)((1.0 / sqrt((double)x)) * x); }
+
+/* ObjColSphere::IsHitSphere(TVec3f posOther, TVec3f posThis, f32 otherRadius): this+0x14 gets
+ * posThis - posOther, and on a hit the depth (sum of radii - distance) at +0x10 and the
+ * normalised direction. Radius at +4, scale at +0xc; 0.0 at r2-0x45b0. */
+#define OBJCOLSPHERE_ISHITSPHERE 0x801f8bf4u
+static uint64_t i_IsHitSphere__12ObjColSphereFQ29JGeometry8TVec3_f_Q29JGeometry8TVec3_f_f(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0, other = (uint32_t)a1, me = (uint32_t)a2;
+    double fr;
+    memcpy(&fr, &a3, 8);
+    float other_r = (float)fr;
+    float dx = fsub(ldf(c, M, me), ldf(c, M, other)), dy = fsub(ldf(c, M, me + 4), ldf(c, M, other + 4));
+    float dz = fsub(ldf(c, M, me + 8), ldf(c, M, other + 8));
+    float zero = ldf(c, M, (uint32_t)RD(c, REG_R2, 4) - 0x45b0);
+    stf(c, M, self + 0x14, dx);
+    stf(c, M, self + 0x18, dy);
+    stf(c, M, self + 0x1c, dz);
+    float sum = madd(ldf(c, M, self + 4), ldf(c, M, self + 0xc), other_r);
+    float xx = mul(dx, dx), yy = mul(dy, dy);
+    float zz_xx = madd(dz, dz, xx);
+    float sum2 = mul(sum, sum);
+    float dist2 = fadd(zz_xx, yy);
+    float d = fsub(sum2, dist2);
+    if (!(d > zero)) return 0; /* ble: NaN too */
+    float rsum = sum2 > zero ? rsqrt_mul(sum2) : sum2;
+    float dist = dist2 > zero ? rsqrt_mul(dist2) : dist2;
+    stf(c, M, self + 0x10, fsub(rsum, dist));
+    n_stVecNormalize__FRQ29JGeometry8TVec3_f_(c, M, self + 0x14, 0, 0, 0, 0, 0, 0, 0);
+    return 1;
+}
+
+/* GeographyObj::IsHitKart(const TVec3f &spherePos, f32 radius, TVec3f *posAdjust): every bound
+ * (mBounds +0x134, count u8 +0x140, global positions +0x13c, 12 bytes each) tested with its
+ * virtual IsHitSphere (native for ObjColSphere); on a hit with posAdjust and _58 != 2, adds the
+ * bound's direction (+0x14) times its depth (+0x10). The positions are passed by value: copies
+ * in this function's stack frame (0x90), as the original. */
+static uint64_t i_IsHitKart__12GeographyObjFRCQ29JGeometry8TVec3_f_fPQ29JGeometry8TVec3_f_(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0, pos = (uint32_t)a1, adj = (uint32_t)a3;
+    uint64_t radius = a2;
+    uint32_t old_sp = ctx_gpr(c, 1), sp = old_sp - 0x90;
+    mst(c, M, sp, 4, old_sp);
+    ctx_set_gpr(c, 1, sp);
+    float px = ldf(c, M, pos), py = ldf(c, M, pos + 4), pz = ldf(c, M, pos + 8);
+    uint32_t bounds = ld32(c, M, self + 0x134), hit = 0;
+    for (uint32_t i = 0; i < mld(c, M, self + 0x140, 1); i = (i + 1) & 0xFF, bounds += 4) {
+        uint32_t gl = ld32(c, M, self + 0x13c) + i * 0xc;
+        for (int k = 0; k < 3; k++) mst(c, M, sp + 0x14 + 4 * k, 4, ld32(c, M, gl + 4 * k));
+        stf(c, M, sp + 0x8, px);
+        stf(c, M, sp + 0xc, py);
+        stf(c, M, sp + 0x10, pz);
+        uint32_t b = ld32(c, M, bounds), fn = ld32(c, M, ld32(c, M, b) + 8), r;
+        if (fn == OBJCOLSPHERE_ISHITSPHERE) {
+            r = (uint32_t)i_IsHitSphere__12ObjColSphereFQ29JGeometry8TVec3_f_Q29JGeometry8TVec3_f_f(c, M, b, sp + 0x14, sp + 0x8, radius, 0, 0, 0, 0);
+        } else {
+            ctx_set_gpr(c, 3, b);
+            ctx_set_gpr(c, 4, sp + 0x14);
+            ctx_set_gpr(c, 5, sp + 0x8);
+            WR(c, 0x4008, 8, radius);
+            ctx_call(c, fn);
+            r = ctx_gpr(c, 3);
+        }
+        if (!(r & 0xFF)) continue;
+        if (adj && ld32(c, M, self + 0x58) != 2) {
+            b = ld32(c, M, bounds);
+            float depth = ldf(c, M, b + 0x10);
+            float sx = mul(ldf(c, M, b + 0x14), depth), sy = mul(ldf(c, M, b + 0x18), depth), sz = mul(ldf(c, M, b + 0x1c), depth);
+            stf(c, M, adj, fadd(ldf(c, M, adj), sx));
+            stf(c, M, adj + 4, fadd(ldf(c, M, adj + 4), sy));
+            stf(c, M, adj + 8, fadd(ldf(c, M, adj + 8), sz));
+        }
+        hit = 1;
+    }
+    ctx_set_gpr(c, 1, old_sp);
+    return hit;
+}
+
+/* ---- batch 1: list walks that call a virtual function per element ---- */
+/* A stack frame like the original's, for natives that call guest code (callees save LR in it). */
+ALWAYS_INLINE uint32_t frame_push(Ctx *c, uint8_t *M, uint32_t size) {
+    uint32_t old_sp = ctx_gpr(c, 1), sp = old_sp - size;
+    mst(c, M, sp, 4, old_sp);
+    ctx_set_gpr(c, 1, sp);
+    return old_sp;
+}
+ALWAYS_INLINE void frame_pop(Ctx *c, uint32_t old_sp) { ctx_set_gpr(c, 1, old_sp); }
+/* Virtual call fn(r3[, r4]). */
+ALWAYS_INLINE void vcall1(Ctx *c, uint32_t fn, uint32_t r3) { ctx_set_gpr(c, 3, r3); ctx_call(c, fn); }
+ALWAYS_INLINE void vcall2(Ctx *c, uint32_t fn, uint32_t r3, uint32_t r4) { ctx_set_gpr(c, 3, r3); ctx_set_gpr(c, 4, r4); ctx_call(c, fn); }
+
+/* ShadowManager::calc(): for each of the four shadow lists (+0x18, +0x28, +0x38, +0x48: JSUList,
+ * first link at +8, the list itself the end), each model with any of the low 4 bits of +0x8c set
+ * gets its virtual calc (vtable +0x10) and +0x95 = 1, the others +0x95 = 0. Then +0x5f becomes 1
+ * if it was 0. */
+static uint64_t i_calc__13ShadowManagerFv(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0, old_sp = frame_push(c, M, 0x30);
+    for (uint32_t i = 0; i < 4; i++) {
+        uint32_t list = self + 0x18 + 0x10 * i, end = list + 8;
+        for (uint32_t link = ld32(c, M, list + 8); link != end; link = ld32(c, M, link)) {
+            uint32_t m = ld32(c, M, link + 8);
+            if (mld(c, M, m + 0x8c, 1) & 0xf) {
+                vcall1(c, ld32(c, M, ld32(c, M, m) + 0x10), m);
+                mst(c, M, ld32(c, M, link + 8) + 0x95, 1, 1);
+            } else {
+                mst(c, M, m + 0x95, 1, 0);
+            }
+        }
+    }
+    if (!mld(c, M, self + 0x5f, 1)) mst(c, M, self + 0x5f, 1, 1);
+    frame_pop(c, old_sp);
+    return 0;
+}
+
+/* GameAudio::SoundMgr<ObjectSoundMgr>::frameWorkAll(): every manager in the list (head at
+ * r13-0x5de8, next at +0x58) gets its virtual frameWork (vtable at +8, slot +0x34). */
+static uint64_t i_frameWorkAll__Q29GameAudio38SoundMgr_Q29GameAudio14ObjectSoundMgr_Fv(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t old_sp = frame_push(c, M, 0x10);
+    for (uint32_t m = ld32(c, M, (uint32_t)RD(c, REG_R13, 4) - 0x5de8); m; m = ld32(c, M, m + 0x58))
+        vcall1(c, ld32(c, M, ld32(c, M, m + 8) + 0x34), m);
+    frame_pop(c, old_sp);
+    return 0;
+}
+
+/* GeographyObjManager::setCurrentViewNo(u32 view): every object in the two lists (first links
+ * at +0x350 and +0x380; object at link +0, next at +0xc) gets setCurrentViewNo (vtable +0x3c). */
+static uint64_t i_setCurrentViewNo__19GeographyObjManagerFUl(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0, view = (uint32_t)a1, old_sp = frame_push(c, M, 0x20);
+    for (int k = 0; k < 2; k++)
+        for (uint32_t link = ld32(c, M, self + (k ? 0x380 : 0x350)); link; link = ld32(c, M, link + 0xc)) {
+            uint32_t o = ld32(c, M, link);
+            vcall2(c, ld32(c, M, ld32(c, M, o) + 0x3c), o, view);
+        }
+    frame_pop(c, old_sp);
+    return 0;
+}
+
+/* ---- batch 1: J3D model / material per-frame work, course object view setup ---- */
+#define J3DMATERIAL_CALC 0x80053384u /* J3DMaterial::calc, native below */
+
+/* J3DMaterial::calc(const Mtx m): its texture generators' calc (object at +0x28: vtable +0x14
+ * with j3dSys flag 0x40000000, else +0xc; m passed on in r4), calcCurrentMtx, then
+ * setCurrentMtx (the material's +0x40 / +0x44 into its shape at +8). */
+static uint64_t i_calc__11J3DMaterialFPA4_Cf(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0, mtx = (uint32_t)a1, old_sp = frame_push(c, M, 0x10);
+    uint32_t o = ld32(c, M, self + 0x28);
+    vcall2(c, ld32(c, M, ld32(c, M, o) + ((ld32(c, M, J3DSYS + 0x34) & 0x40000000u) ? 0x14 : 0xc)), o, mtx);
+    n_calcCurrentMtx__11J3DMaterialFv(c, M, self, 0, 0, 0, 0, 0, 0, 0);
+    uint32_t shape = ld32(c, M, self + 8);
+    mst(c, M, shape + 0x40, 4, ld32(c, M, self + 0x40));
+    mst(c, M, shape + 0x44, 4, ld32(c, M, self + 0x44));
+    frame_pop(c, old_sp);
+    return 0;
+}
+
+/* J3DModel::calcMaterial(): j3dSys model = this, its flags 4 / 8 from the model's (+8), the model
+ * data's sync flag (syncJ3DSysFlags: 0x40000000 from data +8 bit 0x20) and texture info
+ * (+0x6c -> j3dSys +0x58); then per material (data +0x60, count u16 +0x5c): j3dSys +0x3c = this
+ * +0xc0's 0x40-byte entry, the material animation (+0x3c, a pointer below 0xC0000000) gets
+ * calc(material) (vtable +0xc), and the material calc(joint matrix) (vtable +8; the joint at
+ * material +0xc, index u16 +0x14, matrices at this +0x84 -> +0xc). */
+static uint64_t i_calcMaterial__8J3DModelFv(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0, old_sp = frame_push(c, M, 0x20);
+    mst(c, M, J3DSYS + 0x38, 4, self);
+    uint32_t f = ld32(c, M, self + 8), s = ld32(c, M, J3DSYS + 0x34);
+    s = f & 4 ? s | 4 : s & ~4u;
+    s = f & 8 ? s | 8 : s & ~8u;
+    s = ld32(c, M, ld32(c, M, self + 4) + 8) & 0x20 ? s | 0x40000000u : s & ~0x40000000u;
+    mst(c, M, J3DSYS + 0x34, 4, s);
+    uint32_t data = ld32(c, M, self + 4);
+    mst(c, M, J3DSYS + 0x58, 4, ld32(c, M, data + 0x6c));
+    uint32_t n = ld16(c, M, data + 0x5c);
+    for (uint32_t i = 0; i < n; i++) {
+        mst(c, M, J3DSYS + 0x3c, 4, ld32(c, M, self + 0xc0) + (i << 6));
+        uint32_t mat = ld32(c, M, ld32(c, M, ld32(c, M, self + 4) + 0x60) + 4 * i);
+        uint32_t anm = ld32(c, M, mat + 0x3c);
+        if (anm && anm < 0xC0000000u) vcall2(c, ld32(c, M, ld32(c, M, anm) + 0xc), anm, mat);
+        uint32_t mtx = ld32(c, M, ld32(c, M, self + 0x84) + 0xc) + ld16(c, M, ld32(c, M, mat + 0xc) + 0x14) * 0x30;
+        uint32_t fn = ld32(c, M, ld32(c, M, mat) + 8);
+        if (fn == J3DMATERIAL_CALC) i_calc__11J3DMaterialFPA4_Cf(c, M, mat, mtx, 0, 0, 0, 0, 0, 0);
+        else vcall2(c, fn, mat, mtx);
+    }
+    frame_pop(c, old_sp);
+    return 0;
+}
+
+/* J3DMatPacket::beginDiff(): its display list object's beginDL (packet +0x28 -> +0x20): swap the
+ * two buffers, interrupts off (old state at r13-0x6698), GDInitGDLObj(&sGDLObj 0x803AD1BC,
+ * buffer, size +0xc), __GDCurrentDL (r13-0x6238) = &sGDLObj. */
+static uint64_t i_beginDiff__12J3DMatPacketFv(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t dl = ld32(c, M, ld32(c, M, (uint32_t)a0 + 0x28) + 0x20);
+    uint32_t b0 = ld32(c, M, dl), b1 = ld32(c, M, dl + 4);
+    mst(c, M, dl, 4, b1);
+    mst(c, M, dl + 4, 4, b0);
+    uint32_t r13 = (uint32_t)RD(c, REG_R13, 4);
+    mst(c, M, r13 - 0x6698, 4, (uint32_t)n_OSDisableInterrupts(c, M, 0, 0, 0, 0, 0, 0, 0, 0));
+    const uint32_t gd = 0x803AD1BCu;
+    uint32_t start = ld32(c, M, dl), size = ld32(c, M, dl + 0xc);
+    mst(c, M, gd, 4, start);
+    mst(c, M, gd + 8, 4, start);
+    mst(c, M, gd + 0xc, 4, start + size);
+    mst(c, M, gd + 4, 4, size);
+    mst(c, M, r13 - 0x6238, 4, gd);
+    return 0;
+}
+
+/* GeographyObjManager::viewCalc(u32 view): for every object in both lists (first links at
+ * +0x350 / +0x380; object at link +0, next +0xc): with flag 0x20 at +0xec FUN_80183820(+0x5c),
+ * else unless u16 +0x11c has 0x200, FUN_80183934(+0x5c, view, camera +8, &j3dSys,
+ * getAxisMaxScale()) (camera: r13-0x4e98 -> +0x200 + 4 * view); then its viewCalc (vtable +0x34). */
+static uint64_t i_viewCalc__19GeographyObjManagerFUl(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0, view = (uint32_t)a1, old_sp = frame_push(c, M, 0x30);
+    uint32_t cam = ld32(c, M, ld32(c, M, (uint32_t)RD(c, REG_R13, 4) - 0x4e98) + ((view << 2) & ~3u) + 0x200) + 8;
+    for (int k = 0; k < 2; k++)
+        for (uint32_t link = ld32(c, M, self + (k ? 0x380 : 0x350)); link; link = ld32(c, M, link + 0xc)) {
+            uint32_t o = ld32(c, M, link);
+            if (ld32(c, M, o + 0xec) & 0x20) {
+                n_FUN_80183820(c, M, o + 0x5c, 0, 0, 0, 0, 0, 0, 0);
+            } else if (!(ld16(c, M, o + 0x11c) & 0x200)) {
+                float m = ldf(c, M, o + 0x40), t = ldf(c, M, o + 0x44); /* getAxisMaxScale */
+                if (t > m) m = t;
+                t = ldf(c, M, o + 0x48);
+                if (t > m) m = t;
+                n_FUN_80183934(c, M, o + 0x5c, view, cam, J3DSYS, dbits((double)m), 0, 0, 0);
+            }
+            o = ld32(c, M, link);
+            vcall2(c, ld32(c, M, ld32(c, M, o) + 0x34), o, view);
+        }
+    frame_pop(c, old_sp);
+    return 0;
+}
+
+/* ---- batch 1: J3DModel::calc, course object vs kart collision ---- */
+ALWAYS_INLINE uint32_t slw1(uint32_t n) { n &= 0x3f; return n < 32 ? 1u << n : 0; } /* slw 1, n */
+
+/* J3DModel::calc(): j3dSys model = this with its flags (as calcMaterial); the base scale
+ * (+0x8c/+0x94/+0x9c -> +0xb4..); the joint animation (+0xd8, vtable +0xc with the model data),
+ * deform (+0xc8), vertex colours (+0xd0), skin (+0xd4, vtable +8), the joint tree's calc (model
+ * data +0x10, vtable +8; base scale / matrix from fixed defaults with model flag 2, else +0x18 /
+ * +0x24), the bump matrices when needed, skin deform (+0xcc) and the callback (+0x10, (this, 0)).
+ * createBumpMtxArray gets r4 / r5 as the joint tree's calc left them, like the original. */
+static uint64_t i_calc__8J3DModelFv(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0, old_sp = frame_push(c, M, 0x10), p;
+    mst(c, M, J3DSYS + 0x38, 4, self);
+    uint32_t f = ld32(c, M, self + 8), s = ld32(c, M, J3DSYS + 0x34);
+    s = f & 4 ? s | 4 : s & ~4u;
+    s = f & 8 ? s | 8 : s & ~8u;
+    s = ld32(c, M, ld32(c, M, self + 4) + 8) & 0x20 ? s | 0x40000000u : s & ~0x40000000u;
+    mst(c, M, J3DSYS + 0x34, 4, s);
+    mst(c, M, self + 0xb4, 4, ld32(c, M, self + 0x8c));
+    mst(c, M, self + 0xb8, 4, ld32(c, M, self + 0x94));
+    mst(c, M, self + 0xbc, 4, ld32(c, M, self + 0x9c));
+    if ((p = ld32(c, M, self + 0xd8))) vcall2(c, ld32(c, M, ld32(c, M, p) + 0xc), p, ld32(c, M, self + 4));
+    if ((p = ld32(c, M, self + 0xc8))) vcall2(c, 0x8005b340u, p, self);
+    if ((p = ld32(c, M, self + 0xd0))) vcall2(c, 0x80079248u, p, self);
+    if ((p = ld32(c, M, self + 0xd4))) vcall2(c, ld32(c, M, ld32(c, M, p) + 8), p, self);
+    mst(c, M, J3DSYS + 0x38, 4, self);
+    uint32_t tree = ld32(c, M, self + 4) + 0x10;
+    bool fixed = ld32(c, M, self + 8) & 2;
+    ctx_set_gpr(c, 3, tree);
+    ctx_set_gpr(c, 4, ld32(c, M, self + 0x84));
+    ctx_set_gpr(c, 5, fixed ? 0x80328720u : self + 0x18);
+    ctx_set_gpr(c, 6, fixed ? 0x8032872Cu : self + 0x24);
+    ctx_call(c, ld32(c, M, ld32(c, M, tree) + 8));
+    uint32_t data = ld32(c, M, self + 4);
+    if (ld16(c, M, data + 0x2e) && !(ld32(c, M, self + 8) & 0x10) && !(ld32(c, M, data + 8) & 0x100))
+        vcall1(c, 0x800799d0u, ld32(c, M, self + 0x84));
+    if ((p = ld32(c, M, self + 0xcc))) vcall2(c, 0x800791b8u, p, self);
+    if ((p = ld32(c, M, self + 0x10))) vcall2(c, p, self, 0);
+    frame_pop(c, old_sp);
+    return 0;
+}
+
+/* GeographyObjManager::Collide_norm(const JSUListIterator<GeographyObj> &it, const int &kart,
+ * const TVec3f &pos, const f32 &radius): for an object that collides with this kart (bit in
+ * +0xf0) and isn't switched off (+0x11c & 0x80): IsHitKart with this kart's push vector
+ * (+0x2c8 + 12 * kart); on a hit setIsHitKartFlg, the object's hit callback (vtable +0x74), the
+ * object recorded at +0x28 + 0x50 * kart + 4 * its kind (+0x58) and the push length at +0x2a8 +
+ * 4 * kart; otherwise clrIsHitKartSoundFlg. */
+static uint64_t i_Collide_norm__19GeographyObjManagerFRC31JSUListIterator_12GeographyObj_RCiRCQ29JGeometry8TVec3_f_RCf(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0, it = (uint32_t)a1, kp = (uint32_t)a2, pos = (uint32_t)a3, radp = (uint32_t)a4;
+    uint32_t old_sp = frame_push(c, M, 0x20);
+    uint32_t k = ld32(c, M, kp), obj = ld32(c, M, ld32(c, M, it));
+    if ((ld32(c, M, obj + 0xf0) & slw1(k)) && !(ld16(c, M, obj + 0x11c) & 0x80)) {
+        uint32_t adj = self + k * 0xc + 0x2c8;
+        uint32_t r = (uint32_t)i_IsHitKart__12GeographyObjFRCQ29JGeometry8TVec3_f_fPQ29JGeometry8TVec3_f_(
+            c, M, obj, pos, dbits((double)ldf(c, M, radp)), adj, 0, 0, 0, 0);
+        obj = ld32(c, M, ld32(c, M, it));
+        k = ld32(c, M, kp);
+        uint32_t bit = slw1(k);
+        if (r & 0xFF) {
+            uint32_t fa = ld16(c, M, obj + 0xfa); /* setIsHitKartFlg */
+            if (!(fa & bit)) {
+                uint32_t f8 = ld16(c, M, obj + 0xf8);
+                if (!(f8 & bit)) {
+                    mst(c, M, obj + 0xf8, 2, (f8 | bit) & 0xFFFF);
+                } else {
+                    mst(c, M, obj + 0xfa, 2, (fa | bit) & 0xFFFF);
+                    mst(c, M, obj + 0xf8, 2, ld16(c, M, obj + 0xf8) & ~bit & 0xFFFF);
+                }
+            }
+            mst(c, M, obj + 0xf4, 4, ld32(c, M, obj + 0xf4) | bit);
+            obj = ld32(c, M, ld32(c, M, it));
+            vcall2(c, ld32(c, M, ld32(c, M, obj) + 0x74), obj, ld32(c, M, kp));
+            obj = ld32(c, M, ld32(c, M, it));
+            k = ld32(c, M, kp);
+            mst(c, M, self + k * 0x50 + ((ld32(c, M, obj + 0x58) << 2) & ~3u) + 0x28, 4, obj);
+            uint64_t mag = n_PSVECMag(c, M, self + k * 0xc + 0x2c8, 0, 0, 0, 0, 0, 0, 0);
+            double d;
+            memcpy(&d, &mag, 8);
+            stf(c, M, self + ((k << 2) & ~3u) + 0x2a8, (float)d);
+        } else {
+            uint32_t m = ~bit; /* clrIsHitKartSoundFlg */
+            mst(c, M, obj + 0xf8, 2, ld16(c, M, obj + 0xf8) & m & 0xFFFF);
+            mst(c, M, obj + 0xfa, 2, ld16(c, M, obj + 0xfa) & m & 0xFFFF);
+        }
+    }
+    frame_pop(c, old_sp);
+    return 0;
+}
+
+/* ---- batch 1: particles ---- */
+ALWAYS_INLINE float fdiv(float a, float b) { return (float)((double)a / b); }
+/* Fade factor of a particle at frame t of life n: from v_in up to 1 while t < n * f_in, from 1
+ * down to v_out after n * f_out (as stParticleDraw computes it, single precision throughout);
+ * 1 (no change) in between, returned as NAN so the caller keeps its value. */
+static float particle_fade(float t, float n, uint32_t age, uint32_t frame, float f_in, float f_out, float v_in, float v_out, float one, bool *set) {
+    float in_end = mul(f_in, n), out_start = mul(f_out, n);
+    *set = true;
+    if (t < in_end) return madd(fsub(one, v_in), fdiv(t, in_end), v_in);
+    if (t > out_start) return madd(fsub(one, v_out), fdiv((float)(int32_t)(age - frame), fsub(n, out_start)), v_out);
+    *set = false;
+    return 0;
+}
+
+/* stParticleDraw::drawEachParticle(JSUListIterator<stParticle> &it): for the current particle
+ * (it -> link -> particle; life u16 +0x32, frame u16 +0x30) with the emitter's parameters (this
+ * +0x20 -> +0x18): x scale (+0x34, fades +0x6c..+0x78) and y scale (+0x38, the same fades, or
+ * +0xc8..+0xd4 with flag 0x8000 at +0xb6), both times +0x3c, into r13-0x5504 / -0x5500, the alpha
+ * (255 * +0x7c, fades +0x80..+0x8c) into r13-0x54fc; then each draw pass (count u8 r13-0x54fb)
+ * through its member function pointer (table 0x803A2A90, 12 bytes each, __ptmf_scall). */
+static uint64_t i_drawEachParticle__14stParticleDrawFR29JSUListIterator_10stParticle_(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0, it = (uint32_t)a1, old_sp = frame_push(c, M, 0x70);
+    uint32_t r2 = (uint32_t)RD(c, REG_R2, 4), r13 = (uint32_t)RD(c, REG_R13, 4);
+    float one = ldf(c, M, r2 - 0x44f8), c255 = ldf(c, M, r2 - 0x44b0);
+    for (uint32_t i = 0; (i & 0xFF) < mld(c, M, r13 - 0x54fb, 1); i++) {
+        bool set;
+        uint32_t p = ld32(c, M, ld32(c, M, it)), e = ld32(c, M, ld32(c, M, self + 0x20) + 0x18);
+        uint32_t age = ld16(c, M, p + 0x32), frame = ld16(c, M, p + 0x30);
+        float n = (float)age, t = (float)frame;
+        float s = ldf(c, M, p + 0x34);
+        float f = particle_fade(t, n, age, frame, ldf(c, M, e + 0x74), ldf(c, M, e + 0x78), ldf(c, M, e + 0x6c), ldf(c, M, e + 0x70), one, &set);
+        if (set) s = mul(s, f);
+        stf(c, M, r13 - 0x5504, mul(s, ldf(c, M, p + 0x3c)));
+        bool own_y = ld16(c, M, e + 0xb6) & 0x8000;
+        s = ldf(c, M, p + 0x38);
+        f = own_y ? particle_fade(t, n, age, frame, ldf(c, M, e + 0xd0), ldf(c, M, e + 0xd4), ldf(c, M, e + 0xc8), ldf(c, M, e + 0xcc), one, &set)
+                  : particle_fade(t, n, age, frame, ldf(c, M, e + 0x74), ldf(c, M, e + 0x78), ldf(c, M, e + 0x6c), ldf(c, M, e + 0x70), one, &set);
+        if (set) s = mul(s, f);
+        stf(c, M, r13 - 0x5500, mul(s, ldf(c, M, p + 0x3c)));
+        uint32_t alpha = (uint32_t)sat_i32((double)mul(c255, ldf(c, M, e + 0x7c)));
+        f = particle_fade(t, n, age, frame, ldf(c, M, e + 0x88), ldf(c, M, e + 0x8c), ldf(c, M, e + 0x80), ldf(c, M, e + 0x84), one, &set);
+        if (set) alpha = (uint32_t)sat_i32((double)mul((float)(alpha & 0xFF), f));
+        mst(c, M, r13 - 0x54fc, 1, alpha & 0xFF);
+        ctx_set_gpr(c, 3, self);
+        ctx_set_gpr(c, 4, it);
+        ctx_set_gpr(c, 12, 0x803A2A90u + (i & 0xFF) * 0xc);
+        ctx_call(c, 0x800ff4d4u); /* __ptmf_scall */
+    }
+    frame_pop(c, old_sp);
+    return 0;
+}
+
+/* ---- batch 1: texture coordinate matrices ---- */
+#define J3D_IDENTITY_MTX 0x8032872Cu
+/* FUN_800724d0(this, Mtx model): for each of the 8 texture generators (+0x38 + 4i, info byte +1
+ * low 6 bits = matrix type): +0xc + 6i (u16) = the byte at +0xa + 6i, then FUN_80054c6c(gen,
+ * matrix) with the matrix the type needs: types 1/6/7 view * model (j3dSys flag 8: the view
+ * alone) without translation, 2/8 model (flag 4: identity), 3/9 view * model (flag 4: the view),
+ * 5/10/11 model without translation (flag 8: identity), others identity. Built in the original's
+ * stack frame (+8), which the callee reads. */
+static uint64_t i_FUN_800724d0(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0, mtx = (uint32_t)a1, old_sp = frame_push(c, M, 0x60), tmp = old_sp - 0x60 + 8;
+    float zero = ldf(c, M, (uint32_t)RD(c, REG_R2, 4) - 0x7944);
+    for (uint32_t i = 0; i < 8; i++) {
+        uint32_t gen = ld32(c, M, self + 0x38 + 4 * i);
+        if (!gen) continue;
+        uint32_t type = mld(c, M, gen + 1, 1) & 0x3f;
+        mst(c, M, self + 6 * i + 0xc, 2, mld(c, M, self + 6 * i + 0xa, 1));
+        uint32_t flags = ld32(c, M, J3DSYS + 0x34), m = J3D_IDENTITY_MTX;
+        bool no_trans = false;
+        switch (type) {
+        case 1: case 6: case 7:
+            if (!(flags & 8)) n_PSMTXConcat(c, M, J3DSYS, mtx, tmp, 0, 0, 0, 0, 0);
+            else n_PSMTXCopy(c, M, J3DSYS, tmp, 0, 0, 0, 0, 0, 0);
+            m = tmp;
+            no_trans = true;
+            break;
+        case 2: case 8:
+            m = flags & 4 ? J3D_IDENTITY_MTX : mtx;
+            break;
+        case 3: case 9:
+            if (!(flags & 4)) { n_PSMTXConcat(c, M, J3DSYS, mtx, tmp, 0, 0, 0, 0, 0); m = tmp; }
+            else m = J3DSYS;
+            break;
+        case 5: case 10: case 11:
+            if (!(flags & 8)) { n_PSMTXCopy(c, M, mtx, tmp, 0, 0, 0, 0, 0, 0); m = tmp; no_trans = true; }
+            break;
+        default:
+            break;
+        }
+        if (no_trans) {
+            stf(c, M, tmp + 0xc, zero);
+            stf(c, M, tmp + 0x1c, zero);
+            stf(c, M, tmp + 0x2c, zero);
+        }
+        vcall2(c, 0x80054c6cu, gen, m);
+    }
+    frame_pop(c, old_sp);
+    return 0;
+}
+
+/* ---- batch 1: 2D pictures (race HUD) ---- */
+/* K2DPicture::drawK2D(f32 x, f32 y, f32 w, f32 h, bool tev): when visible (+0xb0): per texture
+ * (count u8 +0x110) its load (vtable +0x100), GXSetNumTexGens(count), alpha +0xb3 = +0xb2, the
+ * corner colours (getNewColor into four white words), the TEV setup (setTevModeK2D when tev,
+ * else the konst colours +0x160 / +0x164 for several textures and the colours +0x14c / +0x148
+ * unless those are black / white), makeMatrix(x, y), its matrix (+0x50) as position matrix 0
+ * and one quad (w x h, texcoords 0 / 0x80 as u8) written to the FIFO. */
+static uint64_t i_drawK2D__10K2DPictureFffffb(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0;
+    if (!mld(c, M, self + 0xb0, 1)) return 0;
+    uint32_t old_sp = frame_push(c, M, 0x80), sp = old_sp - 0x80;
+    for (uint32_t i = 0; (i & 0xFF) < mld(c, M, self + 0x110, 1); i++) vcall2(c, ld32(c, M, ld32(c, M, self) + 0x100), self, i);
+    vcall1(c, 0x800bd5d8u, mld(c, M, self + 0x110, 1)); /* GXSetNumTexGens */
+    mst(c, M, self + 0xb3, 1, mld(c, M, self + 0xb2, 1));
+    for (int k = 0; k < 4; k++) mst(c, M, sp + 0x18 + 4 * k, 4, 0xFFFFFFFFu);
+    n_getNewColor__10K2DPictureFPQ28JUtility6TColor(c, M, self, sp + 0x18, 0, 0, 0, 0, 0, 0);
+    if ((uint32_t)a5 & 0xFF) {
+        vcall1(c, 0x8012cae4u, self); /* setTevModeK2D */
+    } else {
+        if (mld(c, M, self + 0x110, 1) != 1) {
+            mst(c, M, sp + 0x14, 4, ld32(c, M, self + 0x160));
+            vcall2(c, 0x800c0934u, 0, sp + 0x14); /* GXSetTevKColor */
+            mst(c, M, sp + 0x10, 4, ld32(c, M, self + 0x164));
+            vcall2(c, 0x800c0934u, 2, sp + 0x10);
+        }
+        if (ld32(c, M, self + 0x14c) || ld32(c, M, self + 0x148) + 0x10000u != 0xFFFFu) {
+            mst(c, M, sp + 0xc, 4, ld32(c, M, self + 0x14c));
+            n_GXSetTevColor(c, M, 1, sp + 0xc, 0, 0, 0, 0, 0, 0);
+            mst(c, M, sp + 8, 4, ld32(c, M, self + 0x148));
+            n_GXSetTevColor(c, M, 2, sp + 8, 0, 0, 0, 0, 0, 0);
+        }
+    }
+    ctx_set_gpr(c, 3, self);
+    WR(c, 0x4008, 8, a1);
+    WR(c, 0x4010, 8, a2);
+    ctx_call(c, 0x8012ceacu); /* makeMatrix(x, y) */
+    n_GXLoadPosMtxImm(c, M, self + 0x50, 0, 0, 0, 0, 0, 0, 0);
+    n_GXBegin(c, M, 0x80, 0, 4, 0, 0, 0, 0, 0);
+    float zero = ldf(c, M, (uint32_t)RD(c, REG_R2, 4) - 0x69a8);
+    double dw, dh;
+    memcpy(&dw, &a3, 8);
+    memcpy(&dh, &a4, 8);
+    float w = (float)dw, h = (float)dh;
+    const float xs[4] = {zero, w, w, zero}, ys[4] = {zero, zero, h, h};
+    const uint32_t col[4] = {0x18, 0x1c, 0x24, 0x20};
+    const uint8_t ts[4] = {0, 0x80, 0x80, 0}, tt[4] = {0, 0, 0x80, 0x80};
+    uint8_t q[4 * 14];
+    for (int v = 0; v < 4; v++) {
+        uint8_t *o = q + 14 * v;
+        uint32_t u;
+        memcpy(&u, &xs[v], 4);
+        put_be(o, 4, u);
+        memcpy(&u, &ys[v], 4);
+        put_be(o + 4, 4, u);
+        put_be(o + 8, 4, ld32(c, M, sp + col[v]));
+        o[12] = ts[v];
+        o[13] = tt[v];
+    }
+    hw_gather_copy(q, sizeof q);
+    frame_pop(c, old_sp);
+    return 0;
+}
+
+/* ---- batch 1: audio channel mix, shape packet setup ---- */
+ALWAYS_INLINE float clampf_ppc(float v, float lo, float hi) { return v <= lo ? lo : v >= hi ? hi : v; } /* NaN passes */
+ALWAYS_INLINE void set_fpr(Ctx *c, int n, float v) { WR(c, 0x4000 + 8 * n, 8, dbits((double)v)); }
+
+/* FUN_80093294(channel, a, b, params): a JASChannel's output mix. Pan / fx / dolby sums from the
+ * channel (+0xa8.., +0xb8.., +0xc0..) and params (+8.., +0x10), arranged by the driver's output
+ * mode (getOutputMode: 1 mono-ish, 2 surround); the volume from the envelope (+0xca / const)
+ * squared times +0xb4 * params[0] * +0x9c * (1 + params +0x18 * LFO), at least 0; pan, fx and
+ * dolby clamped to [0, 1]; then FUN_80094118(channel, b, ...) when +0x8c is not 0xffff, else
+ * FUN_80094008(channel, a, ...), with f1..f4 = volume, pan, fx, dolby. */
+static uint64_t i_FUN_80093294(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t ch = (uint32_t)a0, pa = (uint32_t)a1, pb = (uint32_t)a2, prm = (uint32_t)a3;
+    uint32_t old_sp = frame_push(c, M, 0xd0), r2 = (uint32_t)RD(c, REG_R2, 4);
+    float c0 = ldf(c, M, ch + 0xc0), a8 = ldf(c, M, ch + 0xa8), p8 = ldf(c, M, prm + 8);
+    float b8 = ldf(c, M, ch + 0xb8), ac = ldf(c, M, ch + 0xac), pc = ldf(c, M, prm + 0xc);
+    float c4 = ldf(c, M, ch + 0xc4), b0 = ldf(c, M, ch + 0xb0), p10 = ldf(c, M, prm + 0x10);
+    float half = ldf(c, M, r2 - 0x7678), lo = ldf(c, M, r2 - 0x767c), hi = ldf(c, M, r2 - 0x7680);
+    float pan = half, dolby = lo;
+    ctx_call(c, 0x8009472cu); /* getOutputMode(): r3..r6 as this function received them */
+    uint32_t mode = ctx_gpr(c, 3);
+    if (mode == 1 || mode == 2) {
+        if (mode == 2) dolby = fadd(b0, fadd(c4, p10));
+        float t = fadd(half, fsub(c0, half));
+        pan = fadd(fsub(a8, half), fadd(t, fsub(p8, half)));
+    }
+    float fx = fadd(ac, fadd(b8, pc));
+    float env = fdiv((float)ld16(c, M, ch + 0xca), ldf(c, M, r2 - 0x7660));
+    env = mul(env, env);
+    ctx_set_gpr(c, 3, ch + 0x74);
+    ctx_call(c, 0x80095ad0u); /* JASLfo::getValue */
+    double lfo;
+    { uint64_t u = RD(c, 0x4008, 8); memcpy(&lfo, &u, 8); }
+    float k = (float)((double)ldf(c, M, prm + 0x18) * lfo + hi); /* fmadds with the LFO value as returned */
+    float v = mul(mul(ldf(c, M, ch + 0x9c), mul(ldf(c, M, ch + 0xb4), ldf(c, M, prm))), k);
+    v = mul(env, v);
+    if (v < lo) v = lo;
+    set_fpr(c, 1, v);
+    set_fpr(c, 2, clampf_ppc(pan, lo, hi));
+    set_fpr(c, 3, clampf_ppc(fx, lo, hi));
+    set_fpr(c, 4, clampf_ppc(dolby, lo, hi));
+    bool sub = ld16(c, M, ch + 0x8c) != 0xFFFF;
+    ctx_set_gpr(c, 3, ch);
+    ctx_set_gpr(c, 4, sub ? pb : pa);
+    ctx_call(c, sub ? 0x80094118u : 0x80094008u);
+    frame_pop(c, old_sp);
+    return 0;
+}
+
+/* FUN_800505bc(packet): a shape packet's draw setup unless hidden (+0x10 & 0x10) or without a
+ * shape (+0x28): the vertex arrays (model +0x38 -> +0x88: setArray), j3dSys model / packet, the
+ * model's flags into the shape (+0xc: 4 and 8, 8 unless the shape has 0x100) and r13-0x664f,
+ * the shape's matrices / draw matrices from +0x2c, syncJ3DSysFlags, the skin display list (+0x24
+ * -> r13-0x663c / -0x6640), the packet's display list (+0x20) and the shape's draw (vtable +8). */
+static uint64_t i_FUN_800505bc(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0;
+    if ((ld32(c, M, self + 0x10) & 0x10) || !ld32(c, M, self + 0x28)) return 0;
+    uint32_t old_sp = frame_push(c, M, 0x10), r13 = (uint32_t)RD(c, REG_R13, 4);
+    vcall1(c, 0x8004ecfcu, ld32(c, M, self + 0x38) + 0x88); /* J3DVertexBuffer::setArray */
+    uint32_t mdl = ld32(c, M, self + 0x38);
+    mst(c, M, J3DSYS + 0x38, 4, mdl);
+    mst(c, M, J3DSYS + 0x40, 4, self);
+    mst(c, M, r13 - 0x664f, 1, (ld32(c, M, mdl + 8) & 0x10) ? 1 : 0);
+    uint32_t mf = ld32(c, M, ld32(c, M, self + 0x38) + 8), shp = ld32(c, M, self + 0x28);
+    uint32_t sf = ld32(c, M, shp + 0xc);
+    sf = mf & 4 ? sf | 4 : sf & ~4u;
+    sf = (mf & 8) && !(sf & 0x100) ? sf | 8 : sf & ~8u;
+    mst(c, M, shp + 0xc, 4, sf);
+    uint32_t dm = ld32(c, M, self + 0x2c);
+    mst(c, M, shp + 0x60, 4, dm + 0x30);
+    mst(c, M, shp + 0x54, 4, ld32(c, M, dm + 4));
+    mst(c, M, shp + 0x58, 4, ld32(c, M, dm + 0x18));
+    if (!mld(c, M, shp + 0x34, 1)) mst(c, M, shp + 0x5c, 4, ld32(c, M, dm + 0x20));
+    else mst(c, M, shp + 0x5c, 4, ld32(c, M, ld32(c, M, dm + 0x28) + ((ld32(c, M, shp + 0x64) << 2) & ~3u)));
+    uint32_t s = ld32(c, M, J3DSYS + 0x34); /* syncJ3DSysFlags */
+    s = ld32(c, M, ld32(c, M, ld32(c, M, self + 0x38) + 4) + 8) & 0x20 ? s | 0x40000000u : s & ~0x40000000u;
+    mst(c, M, J3DSYS + 0x34, 4, s);
+    if (ld32(c, M, self + 0x24)) {
+        mst(c, M, r13 - 0x6640, 4, ld32(c, M, ld32(c, M, ld32(c, M, self + 0x28) + 4) + 0x28));
+        mst(c, M, r13 - 0x663c, 4, ld32(c, M, self + 0x24));
+    } else {
+        mst(c, M, r13 - 0x6640, 4, 0);
+    }
+    uint32_t dl = ld32(c, M, self + 0x20);
+    if (dl) n_GXCallDisplayList(c, M, ld32(c, M, dl), ld32(c, M, dl + 8), 0, 0, 0, 0, 0, 0);
+    shp = ld32(c, M, self + 0x28);
+    vcall1(c, ld32(c, M, ld32(c, M, shp) + 8), shp);
+    frame_pop(c, old_sp);
+    return 0;
+}
+
+/* ---- batch 1: course/kart model sets ---- */
+/* FUN_80182d74(set, u32 view): the model of view `view` in a per-view model set (count u16 +4,
+ * models +0xc). View 0 gets its own calc (vtable +0x10); the others copy view 0's joint and
+ * weight matrices (data counts u16 +0x2c / +0x2e, matrix buffer +0x84: +0xc / +0x10) and their
+ * materials get the shared texture info (set +8 -> .. -> material +0x2c, vtable +0x68 / +0x64).
+ * Then, as for every view: viewCalc (+0x14) and diff when the model has a matrix calc (+0xc),
+ * entryAll unless j3dSys draws to the shadow buffer (+0x48 = 0x803B1438), prepareShapePackets
+ * and, when the first model's first shape has a display list, its update (+0x18). For view 0
+ * (also when the model is missing) the first model's base matrix (+0x24) goes to set +0x2c. */
+static uint64_t i_FUN_80182d74(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t set = (uint32_t)a0, view = (uint32_t)a1, i = view & 0xFFFF;
+    uint32_t old_sp = frame_push(c, M, 0x30), sp = old_sp - 0x30;
+    uint32_t mdl = ld32(c, M, ld32(c, M, set + 0xc) + ((view << 2) & 0x3FFFC));
+    if (i < ld16(c, M, set + 4) && mdl) {
+        if (!i) {
+            vcall1(c, ld32(c, M, ld32(c, M, mdl) + 0x10), mdl);
+        } else {
+            uint32_t first = ld32(c, M, ld32(c, M, set + 0xc));
+            for (int k = 0; k < (int)ld16(c, M, ld32(c, M, mdl + 4) + 0x2c); k++)
+                n_PSMTXCopy(c, M, ld32(c, M, ld32(c, M, first + 0x84) + 0xc) + 0x30 * k, ld32(c, M, ld32(c, M, mdl + 0x84) + 0xc) + 0x30 * k, 0, 0, 0, 0, 0, 0);
+            for (int k = 0; k < (int)ld16(c, M, ld32(c, M, mdl + 4) + 0x2e); k++)
+                n_PSMTXCopy(c, M, ld32(c, M, ld32(c, M, first + 0x84) + 0x10) + 0x30 * k, ld32(c, M, ld32(c, M, mdl + 0x84) + 0x10) + 0x30 * k, 0, 0, 0, 0, 0, 0);
+            uint32_t src = ld32(c, M, ld32(c, M, ld32(c, M, ld32(c, M, ld32(c, M, set + 8)) + 0x60)) + 0x2c);
+            vcall2(c, ld32(c, M, ld32(c, M, src) + 0x68), src, 0);
+            uint32_t tex = ctx_gpr(c, 3), data;
+            if (tex && (data = ld32(c, M, ld32(c, M, set + 8) + 4))) {
+                for (uint32_t k = 0; (k & 0xFFFF) < ld16(c, M, data + 0x5c); k++) {
+                    uint32_t mat = ld32(c, M, ld32(c, M, data + 0x60) + ((k << 2) & 0x3FFFC));
+                    mst(c, M, sp + 8, 4, ld32(c, M, tex));
+                    mst(c, M, sp + 0xc, 4, ld32(c, M, tex + 4));
+                    uint32_t t = ld32(c, M, mat + 0x2c);
+                    ctx_set_gpr(c, 3, t);
+                    ctx_set_gpr(c, 4, 0);
+                    ctx_set_gpr(c, 5, sp + 8);
+                    ctx_call(c, ld32(c, M, ld32(c, M, t) + 0x64));
+                }
+            }
+        }
+        if (ld32(c, M, mdl + 0xc)) {
+            vcall1(c, ld32(c, M, ld32(c, M, mdl) + 0x14), mdl);
+            n_diff__8J3DModelFv(c, M, mdl, 0, 0, 0, 0, 0, 0, 0);
+        }
+        if (ld32(c, M, J3DSYS + 0x48) != 0x803B1438u) vcall1(c, ld32(c, M, ld32(c, M, mdl) + 0xc), mdl);
+        vcall1(c, 0x8005706cu, mdl); /* prepareShapePackets */
+        if (ld32(c, M, ld32(c, M, ld32(c, M, ld32(c, M, set + 0xc)) + 0xc4) + 0x24)) /* FUN_80183d08 */
+            vcall1(c, ld32(c, M, ld32(c, M, mdl) + 0x18), mdl);
+    }
+    if (!(view & 0xFFFF)) {
+        uint32_t first = ld32(c, M, ld32(c, M, set + 0xc));
+        if (first) n_PSMTXCopy(c, M, first + 0x24, set + 0x2c, 0, 0, 0, 0, 0, 0);
+    }
+    frame_pop(c, old_sp);
+    return 0;
+}
+
+/* stParticleDraw::drawParentBillBoardCommon(it, Mtx out): with colour animation on (r13-0x5508),
+ * the particle's prim / env colours (+0x50.. / +0x53..) blend from the emitter's start to end
+ * colours (+0xa8.. -> +0xab.., +0xae.. -> +0xb1..) by frame / life (or a constant without a life),
+ * into r13-0x5510 / -0x550c and TEV colour 2; then TEV colour 1 = prim with the alpha from
+ * r13-0x54fc, and out = view (r13-0x54f8) * translation(particle +0x18). */
+static uint64_t i_drawParentBillBoardCommon__14stParticleDrawFR29JSUListIterator_10stParticle_PA4_f(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0, it = (uint32_t)a1, out = (uint32_t)a2;
+    uint32_t old_sp = frame_push(c, M, 0xc0), sp = old_sp - 0xc0;
+    uint32_t r13 = (uint32_t)RD(c, REG_R13, 4), r2 = (uint32_t)RD(c, REG_R2, 4);
+    if (mld(c, M, r13 - 0x5508, 1)) {
+        uint32_t p = ld32(c, M, ld32(c, M, it)), e = ld32(c, M, ld32(c, M, self + 0x20) + 0x18);
+        float k = ldf(c, M, r2 - 0x44d4);
+        uint32_t n = ld16(c, M, p + 0x32);
+        if (n) k = fdiv((float)ld16(c, M, p + 0x30), (float)n);
+        static const uint8_t from[6] = {0xa8, 0xa9, 0xaa, 0xae, 0xaf, 0xb0};
+        for (int j = 0; j < 6; j++) {
+            uint32_t s = mld(c, M, e + from[j], 1), t = mld(c, M, e + from[j] + 3, 1);
+            uint32_t v = s + (uint32_t)sat_i32((double)mul((float)(int32_t)(t - s), k));
+            mst(c, M, p + 0x50 + j, 1, v & 0xFF);
+        }
+        for (int j = 0; j < 3; j++) {
+            mst(c, M, r13 - 0x5510 + j, 1, mld(c, M, p + 0x50 + j, 1));
+            mst(c, M, r13 - 0x550c + j, 1, mld(c, M, p + 0x53 + j, 1));
+        }
+        mst(c, M, sp + 0xc, 4, ld32(c, M, r13 - 0x550c));
+        n_GXSetTevColor(c, M, 2, sp + 0xc, 0, 0, 0, 0, 0, 0);
+    }
+    mst(c, M, r13 - 0x5510 + 3, 1, mld(c, M, r13 - 0x54fc, 1));
+    mst(c, M, sp + 8, 4, ld32(c, M, r13 - 0x5510));
+    n_GXSetTevColor(c, M, 1, sp + 8, 0, 0, 0, 0, 0, 0);
+    uint32_t p = ld32(c, M, ld32(c, M, it));
+    ctx_set_gpr(c, 3, sp + 0x10);
+    for (int j = 0; j < 3; j++) WR(c, 0x4008 + 8 * j, 8, dbits((double)ldf(c, M, p + 0x18 + 4 * j)));
+    ctx_call(c, 0x800a9bc8u); /* PSMTXTrans */
+    n_PSMTXConcat(c, M, ld32(c, M, r13 - 0x54f8), sp + 0x10, out, 0, 0, 0, 0, 0);
+    frame_pop(c, old_sp);
+    return 0;
+}
+
+/* ---- batch 1: shadows ---- */
+/* Guest call fn(r3..r3+n-1). */
+static void gcalln(Ctx *c, uint32_t fn, int n, const uint32_t *r) {
+    for (int i = 0; i < n; i++) ctx_set_gpr(c, 3 + i, r[i]);
+    ctx_call(c, fn);
+}
+#define GCALL(c, fn, ...) do { const uint32_t _a[] = {__VA_ARGS__}; gcalln(c, fn, (int)(sizeof _a / sizeof *_a), _a); } while (0)
+
+/* ShadowManager::draw(u32 view, TList<ShadowModel*> &list): when shadows are on (+0x5f), the GX
+ * setup for shadow volumes, then per model in the list (link +8 = model): its view setup (vtable
+ * +0x20); visible ones (+0x8c low bits, +0x95) draw their shapes twice, first with blend 3 and
+ * one cull mode, then blend 1 and the other (+0x5e / +0x60 pick which), with the material
+ * colour's alpha = depth (+0x5c + [+0x5e]) * model alpha (+0x94) / 255 (also times the first
+ * material's alpha when +0x5e is 1). Finally colour writes back on, setDstAlpha, z mode back. */
+static uint64_t i_draw__13ShadowManagerFUlRQ27JGadget60TList_P11ShadowModel_Q27JGadget26TAllocator_P11ShadowModel__(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0, view = (uint32_t)a1, list = (uint32_t)a2;
+    if (!mld(c, M, self + 0x5f, 1)) return 0;
+    uint32_t old_sp = frame_push(c, M, 0x40), sp = old_sp - 0x40;
+    GCALL(c, 0x800c11b0u, 1, 6, 0);           /* GXSetZMode */
+    GCALL(c, 0x800bd5d8u, 0);                 /* GXSetNumTexGens */
+    GCALL(c, 0x800c0d94u, 1);                 /* GXSetNumTevStages */
+    n_GXSetTevOrder(c, M, 0, 0xff, 0xff, 4, 0, 0, 0, 0);
+    GCALL(c, 0x800c0658u, 0, 4);              /* GXSetTevOp */
+    GCALL(c, 0x800bf040u, 1);                 /* GXSetNumChans */
+    n_GXSetChanCtrl(c, M, 2, 0, 0, 0, 0, 0, 2, 0);
+    GCALL(c, 0x800c0b28u, 7, 0, 0, 7, 0);     /* GXSetAlphaCompare */
+    GCALL(c, 0x800c11e4u, 1);                 /* GXSetZCompLoc */
+    GCALL(c, 0x800c1158u, 0);                 /* GXSetColorUpdate */
+    GCALL(c, 0x800c1184u, 1);                 /* GXSetAlphaUpdate */
+    GCALL(c, 0x800c1318u, 0, 0);              /* GXSetDstAlpha */
+    uint32_t end = list + 8;
+    for (uint32_t link = ld32(c, M, list + 8); link != end; link = ld32(c, M, link)) {
+        uint32_t m = ld32(c, M, link + 8);
+        GCALL(c, ld32(c, M, ld32(c, M, m) + 0x20), m, view);
+        m = ld32(c, M, link + 8);
+        if (!(mld(c, M, m + 0x8c, 1) & 0xf) || !mld(c, M, m + 0x95, 1)) continue;
+        uint32_t kind = mld(c, M, self + 0x5e, 1);
+        uint32_t data = ld32(c, M, ld32(c, M, m + 8)), mdl = ld32(c, M, ld32(c, M, m + 0xc));
+        uint32_t nshapes = ld16(c, M, data + 0x7c);
+        uint32_t alpha = (uint32_t)((int32_t)(mld(c, M, self + kind + 0x5c, 1) * mld(c, M, m + 0x94, 1)) / 0xff) & 0xFF;
+        if (kind == 1) {
+            uint32_t mat = ld32(c, M, ld32(c, M, ld32(c, M, data + 0x60)) + 0x24);
+            GCALL(c, ld32(c, M, ld32(c, M, mat) + 0x38), mat, 0);
+            alpha = (uint32_t)((int32_t)(alpha * mld(c, M, ctx_gpr(c, 3) + 3, 1)) / 0xff) & 0xFC;
+        }
+        mst(c, M, sp + 0x14, 4, alpha); /* (0, 0, 0, alpha) */
+        mst(c, M, sp + 0x10, 4, ld32(c, M, sp + 0x14));
+        GCALL(c, 0x800bef50u, 4, sp + 0x10);  /* GXSetChanMatColor */
+        for (int pass = 0; pass < 2; pass++) {
+            GCALL(c, 0x800c1104u, pass ? 1 : 3, 1, 1, 5); /* GXSetBlendMode */
+            kind = mld(c, M, self + 0x5e, 1);
+            uint32_t flip = mld(c, M, self + 0x60, 1);
+            bool a_side = (kind == 1 && !flip) || (kind == 0 && flip);
+            GCALL(c, 0x800be0e4u, a_side == !pass ? 2 : 1); /* GXSetCullMode */
+            for (uint32_t k = 0; (k & 0xFFFF) < nshapes; k++) {
+                uint32_t s = ld32(c, M, mdl + 0xc4) + (k & 0xFFFF) * 0x3c;
+                GCALL(c, ld32(c, M, ld32(c, M, s) + 0xc), s);
+            }
+        }
+    }
+    GCALL(c, 0x800c1158u, 1);                 /* GXSetColorUpdate */
+    GCALL(c, 0x801dabacu, self);              /* setDstAlpha */
+    GCALL(c, 0x800c11b0u, 1, 3, 1);           /* GXSetZMode */
+    frame_pop(c, old_sp);
+    return 0;
+}
+
+/* FUN_80085f48(particle, emitter): one frame of a JPA particle. Age +0x80 (s16) counts up to its
+ * life +0x82 (returns 1 when done); +0x84 = age / life; flag 0x20 (+0x7c) follows the emitter's
+ * position (+0x138.. -> +0x18..); the per-frame force (+0x48..) restarts at 0 and is filled by
+ * the field block (unless flag 0x40) plus the base acceleration (+0x3c..); the drag (+0x30..)
+ * scales by the emitter's air resistance (resource +0x48); velocity +0x24.. = (drag + force) *
+ * +0x70 * +0x74; the emitter callback (resource +0xf0, vtable +0xc); unless flag 2, the
+ * rotation and child emission (+0x88 += +0x8a, FUN_80086440 -> FUN_80081130 per child); the
+ * local position +0xc.. moves by the velocity and the global +0.. = local * emitter scale
+ * (+0x12c..) + base. Returns 0. */
+static uint64_t i_FUN_80085f48(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t p = (uint32_t)a0, em = (uint32_t)a1, r2 = (uint32_t)RD(c, REG_R2, 4);
+    int16_t age = (int16_t)(ld16(c, M, p + 0x80) + 1);
+    mst(c, M, p + 0x80, 2, (uint16_t)age);
+    int16_t life = (int16_t)ld16(c, M, p + 0x82);
+    if (age >= life) return 1;
+    uint32_t old_sp = frame_push(c, M, 0x40);
+    stf(c, M, p + 0x84, fdiv((float)age, (float)life));
+    if (ld32(c, M, p + 0x7c) & 0x20)
+        for (int k = 0; k < 3; k++) mst(c, M, p + 0x18 + 4 * k, 4, ld32(c, M, em + 0x138 + 4 * k));
+    float zero = ldf(c, M, r2 - 0x77dc);
+    stf(c, M, p + 0x50, zero);
+    stf(c, M, p + 0x4c, zero);
+    stf(c, M, p + 0x48, zero);
+    if (!(ld32(c, M, p + 0x7c) & 0x40)) GCALL(c, 0x80088be0u, ld32(c, M, em + 4), em, p);
+    for (int k = 0; k < 3; k++) stf(c, M, p + 0x48 + 4 * k, fadd(ldf(c, M, p + 0x48 + 4 * k), ldf(c, M, p + 0x3c + 4 * k)));
+    float air = ldf(c, M, ld32(c, M, em) + 0x48);
+    for (int k = 0; k < 3; k++) stf(c, M, p + 0x30 + 4 * k, mul(ldf(c, M, p + 0x30 + 4 * k), air));
+    float s = mul(ldf(c, M, p + 0x70), ldf(c, M, p + 0x74));
+    for (int k = 0; k < 3; k++) stf(c, M, p + 0x24 + 4 * k, mul(s, fadd(ldf(c, M, p + 0x30 + 4 * k), ldf(c, M, p + 0x48 + 4 * k))));
+    uint32_t res = ld32(c, M, em), cb = ld32(c, M, res + 0xf0);
+    if (cb) GCALL(c, ld32(c, M, ld32(c, M, cb) + 0xc), cb, res, p);
+    uint64_t ret = 1;
+    if (!(ld32(c, M, p + 0x7c) & 2)) {
+        GCALL(c, 0x80088af8u, ld32(c, M, em + 4), em, p);
+        mst(c, M, p + 0x88, 2, (ld16(c, M, p + 0x88) + (uint32_t)(int32_t)(int16_t)ld16(c, M, p + 0x8a)) & 0xFFFF);
+        if (ld32(c, M, ld32(c, M, em + 4) + 0x24)) {
+            GCALL(c, 0x80086440u, p, em);
+            if (ctx_gpr(c, 3) & 0xFF)
+                for (int32_t n = (int16_t)ld16(c, M, ld32(c, M, ld32(c, M, ld32(c, M, em + 4) + 0x24)) + 0x42); n > 0; n--)
+                    GCALL(c, 0x80081130u, ld32(c, M, em), p);
+        }
+        for (int k = 0; k < 3; k++) stf(c, M, p + 0xc + 4 * k, fadd(ldf(c, M, p + 0xc + 4 * k), ldf(c, M, p + 0x24 + 4 * k)));
+        for (int k = 0; k < 3; k++) stf(c, M, p + 4 * k, madd(ldf(c, M, p + 0xc + 4 * k), ldf(c, M, em + 0x12c + 4 * k), ldf(c, M, p + 0x18 + 4 * k)));
+        ret = 0;
+    }
+    frame_pop(c, old_sp);
+    return ret;
+}
+
+/* ---- batch 1: small per-frame helpers ---- */
+/* GeographyObjManager::Calc_norm(it): the object's calc_norm (its calc, vtable +0x2c, then
+ * FUN_801f7684); with flag 0x10 at +0xec, FUN_80183820(+0x5c), flags 1 and 2 cleared, +0xf0 = 0. */
+static uint64_t i_Calc_norm__19GeographyObjManagerFRC31JSUListIterator_12GeographyObj_(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t it = (uint32_t)a1, old_sp = frame_push(c, M, 0x10);
+    uint32_t o = ld32(c, M, ld32(c, M, it));
+    { uint32_t sp2 = frame_push(c, M, 0x10); /* calc_norm's own frame */
+      GCALL(c, ld32(c, M, ld32(c, M, o) + 0x2c), o);
+      GCALL(c, 0x801f7684u, o);
+      frame_pop(c, sp2); }
+    o = ld32(c, M, ld32(c, M, it));
+    if (ld32(c, M, o + 0xec) & 0x10) {
+        n_FUN_80183820(c, M, o + 0x5c, 0, 0, 0, 0, 0, 0, 0);
+        o = ld32(c, M, ld32(c, M, it));
+        mst(c, M, o + 0xec, 4, ld32(c, M, o + 0xec) & ~3u);
+        mst(c, M, o + 0xf0, 4, 0);
+    }
+    frame_pop(c, old_sp);
+    return 0;
+}
+
+/* ShadowManager::viewCalc(u32 view): each visible model (+0x8c low bits) in the four lists gets
+ * its viewCalc (vtable +0x1c). */
+static uint64_t i_viewCalc__13ShadowManagerFUl(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0, view = (uint32_t)a1, old_sp = frame_push(c, M, 0x30);
+    for (uint32_t i = 0; i < 4; i++) {
+        uint32_t list = self + 0x18 + 0x10 * i, end = list + 8;
+        for (uint32_t link = ld32(c, M, list + 8); link != end; link = ld32(c, M, link)) {
+            uint32_t m = ld32(c, M, link + 8);
+            if (mld(c, M, m + 0x8c, 1) & 0xf) GCALL(c, ld32(c, M, ld32(c, M, m) + 0x1c), m, view);
+        }
+    }
+    frame_pop(c, old_sp);
+    return 0;
+}
+
+/* J3DModel::prepareShapePackets(): each shape packet (+0xc4, 0x3c bytes, count data +0x7c) gets
+ * the matrix buffer (+0x84) and its draw matrices: this +0x54 for model flag type 2, else j3dSys. */
+static uint64_t i_prepareShapePackets__8J3DModelFv(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0, n = ld16(c, M, ld32(c, M, self + 4) + 0x7c);
+    for (uint32_t k = 0; k < n; k++) {
+        uint32_t pkt = ld32(c, M, self + 0xc4) + k * 0x3c;
+        mst(c, M, pkt + 0x2c, 4, ld32(c, M, self + 0x84));
+        mst(c, M, pkt + 0x30, 4, (ld32(c, M, self + 8) & 3) == 2 ? self + 0x54 : J3DSYS);
+    }
+    return 0;
+}
+
+/* J3DJointTree::calc(J3DMtxBuffer *buf, const Vec &scale, const Mtx m): the matrix calc's init
+ * (+0x14, vtable +0x24 with scale and m), the current buffer (r13-0x6678) and, with a root joint
+ * (+0x10), the calc (r13-0x6670) and recursiveCalc from the root. */
+static uint64_t i_calc__12J3DJointTreeFP12J3DMtxBufferRC3VecRA3_A4_Cf(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0, buf = (uint32_t)a1, old_sp = frame_push(c, M, 0x10);
+    uint32_t r13 = (uint32_t)RD(c, REG_R13, 4), mc = ld32(c, M, self + 0x14);
+    GCALL(c, ld32(c, M, ld32(c, M, mc) + 0x24), mc, (uint32_t)a2, (uint32_t)a3);
+    mst(c, M, r13 - 0x6678, 4, buf);
+    uint32_t root = ld32(c, M, self + 0x10);
+    if (root) {
+        mst(c, M, r13 - 0x6670, 4, ld32(c, M, self + 0x14));
+        n_recursiveCalc__8J3DJointFv(c, M, root, 0, 0, 0, 0, 0, 0, 0);
+    }
+    frame_pop(c, old_sp);
+    return 0;
+}
+
 /* ---- verifier ---- */
 int g_native_verify;
 #define NATIVE_INFO(name, args, ret, guest) {#name, args, ret, guest},
@@ -3924,7 +4801,7 @@ static uint64_t verify(int id, Ctx *c, uint8_t *M, const uint64_t *a, Impl impl)
     }
     uint32_t r1 = ctx_gpr(c, 1);
     bool gx = s_info[id].flag >= 3;
-    static uint8_t cap[2][4096];
+    static uint8_t cap[2][1u << 20]; /* whole draws: shadow volumes are tens of KB */
     size_t ncap[2] = {0, 0};
     if (gx) hw_gather_capture(cap[0], sizeof cap[0]);
     ctx_call_orig(c, s_addr[id]);

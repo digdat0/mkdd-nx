@@ -206,6 +206,71 @@ static void watch_flow(uint16_t buttons) {
            v[7] ? " (reset combo held)" : "");
 }
 
+/* Scene load watchdog: recovers instead of hanging. SequenceApp::ready marks a scene as loading
+ * (+0x38) and queues loadTask on the low-priority task (System::mspLoTask); loadTask clears the
+ * mark and sets the scene's bit in +0x3c when done. If the request is lost, the mark stays, ready()
+ * never requests the load again and the game waits on a black screen forever (seen going to the
+ * next Grand Prix course; also possible for scenes the menus preload). Any scene marked loading
+ * for 5 s whose load is neither queued nor running gets its mark cleared, so the game's next
+ * ready() requests it again; a message waiting in the task's queue with nobody receiving it (a
+ * lost wake-up) gets the task woken. Runs whatever the logging setting. */
+bool sched_waiting_on(uint32_t t, uint32_t queue); /* sched.c */
+#define W_LOTASK 0x803CBD8Cu   /* System::mspLoTask (JKRTask: thread +0x2c, queue +0x30, requests +0x8c / +0x90) */
+#define W_LOADTASK 0x801D985Cu /* SequenceApp::loadTask */
+#define SCENE_STUCK_FRAMES 300
+static void watch_scene_load(Ctx *c) {
+    static unsigned stuck[10];
+    static uint32_t last_seq;
+    uint32_t seq = (uint32_t)m_read_be(W_SEQAPP, 4);
+    if ((seq & 0xFE000000u) != 0x80000000u || seq != last_seq) {
+        memset(stuck, 0, sizeof stuck);
+        last_seq = seq;
+        return;
+    }
+    uint32_t loading = (uint32_t)m_read_be(seq + 0x38, 4), loaded = (uint32_t)m_read_be(seq + 0x3c, 4);
+    static int test = -1; /* MKDD_TEST_LOST_LOAD=1 (PC): on the title screen, mark the course select
+                           * scene (3) as loading without a request: a lost request, as in the hang */
+    if (test < 0) test = plat_getenv("MKDD_TEST_LOST_LOAD") != NULL;
+    if (test && (int32_t)m_read_be(W_SCENE, 4) == 0 && !(loading & 8) && !(loaded & 8)) {
+        test = 0;
+        m_write_be(seq + 0x38, 4, loading | 8);
+        rt_log("scene watchdog test: scene 3 marked loading without a request");
+        return;
+    }
+    for (int s = 0; s < 10; s++) {
+        uint32_t bit = 1u << s;
+        if (!(loading & bit) || (loaded & bit)) { stuck[s] = 0; continue; }
+        if (++stuck[s] < SCENE_STUCK_FRAMES) continue;
+        stuck[s] = 0;
+        uint32_t task = (uint32_t)m_read_be(W_LOTASK, 4);
+        if ((task & 0xFE000000u) != 0x80000000u) continue;
+        uint32_t q = task + 0x30, used = (uint32_t)m_read_be(q + 0x1c, 4), cap = (uint32_t)m_read_be(q + 0x14, 4);
+        uint32_t reqs = (uint32_t)m_read_be(task + 0x8c, 4), nreq = (uint32_t)m_read_be(task + 0x90, 4), busy = 0, slot = 0;
+        bool pending = false;
+        for (uint32_t i = 0; i < nreq && i < 256; i++) {
+            uint32_t cb = (uint32_t)m_read_be(reqs + 12 * i, 4);
+            if (!cb) continue;
+            busy++;
+            if (cb == W_LOADTASK && (uint32_t)m_read_be(reqs + 12 * i + 4, 4) == (uint32_t)s) { pending = true; slot = reqs + 12 * i; }
+        }
+        /* The task thread idle in its queue (receiving) means nothing is running: a load still
+         * marked pending was lost. A busy thread (a long load, another task) is left alone. */
+        uint32_t th = (uint32_t)m_read_be(task + 0x2c, 4);
+        bool idle = sched_waiting_on(th, q + 8);
+        const char *act = !idle ? "task busy, waiting" : used ? "waking the task" : "requesting the load again";
+        rt_log("scene watchdog: scene %d still loading after 5 s: task %#x thread %#x %s, queue %u/%u messages, %u requests in use%s -> %s",
+               s, task, th, idle ? "idle" : "busy", used, cap, busy, pending ? " (its load among them)" : "", act);
+        if (!idle) continue;
+        if (used) {
+            sched_wakeup(c, q + 8); /* OSMessageQueue.queueReceive: a lost wake-up */
+        } else {
+            if (pending) m_write_be(slot, 4, 0); /* a request slot nothing will run */
+            loading &= ~bit;
+            m_write_be(seq + 0x38, 4, loading);
+        }
+    }
+}
+
 static void call_cb(Ctx *c, uint32_t cb, uint32_t a, uint32_t b) {
     uint32_t args[2] = {a, b};
     ctx_call_guest(c, cb, args, 2);
@@ -377,7 +442,8 @@ bool rt_hle(Ctx *c, uint32_t addr) {
             m_write_be(o + 11, 1, 0);
         }
         cheats_tick();
-        watch_flow(p[0].button);
+        watch_scene_load(c);
+        if (g_log_mask & LOG_GAME) watch_flow(p[0].button);
         ctx_set_gpr(c, 3, 0);
         break;
     }
