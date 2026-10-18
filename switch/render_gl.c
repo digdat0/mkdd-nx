@@ -894,6 +894,17 @@ static void unit_bind(unsigned unit, GLuint tex, GLuint smp) {
     }
     if (R.cur_smp[unit] != smp) { glBindSampler(unit, smp); R.cur_smp[unit] = smp; }
 }
+/* Delete a GL texture and forget it in the bind cache. Deleting unbinds it from every unit, and
+ * GL hands the name out again for the next texture: a unit still recorded as holding the name
+ * then skipped the bind and sampled nothing (characters drawn flat white or blue, the title
+ * screen without its picture, after HD textures were evicted). */
+static void tex_delete(GLuint *t) {
+    if (!*t) return;
+    for (unsigned u = 0; u < 8; u++)
+        if (R.cur_tex[u] == *t) R.cur_tex[u] = ~0u;
+    glDeleteTextures(1, t);
+    *t = 0;
+}
 /* Forget tracked GL state (after code that binds textures / programs directly). */
 static void state_reset(void) {
     memset(R.cur_tex, 0xFF, sizeof R.cur_tex);
@@ -1026,7 +1037,7 @@ static void pool_add(GLuint tex, uint32_t w, uint32_t h, uint8_t chans) {
     if (R.npool == TEX_POOL) {
         unsigned old = 0;
         for (unsigned j = 1; j < R.npool; j++) if (R.pool[j].freed < R.pool[old].freed) old = j;
-        glDeleteTextures(1, &R.pool[old].tex);
+        tex_delete(&R.pool[old].tex);
         R.pool[old] = R.pool[--R.npool];
     }
     R.pool[R.npool++] = (PoolTex){tex, w, h, R.tick, chans};
@@ -1038,7 +1049,7 @@ static void evict_textures(uint64_t age) {
     u64map_clear(&R.textures);
     for (unsigned i = 0; i < R.ntex; i++) {
         if (R.tex[i].used < cutoff) {
-            if (R.tex[i].hd == 2) { glDeleteTextures(1, &R.tex[i].tex); R.hd_bytes -= R.tex[i].hd_bytes; }
+            if (R.tex[i].hd == 2) { tex_delete(&R.tex[i].tex); R.hd_bytes -= R.tex[i].hd_bytes; }
             else pool_add(R.tex[i].tex, R.tex[i].w, R.tex[i].h, R.tex[i].chans);
             continue;
         }
@@ -1068,8 +1079,7 @@ static struct {
 
 static void hd_upload_drop(bool delete_tex) {
     if (delete_tex && s_up.tex) {
-        glDeleteTextures(1, &s_up.tex);
-        if (R.cur_tex[0] == s_up.tex) R.cur_tex[0] = ~0u;
+        tex_delete(&s_up.tex);
     }
     free(s_up.data);
     memset(&s_up, 0, sizeof s_up);
@@ -1283,7 +1293,7 @@ static bool movie_ready(void) {
 }
 
 static void movie_tex(GLuint *t, uint32_t w, uint32_t h) {
-    if (*t) glDeleteTextures(1, t);
+    tex_delete(t);
     glGenTextures(1, t);
     if (R.cur_unit != 0) { glActiveTexture(GL_TEXTURE0); R.cur_unit = 0; }
     glBindTexture(GL_TEXTURE_2D, *t);
