@@ -14,7 +14,14 @@ functions are direct C calls. Block leaders: function entries, constant branch/c
 code addresses referenced from data sections (switch jump tables) and the instruction after any
 unconditional transfer. Generated code is disposable: edit the sheets or this generator, rerun.
 
-Usage: python gen_c.py <MKDD-Recomp sheets dir> <output dir> [--no-abi] [--native-verify] [--native-skip=a,b]
+Usage: python gen_c.py <MKDD-Recomp sheets dir> <output dir> [options]
+  --native-verify        natives also run the recompiled original for comparison (PC verifier)
+  --native-skip=a,b      leave these natives out (bisecting); --no-native: all of them
+  --abi-check            poison skipped register stores and report reads of them (PC)
+  --check-lazy           check callee-saved registers survive calls; --check-mod: unreloaded registers
+  --no-abi, --no-lazy, --no-inline, --no-scratch, --no-mod   turn an optimisation off (bisecting)
+  --hook-all             HLE check in every function, not just the hookable ones
+  --dyn-imm=a,b          immediates read from memory (MKDD Plus patches them; tools/gen_mod.py prints the list)
 """
 import os, csv
 import io

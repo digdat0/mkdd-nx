@@ -103,25 +103,25 @@ also opens by itself when a controller in use disconnects; reconnect it and clos
 
 | Option | |
 |---|---|
-| Display | 16:9 (default): wider game camera, race HUD at the screen edges, menus 4:3 in the middle; or 4:3 |
-| HD textures | Off (default) / On when `mods/hd/hd-textures.bin` is in the app folder (see [HD textures](#hd-textures)), else NO PACK |
-| Advanced | the page below |
-| Controllers | **Sync controllers** (the system screen for pairing, the player order and single Joy-Cons) and **Button mapping** (pick a GameCube button, press the Switch button for it) |
-| Debugging | the page below |
+| Graphics | the page below |
+| Controls | **Sync controllers** (the system screen for pairing, the player order and single Joy-Cons), **Button mapping** (pick a GameCube button, press the Switch button for it) and **Rumble strength** (Off / Low (default) / High; the game's own Rumble option must be on too) |
+| Game | **Unlock all**: every character, kart, cup and mode while it is on; never written to your save, so your own progress stays as it is |
+| Mods | **MKDD Plus** (On (default) / Off when the mod is in `mods/plus/`, else NOT FOUND; see [MKDD Plus](#mkdd-plus)), **HD textures** (Off (default) / On when `mods/hd/hd-textures.bin` is in the app folder (see [HD textures](#hd-textures)), else NO PACK) and **Restart now**, which starts the game again to apply an MKDD Plus change (unsaved race progress is lost) |
 | Update | shows this version and the latest release; **Check for updates** downloads and installs the newest `MKDD-NX.nro`, then **Restart now** starts it (save your progress first) |
+| Debugging | the page below |
 | Exit game | back to the homebrew menu |
 
-**Advanced**
+**Graphics**
 
 | Option | |
 |---|---|
-| Color | Accurate / Vivid / Custom brightness, contrast, saturation (hold Y on that page to preview); saved to `config/color.ini` |
-| Field of view | Normal / Wide / Wider race camera, kept separately for 4:3 (default Normal) and 16:9 (default Wider); the row changes the current display mode's |
-| Texture filtering | Normal / 2x / 4x / 8x / 16x anisotropic filtering: sharper roads and walls at a distance (most visible with HD textures, which have mipmaps) |
-| Docked resolution | 2X (default) / Native: on the TV the game renders at twice its size (1280x960 instead of 640x480) and outputs 1080p; handheld always renders at the game's own size |
+| Widescreen | 16:9 (default): wider game camera, race HUD at the screen edges, menus 4:3 in the middle; or 4:3 |
 | 4:3 edge border | Off / On: checkered border art in the side bars during races in 4:3 (menus keep black bars) |
-| Rumble | Off (default) / Low / High |
-| Unlock all | every character, kart, cup and mode while it is on; never written to your save, so your own progress stays as it is |
+| Docked resolution | on the TV (1080p output): Native (640x480), 1.5X, 2X (1280x960) or Auto (default: 2X, stepping down when the frame rate drops); handheld uses Handheld resolution |
+| Handheld resolution | on the Switch screen (1280x720): Native (the game's own 640x480), 1.25X, 1.5X (960x720, as many lines as the screen) or Auto (default: 1.5X, stepping down when the frame rate drops) |
+| Texture filtering | Normal / 2x / 4x / 8x / 16x anisotropic filtering: sharper roads and walls at a distance (most visible with HD textures, which have mipmaps) |
+| Field of view | Normal / Wide / Wider race camera, kept separately for 4:3 (default Normal) and 16:9 (default Wider); the row changes the current display mode's |
+| Color | Accurate / Vivid / Custom brightness, contrast, saturation (hold Y on that page to preview); saved to `config/color.ini` |
 
 **Debugging**
 
@@ -129,6 +129,7 @@ also opens by itself when a controller in use disconnects; reconnect it and clos
 |---|---|
 | Show FPS | Off / FPS / FPS + times: ms per game frame of the game thread (GAME), the graphics thread (GX) and the render thread (RENDER); 16.7 is the 60 fps budget |
 | Logging | debug logs on the SD card, for bug reports |
+| Profiler | Off / On: a sampling profile (`logs/mkdd_prof.bin`) for performance reports, from the next start |
 
 Settings are saved to `config/settings.ini`.
 
@@ -212,7 +213,8 @@ as it is, and the standard game stays playable.
    Copy it as it is: don't delete `Course`, `CourseName`, `Movie` or `StaffGhosts` (the mod's
    folders don't have them; the steps for building a modded ISO on a PC don't apply here).
 3. Start the game: with the mod in `mods/plus/`, MKDD-NX plays Plus. To play the standard game
-   again, move or rename the `plus` folder. If a mod file is missing, the standard game starts
+   again, turn **MKDD Plus** off on the menu's **Mods** page and choose **Restart now** (or move or
+   rename the `plus` folder). If a mod file is missing, the standard game starts
    instead and `logs/mkdd.log` names the file.
 
 Plus keeps its own saves in `save/plus/`, apart from the standard game's. The first time you play
@@ -241,6 +243,8 @@ only the port's own messages.
 ## Build
 
 See [Build Instructions](https://github.com/digdat0/mkdd-nx/wiki/Build-Instructions) on the wiki: one command builds `MKDD-NX.nro` from your disc image.
+
+How the port works, and how it is tested: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Credits and licence
 

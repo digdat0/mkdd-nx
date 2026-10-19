@@ -1,14 +1,16 @@
 """Report for the Switch sampling profiler (switch/prof_switch.c).
 
-usage: py -3 tools/prof_report.py mkdd_prof.bin MKDD-NX.elf [--sheets E:/MKDD/sheets] [--from S] [--to S] [--top N]
+usage: py -3 tools/prof_report.py mkdd_prof.bin MKDD-NX.elf [--sheets <sheets dir, for guest function names>] [--from S] [--to S] [--top N]
 
 Self time: the function the game thread was executing. Inclusive: every function on its stack
 (each counted once per sample). Percentages are of the game thread's busy samples (idle excluded).
 """
-import argparse, bisect, csv, struct, subprocess, sys
+import argparse, bisect, csv, os, struct, subprocess, sys
 from collections import Counter, defaultdict
 
-NM = "C:/devkitPro/devkitA64/bin/aarch64-none-elf-nm"
+# DEVKITPRO, unless it is a path Windows can't open (Git Bash and msys2 set /opt/devkitpro)
+_DKP = os.environ.get("DEVKITPRO", "")
+NM = os.path.join(_DKP if os.path.isdir(_DKP) else "C:/devkitPro", "devkitA64/bin/aarch64-none-elf-nm")
 K_GAME, K_IDLE, K_GPU, K_FAIL, K_RENDER = 1, 2, 3, 4, 5
 
 
@@ -32,7 +34,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("bin")
     ap.add_argument("elf")
-    ap.add_argument("--sheets", default="E:/MKDD/sheets")
+    ap.add_argument("--sheets", help="MKDD-Recomp sheets folder (functions.csv) to name guest functions")
     ap.add_argument("--from", dest="t0", type=float, default=0)
     ap.add_argument("--to", dest="t1", type=float, default=1e12)
     ap.add_argument("--top", type=int, default=40)
@@ -40,12 +42,10 @@ def main():
     a = ap.parse_args()
 
     guest = {}
-    try:
-        with open(f"{a.sheets}/functions.csv", newline="") as f:
+    if a.sheets:
+        with open(os.path.join(a.sheets, "functions.csv"), newline="") as f:
             for r in csv.DictReader(f):
                 guest[int(r["addr"], 16)] = r["name"]
-    except OSError:
-        pass
     addrs, names = load_syms(a.elf)
 
     def sym(off):

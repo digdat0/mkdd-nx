@@ -177,6 +177,14 @@ static void format_guest(Ctx *c, uint32_t fmt_addr, unsigned arg, char *out, siz
 #define W_PAUSE 0x803CB6E4u      /* PauseManager::mPauseChoice */
 #define W_RACEMGR 0x803CB7E8u    /* RaceMgr::sRaceManager; +0x18 RaceDirector: phase +0xc, next +0x10 */
 #define W_SEQAPP 0x803CBE20u     /* SequenceApp::mspSequenceApp: requested scenes +0x38, loaded +0x3c, state +0x44 */
+/* RaceDirector's phase (1: the course flyover before the countdown), 0 outside a race. */
+volatile uint32_t g_race_phase;
+static void read_race_phase(void) {
+    uint32_t mgr = (uint32_t)m_read_be(W_RACEMGR, 4);
+    uint32_t dir = (mgr & 0xFE000000u) == 0x80000000u ? (uint32_t)m_read_be(mgr + 0x18, 4) : 0;
+    g_race_phase = (dir & 0xFE000000u) == 0x80000000u ? (uint32_t)m_read_be(dir + 0xc, 4) : 0;
+}
+
 static void watch_flow(uint16_t buttons) {
     static uint32_t last[11];
     static bool init;
@@ -445,6 +453,7 @@ bool rt_hle(Ctx *c, uint32_t addr) {
         }
         cheats_tick();
         watch_scene_load(c);
+        read_race_phase();
         if (g_log_mask & LOG_GAME) watch_flow(p[0].button);
         ctx_set_gpr(c, 3, 0);
         break;

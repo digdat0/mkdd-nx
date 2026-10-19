@@ -4,10 +4,11 @@
 #   pc/bench.sh [exe] [label]
 EXE=${1:-build/mkdd_pc.exe}; LABEL=${2:-run}
 HERE=$(cd "$(dirname "$0")" && pwd)
+[ -n "$MKDD_DISC" ] || { echo "set MKDD_DISC to your disc image (.iso/.gcm/.ciso/.rvz)"; exit 1; }
 export PATH="/c/msys64/ucrt64/bin:$PATH"
 mkdir -p "$HERE/run" && cd "$HERE/run"
 S="600:0,10:1000,60:0,10:1000,60:0"; for i in $(seq 1 40); do S="$S,10:100,80:0"; done
-MKDD_TIMESCALE=${MKDD_TIMESCALE:-4} timeout 200 "$HERE/$EXE" "${MKDD_DISC:-E:/MKDD/disc/GM4E01.iso}" 110 "$S" > bench_$LABEL.txt 2>&1
+MKDD_TIMESCALE=${MKDD_TIMESCALE:-4} timeout 200 "$HERE/$EXE" "$MKDD_DISC" 110 "$S" > bench_$LABEL.txt 2>&1
 # race = frames with > 30000 verts; game fps from consecutive samples there
 python - "$LABEL" <<'PY'
 import re,sys

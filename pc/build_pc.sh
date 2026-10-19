@@ -1,13 +1,15 @@
 #!/bin/bash
 # Headless PC test build. Run from Git Bash; it re-enters C:\msys64's UCRT64 shell (gcc there).
-#   pc/build_pc.sh [GEN dir] [jobs]
+#   pc/build_pc.sh <generated C dir> [jobs]
 # Only recompiles sources newer than their object file.
 set -e
-GEN=${1:-/e/MKDD/gen}
+GEN=${1:?usage: pc/build_pc.sh <generated C dir> [jobs]}
 JOBS=${2:-10}
 HERE=$(cd "$(dirname "$0")" && pwd)
 if [ -z "$MKDD_IN_UCRT" ]; then
-    exec /c/msys64/usr/bin/env MSYSTEM=UCRT64 CHERE_INVOKING=1 MKDD_IN_UCRT=1 MKDD_PC_OUT="${MKDD_PC_OUT:-build}" MKDD_GENF_EXTRA="$MKDD_GENF_EXTRA" TMP='E:/MKDD/tmp' TEMP='E:/MKDD/tmp' \
+    # gcc needs a Windows temp dir (Git Bash's /tmp is not one)
+    T="$HERE/${MKDD_PC_OUT:-build}/tmp"; mkdir -p "$T"; T="$(cygpath -m "$T")"
+    exec /c/msys64/usr/bin/env MSYSTEM=UCRT64 CHERE_INVOKING=1 MKDD_IN_UCRT=1 MKDD_PC_OUT="${MKDD_PC_OUT:-build}" MKDD_GENF_EXTRA="$MKDD_GENF_EXTRA" TMP="$T" TEMP="$T" \
         /c/msys64/usr/bin/bash -lc "'$HERE/build_pc.sh' '$GEN' '$JOBS'"
 fi
 cd "$HERE"

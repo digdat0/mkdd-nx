@@ -10,7 +10,7 @@
  * The game delivers audio in bursts while the host pulls at a steady rate. A jitter buffer
  * absorbs that: playback starts once TARGET_MS is queued, an underrun outputs silence and
  * re-primes, and the consumer nudges its rate (+-0.5 %) to keep the queue near the target.
- * 100 ms (60 before build 1612 left ~1 underrun a minute on the Switch when the game thread
+ * 100 ms (60 left ~1 underrun a minute on the Switch when the game thread
  * stalled); an underrun fades the last sample out and playback fades back in, instead of
  * stepping to and from silence (a click). */
 #define TARGET_MS 100

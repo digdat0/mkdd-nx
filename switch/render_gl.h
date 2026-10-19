@@ -5,11 +5,14 @@
 
 bool render_init(void);
 /* Replay the latest presented GX frame (if new) into the EFB / copy targets. True if rendered. */
-bool render_update(int scale);
+bool render_update(float scale);
 /* Draw the XFB to the default framebuffer (w x h), letterboxed 4:3 (or stretched to 16:9 when
  * wide: the game camera is widened to match, see g_aspect_scale). */
 /* 16:9: draw the 2D layer at 4:3, the race HUD at the screen edges and the rest in the middle. */
 void render_set_hud43(bool on);
+/* A second picture drawn right below a substituted one (same draw, one 32-unit line of the 2D
+ * layout lower), by substitution id; 0 = none. */
+void render_set_below(unsigned (*texture)(unsigned id));
 /* 4:3 output with a blurred, dimmed copy of the picture filling the 16:9 sides (the title screen) */
 void render_set_backdrop(bool on);
 /* HD texture replacements (hdtex.h) on or off: takes effect next frame, every texture reloads. Stays

@@ -20,6 +20,7 @@ static const char *XF_VS =
     "layout(location=8) in uvec2 a_ids;\n"
     "layout(binding=8) uniform usamplerBuffer u_xf;\n"
     "uniform float u_squeeze; // widescreen 4:3 HUD: x of flagged 2D vertices * (1 - u_squeeze)\n"
+    "uniform float u_shift;   // moves the draw down by this much of the screen's height (render_set_below)\n"
     "layout(location=0) out vec4 v_c0; layout(location=1) out vec4 v_c1; layout(location=2) out vec4 v_uv01;"
     "layout(location=3) out vec4 v_uv23; layout(location=4) out vec4 v_uv45; layout(location=5) out vec4 v_uv67;\n"
     "uvec4 T(uint i) { return texelFetch(u_xf, int(i)); }\n"
@@ -134,5 +135,6 @@ static const char *XF_VS =
     "        v_uv01 = vec4(uv[0], uv[1]); v_uv23 = vec4(uv[2], uv[3]); v_uv45 = vec4(uv[4], uv[5]); v_uv67 = vec4(uv[6], uv[7]);\n"
     "    }\n"
     "    // y flipped (texel row 0 = top); depth 0..1 (wgpu) -> -1..1 (GL), same stored depth.\n"
+    "    cp.y -= 2.0 * u_shift * cp.w;\n"
     "    gl_Position = vec4(cp.x, -cp.y, 2.0 * cp.z - cp.w, cp.w);\n"
     "}\n";

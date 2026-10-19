@@ -1,11 +1,11 @@
 #!/bin/bash
-# Build the Switch .nro:  switch/build.sh [GEN dir] [extra make args]
+# Build the Switch .nro:  switch/build.sh <generated C dir> [extra make args]
 # Needs devkitPro (devkitA64, libnx, switch-sdl2, switch-mesa, switch-tools, its msys2 cmake + make).
 # Output: build-switch/sdcard/switch/MKDD-NX/MKDD-NX.nro -> copy to the SD card root, put your
-# GM4E01 disc image (.iso/.gcm/.ciso) next to it.
+# GM4E01 disc image (.iso/.gcm/.ciso/.rvz) next to it.
 set -e
 cd "$(dirname "$0")/.."
-GEN="${1:-/e/MKDD/gen}"
+GEN="${1:?usage: switch/build.sh <generated C dir> (from tools/gen_c.py or tools/build_from_iso.py)}"
 [ $# -gt 0 ] && shift
 
 DKP="${DEVKITPRO:-/opt/devkitpro}"

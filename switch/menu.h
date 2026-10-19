@@ -13,13 +13,19 @@ typedef struct {
     bool unlock_all;   /* every character, kart, cup and mode, this session only (never saved) */
     int logging;       /* 0 disabled, 1 game, 2 game + audio, 3 audio */
     bool hd_textures;  /* use the HD texture file (HD_FILE) when there is one */
+    bool plus;         /* play MKDD Plus when it is in mods/plus, from the next start */
     int fov[2];        /* race camera field of view for 4:3 / 16:9: 0 normal (the game's), 1 wide, 2 wider */
     int aniso;         /* texture filtering: 0 normal, 1-4 anisotropic 2x / 4x / 8x / 16x */
     bool border;       /* 4:3: checkered border art in the side bars during races */
     bool profiler;     /* sampling profiler (logs/mkdd_prof.bin), from the next start */
-    int docked_res;    /* docked (TV): 0 native (the game's 640x480-ish frame), 1 rendered at 2x, 1080p output */
+    int docked_res;    /* docked (TV), 1080p output: DOCKED_NATIVE (the game's 640x480-ish frame), _2X, _1_5X or
+                        * _AUTO (2x, stepping down while the GPU can't keep up). Values kept from when it was on/off. */
+    int handheld_res;  /* handheld, 1280x720 screen: HANDHELD_NATIVE (640x480-ish), _1_25X, _1_5X (960x720, the
+                        * screen's own lines) or _AUTO (1.5x, stepping down while the GPU can't keep up) */
     uint64_t map[GC_COUNT]; /* Switch buttons (HidNpadButton_*) that press each GameCube button */
 } Settings;
+enum { DOCKED_NATIVE, DOCKED_2X, DOCKED_1_5X, DOCKED_AUTO };
+enum { HANDHELD_NATIVE, HANDHELD_1_25X, HANDHELD_1_5X, HANDHELD_AUTO };
 
 extern Settings g_set;
 /* HD textures converted by tools/hdtex_pack.py, in the app folder's mods/hd/ */
@@ -61,6 +67,8 @@ void menu_choice(int w, int h, const char *title, const char *const *opts, int n
 void menu_loading(int w, int h, const char *line1, const char *line2, float progress);
 /* The 4:3 border art in the side bars beside a w x h screen's 4:3 picture (after render_present). */
 void menu_border(int w, int h);
+/* What the start-up found: MKDD Plus usable in mods/plus, and whether this session plays it. */
+void menu_set_plus(bool found, bool running);
 /* Open the menu (game paused) on its main page, with notice as the hint until the cursor moves. */
 void menu_open(const char *notice);
 /* 5x7 bitmap ("0"/"1" x 35, rows top first) for c, or NULL. */

@@ -109,9 +109,7 @@ extern uint64_t g_fn_entries, g_calls, g_block_misses, g_unknown_targets, g_sysc
 extern uint32_t g_last_fn;
 /* Set by the runtime (any host thread) when an interrupt or alarm waits to be delivered. */
 extern volatile bool g_attention;
-extern bool g_count_hits;
 extern uint64_t g_hooked[TEXT_WORDS / 64];
-void core_count_hit(uint32_t addr);
 void core_install_hooks(const uint32_t *addrs, unsigned n);
 
 ALWAYS_INLINE uint64_t mask(uint64_t v, unsigned s) { return s >= 8 ? v : v & ((1ull << (8 * s)) - 1); }
@@ -236,7 +234,6 @@ ALWAYS_INLINE bool ctx_enter(Ctx *c, uint32_t addr, uint32_t entry) {
     /* HLE'd functions (and their bypass) take the out-of-line path. */
     if (UNLIKELY(core_hooked(addr))) return ctx_enter_hooked(c, addr, entry);
     if (UNLIKELY(g_attention) && !c->in_irq && (RD(c, REG_MSR, 4) & MSR_EE)) rt_deliver(c);
-    if (UNLIKELY(g_count_hits)) core_count_hit(addr);
     return false;
 }
 
@@ -245,9 +242,6 @@ ALWAYS_INLINE bool ctx_enter_nh(Ctx *c, uint32_t addr, uint32_t entry) {
     (void)entry;
     g_last_fn = addr;
     if (UNLIKELY(g_attention) && !c->in_irq && (RD(c, REG_MSR, 4) & MSR_EE)) rt_deliver(c);
-#ifdef MKDD_COUNT_HITS /* per-function call counts (g_count_hits): off in normal builds, a check per call */
-    if (UNLIKELY(g_count_hits)) core_count_hit(addr);
-#endif
     return false;
 }
 

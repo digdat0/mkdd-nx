@@ -298,7 +298,7 @@ static int s_player_src[4] = {-1, -1, -1, -1}; /* source of each player, -1 = no
 static int s_pad_quiet; /* frames to ignore disconnects for (the controller screen reassigns players) */
 /* runtime/native.c: Race2D::draw calls (the race HUD, once per race frame). Declared here, not in
  * native.h, which every generated file includes. */
-extern volatile uint32_t g_race_frames;
+extern volatile uint32_t g_race_frames, g_race_phase;
 static u32 s_player_style[4];
 static bool s_quit;
 static float s_fps;
@@ -529,6 +529,116 @@ static void exit_memory_report(void) {
     diag_flush();
 }
 
+/* RESOLUTION AUTO (docked and handheld): render at the mode's top scale and step down while the
+ * GPU is the limit, back up after a quiet spell. GPU-bound shows as a present + swap longer than
+ * 1.25 refreshes (the driver blocks there until the GPU frees a screen buffer); a late game thread
+ * does not do that, so its dropped frames don't lower the resolution. Slow frames within a minute
+ * of a step up double the wait before the next try (15 s, up to 5 minutes): parts of a course can
+ * be heavier than others, and every failed try costs dropped frames. The course flyover before
+ * the countdown drops frames on the game thread at any resolution: its frames don't count. */
+static const float AUTO_DOCKED[] = {2.0f, 1.75f, 1.5f, 1.25f}, AUTO_HANDHELD[] = {1.5f, 1.25f, 1.0f};
+static struct { int level; bool docked; unsigned loops, slow, quiet_s, probe_s; u64 win, last_up, settle; } s_auto = {.probe_s = 15};
+
+static bool auto_on(bool docked) { return docked ? g_set.docked_res == DOCKED_AUTO : g_set.handheld_res == HANDHELD_AUTO; }
+static const float *auto_steps(bool docked, int *n) {
+    *n = docked ? 4 : 3;
+    return docked ? AUTO_DOCKED : AUTO_HANDHELD;
+}
+
+/* The game's render scale: DOCKED RESOLUTION on the TV, HANDHELD RESOLUTION on the screen. */
+static float render_scale(bool docked) {
+    int n;
+    if (auto_on(docked)) return auto_steps(docked, &n)[s_auto.level < n ? s_auto.level : n - 1];
+    if (docked) return g_set.docked_res == DOCKED_NATIVE ? 1.0f : g_set.docked_res == DOCKED_1_5X ? 1.5f : 2.0f;
+    return g_set.handheld_res == HANDHELD_1_25X ? 1.25f : g_set.handheld_res == HANDHELD_1_5X ? 1.5f : 1.0f;
+}
+
+static void auto_res_update(bool docked, u64 p0, u64 s1, bool got, bool paused) {
+    if (!auto_on(docked) || docked != s_auto.docked) {
+        s_auto.level = 0; /* AUTO starts again from the top */
+        s_auto.loops = s_auto.slow = s_auto.quiet_s = 0;
+        s_auto.win = 0;
+        s_auto.last_up = 0;
+        s_auto.probe_s = 15;
+        s_auto.docked = docked;
+        return;
+    }
+    int steps;
+    const float *scales = auto_steps(docked, &steps);
+    if (!s_auto.win) s_auto.win = s1;
+    if (got && !paused && s1 > s_auto.settle && g_race_phase != 1) {
+        s_auto.loops++;
+        if (armTicksToNs(s1 - p0) > 20800000ull) s_auto.slow++;
+    }
+    if (armTicksToNs(s1 - s_auto.win) < 1000000000ull) return;
+    unsigned loops = s_auto.loops, slow = s_auto.slow;
+    s_auto.win = s1;
+    s_auto.loops = s_auto.slow = 0;
+    if (loops < 30) return; /* menus, loads, pauses: no verdict */
+    int was = s_auto.level;
+    if (slow * 10 >= loops) {
+        s_auto.quiet_s = 0;
+        if (s_auto.level < steps - 1) {
+            s_auto.level++;
+            if (s_auto.last_up && armTicksToNs(s1 - s_auto.last_up) < 60000000000ull && s_auto.probe_s < 300) s_auto.probe_s *= 2;
+            s_auto.last_up = 0;
+        }
+    } else if (slow == 0) {
+        if (s_auto.level > 0 && ++s_auto.quiet_s >= s_auto.probe_s) {
+            s_auto.level--;
+            s_auto.quiet_s = 0;
+            s_auto.last_up = s1;
+        }
+    } else s_auto.quiet_s = 0;
+    if (s_auto.level != was) {
+        s_auto.settle = s1 + armNsToTicks(500000000ull); /* new render targets: skip their first frames */
+        rt_log("auto resolution: %.2fx -> %.2fx (%u of %u frames waited on the GPU; next step up after %u s quiet)",
+               (double)scales[was], (double)scales[s_auto.level], slow, loops, s_auto.probe_s);
+    }
+}
+
+/* Hitch log: a new game frame more than 1.5 refreshes after the last one (a dropped frame), with
+ * what happened in between: the main loop's longest render / present / swap (r0 -> p0 -> s0 -> s1),
+ * textures decoded and shader compiles there, the game thread's and the GX decoder's busy time,
+ * disc reads and GPU drains. Called once per main loop; got = a new game frame was rendered.
+ * At most 20 lines per 5 s. */
+static void hitch_log(u64 r0, u64 p0, u64 s0, u64 s1, bool got, bool paused) {
+    static struct {
+        u64 tick;
+        uint64_t ntex, tex_ns, cns, idle, gx, dvd, drains, drain_ns, win, max_r, max_p, max_s;
+        unsigned progs, loops, lines;
+    } h;
+    uint64_t lr = armTicksToNs(p0 - r0), lp = armTicksToNs(s0 - p0), ls = armTicksToNs(s1 - s0);
+    if (lr > h.max_r) h.max_r = lr;
+    if (lp > h.max_p) h.max_p = lp;
+    if (ls > h.max_s) h.max_s = ls;
+    h.loops++;
+    if (!got) return;
+    uint64_t ntex, tex_ns, cns;
+    unsigned progs;
+    render_hitch_stats(&ntex, &tex_ns, &progs, &cns);
+    uint64_t gap = h.tick ? armTicksToNs(s1 - h.tick) : 0, now_ns = armTicksToNs(s1);
+    if (now_ns - h.win > 5000000000ull) { h.win = now_ns; h.lines = 0; }
+    if (gap > 25000000ull && !paused && h.lines < 20) {
+        h.lines++;
+        uint64_t idle = g_guest_idle_ns - h.idle;
+        rt_log("hitch: %.1f ms since the last game frame (%u loops; longest render %.1f, present %.1f, swap %.1f ms); "
+               "%llu new textures (%.1f ms), %u shader compiles (%.1f ms); game thread busy %.1f ms, GX %.1f ms; "
+               "%llu disc reads, %llu GPU drains (%.1f ms)",
+               (double)gap / 1e6, h.loops, (double)h.max_r / 1e6, (double)h.max_p / 1e6, (double)h.max_s / 1e6,
+               (unsigned long long)(ntex - h.ntex), (double)(tex_ns - h.tex_ns) / 1e6, progs - h.progs,
+               (double)(cns - h.cns) / 1e6, idle < gap ? (double)(gap - idle) / 1e6 : 0.0,
+               (double)(g_gx_busy_ns - h.gx) / 1e6, (unsigned long long)(g_dvd_reads - h.dvd),
+               (unsigned long long)(g_gx_drains - h.drains), (double)(g_gx_drain_ns - h.drain_ns) / 1e6);
+    }
+    h.tick = s1;
+    h.ntex = ntex; h.tex_ns = tex_ns; h.progs = progs; h.cns = cns;
+    h.idle = g_guest_idle_ns; h.gx = g_gx_busy_ns; h.dvd = g_dvd_reads;
+    h.drains = g_gx_drains; h.drain_ns = g_gx_drain_ns;
+    h.loops = 0;
+    h.max_r = h.max_p = h.max_s = 0;
+}
+
 int main(int argc, char **argv) {
     update_init(argc > 0 ? argv[0] : NULL);
     mkdir("sdmc:/switch", 0777);
@@ -586,12 +696,16 @@ int main(int argc, char **argv) {
     if (!find_disc(disc, sizeof disc)) fatal("NO DISC IMAGE FOUND", "PUT YOUR GM4E01 .ISO OR .RVZ IN /SWITCH/MKDD-NX/");
     if (disc_open(disc, err, sizeof err)) {
         menu_font_load();  /* the loading screen's letters */
-        /* MKDD Plus in mods/plus: played whenever it loads (from here on the disc is the mod's);
-         * otherwise, or if it can't be used, the standard game (the disc is left as it was) */
-        if (find_mod()) {
+        /* MKDD Plus in mods/plus: played when it loads and the menu's MODS page has it on (from
+         * here on the disc is the mod's); otherwise, or if it can't be used, the standard game
+         * (the disc is left as it was) */
+        bool plus_found = find_mod(), plus_running = false;
+        if (plus_found && !g_set.plus) rt_log("mod: MKDD Plus is turned off in the menu (MODS); playing the standard game");
+        if (plus_found && g_set.plus) {
             screen("LOADING MARIO KART: DOUBLE DASH!! PLUS", NULL, 0.1f);
             if (disc_overlay(PLUS_DIR, err, sizeof err)) {
                 rt_log("mod: playing %s", MOD_NAME);
+                plus_running = true;
                 mkdir(MOD_SAVE_DIR, 0777);
                 offer_save_copy();
                 memcard_set_path(MOD_SAVE_DIR "/slotA.bin");
@@ -602,8 +716,10 @@ int main(int argc, char **argv) {
                 }
             }
         }
+        menu_set_plus(plus_running || (plus_found && !g_set.plus), plus_running); /* failed to load: not offered */
         pause_art_init();  /* the pause screen's controller picture, drawn as a Pro Controller */
         render_set_subst(pause_art_texture);
+        render_set_below(pause_art_below);
     } else {
         rt_log("disc: %s", err);
         fatal("COULD NOT READ THE DISC IMAGE", strstr(err, "compression") ? "RVZ: CONVERT IT AGAIN IN DOLPHIN WITH ZSTANDARD"
@@ -652,7 +768,7 @@ int main(int argc, char **argv) {
     /* An empty file "novcache" in config/ turns the converted-vertex cache off (for comparisons). */
     g_gx_vcache = access(CFG_DIR "/novcache", F_OK) != 0;
     rt_log("gx: vertex cache %s", g_gx_vcache ? "on" : "off (novcache file)");
-    /* Sampling profiler (mkdd_prof.bin, tools/prof_report.py): Debugging > Profiler. Off by default:
+    /* Sampling profiler (mkdd_prof.bin, tools/prof_report.py): profiler=1 in settings.ini. Off by default:
      * it pauses the game thread 500 times a second and shares the GX decoder's core. */
     if (g_set.profiler) {
         u64 ib, ie;
@@ -714,8 +830,8 @@ int main(int argc, char **argv) {
         static const float ANISO[5] = {1, 2, 4, 8, 16};
         render_set_aniso(ANISO[g_set.aniso % 5]);
         u64 r0 = armGetSystemTick();
-        /* Docked: output 1920x1080 and (DOCKED RESOLUTION 2X) render the game at twice its size,
-         * 1280x960 instead of 640x480. Handheld: 1280x720, the game's own size. */
+        /* Docked: output 1920x1080, the game rendered at DOCKED RESOLUTION (2X: 1280x960 instead of
+         * 640x480). Handheld: 1280x720, at HANDHELD RESOLUTION (NATIVE: the game's own size). */
         bool docked = appletGetOperationMode() == AppletOperationMode_Console;
         {
             static int last_w, last_h, last_scale, clocks_pending;
@@ -726,15 +842,16 @@ int main(int argc, char **argv) {
                 SDL_SetWindowSize(s_window, tw, th);
                 SDL_GL_GetDrawableSize(s_window, &cw, &ch);
             }
-            int scale = docked && g_set.docked_res ? 2 : 1;
+            int scale = auto_on(docked) ? -1 : (int)(render_scale(docked) * 100.0f);
             if (cw != last_w || ch != last_h || scale != last_scale) {
-                rt_log("display: %s, output %dx%d, game rendered at %dx", docked ? "docked" : "handheld", cw, ch, scale);
+                if (scale < 0) rt_log("display: %s, output %dx%d, game rendered at AUTO (%s and lower)", docked ? "docked" : "handheld", cw, ch, docked ? "2x" : "1.5x");
+                else rt_log("display: %s, output %dx%d, game rendered at %.2fx", docked ? "docked" : "handheld", cw, ch, (double)scale / 100.0);
                 clocks_pending = 120; /* clocks settle after a dock change: log them in 2 s */
                 last_w = cw; last_h = ch; last_scale = scale;
             }
         }
         if (g_log_mask) render_gpu_timer_begin(); /* a timed frame makes the GPU drain first: only for the logs */
-        bool got = render_update(docked && g_set.docked_res ? 2 : 1);
+        bool got = render_update(render_scale(docked));
         t_render += armTicksToNs(armGetSystemTick() - r0);
         if (got) {
             rendered++;
@@ -789,46 +906,8 @@ int main(int argc, char **argv) {
         SDL_GL_SwapWindow(s_window);
         u64 s1 = armGetSystemTick();
         t_swap += armTicksToNs(s1 - s0);
-        {
-            /* Hitch log: a new game frame more than 1.5 refreshes after the last one (a dropped
-             * frame), with what happened in between: this thread's longest render / present / swap,
-             * textures decoded and shader compiles here, the game thread's and the GX decoder's busy
-             * time, disc reads and GPU drains. At most 20 lines per 5 s. */
-            static u64 hl_tick;
-            static uint64_t hl_ntex, hl_tex_ns, hl_cns, hl_idle, hl_gx, hl_dvd, hl_drains, hl_drain_ns, hl_win;
-            static unsigned hl_progs, hl_loops, hl_lines;
-            static uint64_t hl_max_r, hl_max_p, hl_max_s;
-            uint64_t lr = armTicksToNs(p0 - r0), lp = armTicksToNs(s0 - p0), ls = armTicksToNs(s1 - s0);
-            if (lr > hl_max_r) hl_max_r = lr;
-            if (lp > hl_max_p) hl_max_p = lp;
-            if (ls > hl_max_s) hl_max_s = ls;
-            hl_loops++;
-            if (got) {
-                uint64_t ntex, tex_ns, cns;
-                unsigned progs;
-                render_hitch_stats(&ntex, &tex_ns, &progs, &cns);
-                uint64_t gap = hl_tick ? armTicksToNs(s1 - hl_tick) : 0, now_ns = armTicksToNs(s1);
-                if (now_ns - hl_win > 5000000000ull) { hl_win = now_ns; hl_lines = 0; }
-                if (gap > 25000000ull && !paused && hl_lines < 20) {
-                    hl_lines++;
-                    uint64_t idle = g_guest_idle_ns - hl_idle;
-                    rt_log("hitch: %.1f ms since the last game frame (%u loops; longest render %.1f, present %.1f, swap %.1f ms); "
-                           "%llu new textures (%.1f ms), %u shader compiles (%.1f ms); game thread busy %.1f ms, GX %.1f ms; "
-                           "%llu disc reads, %llu GPU drains (%.1f ms)",
-                           (double)gap / 1e6, hl_loops, (double)hl_max_r / 1e6, (double)hl_max_p / 1e6, (double)hl_max_s / 1e6,
-                           (unsigned long long)(ntex - hl_ntex), (double)(tex_ns - hl_tex_ns) / 1e6, progs - hl_progs,
-                           (double)(cns - hl_cns) / 1e6, idle < gap ? (double)(gap - idle) / 1e6 : 0.0,
-                           (double)(g_gx_busy_ns - hl_gx) / 1e6, (unsigned long long)(g_dvd_reads - hl_dvd),
-                           (unsigned long long)(g_gx_drains - hl_drains), (double)(g_gx_drain_ns - hl_drain_ns) / 1e6);
-                }
-                hl_tick = s1;
-                hl_ntex = ntex; hl_tex_ns = tex_ns; hl_progs = progs; hl_cns = cns;
-                hl_idle = g_guest_idle_ns; hl_gx = g_gx_busy_ns; hl_dvd = g_dvd_reads;
-                hl_drains = g_gx_drains; hl_drain_ns = g_gx_drain_ns;
-                hl_loops = 0;
-                hl_max_r = hl_max_p = hl_max_s = 0;
-            }
-        }
+        hitch_log(r0, p0, s0, s1, got, paused);
+        auto_res_update(docked, p0, s1, got, paused);
         if (++frames % 300 == 0) {
             u64 now = armGetSystemTick();
             uint32_t nb, nv, nt;

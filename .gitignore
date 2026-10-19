@@ -5,13 +5,9 @@ build*/
 *.gcm
 *.rvz
 *.dol
-sheets-local/
 debug/
 # test runs and logs (may hold save data, shader caches, profiles)
 pc/run/
-OverclockLogs/
-StockLogs_UIHeavyMap/
-stockclockLogs/
 __pycache__/
 *.nro
 *.elf

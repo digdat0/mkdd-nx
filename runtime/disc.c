@@ -143,7 +143,6 @@ static void ahead_worker(void *arg) {
 }
 
 static void ahead_start(void) {
-    if (plat_getenv("MKDD_NO_AHEAD")) return; /* A/B timing */
     s_win.data = malloc(AHEAD);
     s_stage = malloc(AHEAD);
     pcond_init(&s_ahead_cv);

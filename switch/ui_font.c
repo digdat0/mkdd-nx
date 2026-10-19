@@ -27,6 +27,7 @@ static const GlyphFile FILES[] = {
 };
 
 static GLuint s_tex;
+static uint8_t *s_atlas; /* the same RG8 atlas on the CPU, COLS*CELL x ROWS*CELL */
 static bool s_have[128];
 static float s_uv[128][4], s_x0[128], s_x1[128];
 
@@ -173,12 +174,18 @@ bool uifont_load(void) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
-    free(atlas);
+    s_atlas = atlas;
     rt_log("ui font: %d MarioFont glyphs from the disc", loaded);
     return true;
 }
 
 unsigned uifont_texture(void) { return s_tex; }
+
+const uint8_t *uifont_atlas(int *w, int *h) {
+    *w = COLS * CELL;
+    *h = ROWS * CELL;
+    return s_atlas;
+}
 
 bool uifont_glyph(char c, float uv[4], float *x0, float *x1) {
     unsigned uc = (unsigned char)c;

@@ -9,16 +9,7 @@ uint64_t g_fn_entries, g_calls, g_block_misses, g_unknown_targets, g_syscalls;
 uint32_t g_last_fn;
 volatile uint32_t g_sleep_lr; /* caller of the last OSSleepThread (profiling) */
 volatile bool g_attention;
-bool g_count_hits;
 uint64_t g_hooked[TEXT_WORDS / 64];
-static uint32_t *s_hits;
-
-void core_count_hit(uint32_t addr) {
-    if (!s_hits) s_hits = calloc(TEXT_WORDS, sizeof *s_hits);
-    uint32_t i = (addr - TEXT_BASE) / 4;
-    if (s_hits && i < TEXT_WORDS) s_hits[i]++;
-}
-const uint32_t *core_hit_counters(void) { return s_hits; }
 
 void core_install_hooks(const uint32_t *addrs, unsigned n) {
     for (unsigned k = 0; k < n; k++) {
@@ -45,7 +36,6 @@ void ctx_block_miss(Ctx *c, uint32_t func, uint32_t pc) {
 /* ctx_enter for a function with an HLE handler (the original order: bypass first). */
 bool ctx_enter_hooked(Ctx *c, uint32_t addr, uint32_t entry) {
     g_fn_entries++;
-    if (UNLIKELY(g_count_hits)) core_count_hit(addr);
     /* Consume the bypass before interrupt delivery can run other guest code. */
     bool bypass = c->bypass == addr;
     if (bypass) c->bypass = 0;

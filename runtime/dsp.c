@@ -18,7 +18,7 @@
  * Sub-frames render in the DSP interrupt. MKDD_DSP_ASYNC=1 (not the native verifier, which
  * snapshots RAM around calls) renders on a worker thread (core 2) instead: a release hands the
  * sub-frame to it, and its completion mail raises the DSP interrupt. Off by default: on the Switch
- * (build 0814) the audio crackled badly with it, although pacing counters looked normal, probably
+ * the audio crackled badly with it, although pacing counters looked normal, probably
  * because each sub-frame waits for a thread wake and an interrupt round trip, so a frame can be
  * incomplete when JAudio mixes it into the AI buffer. */
 #include <math.h>

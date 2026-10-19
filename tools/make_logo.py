@@ -1,5 +1,5 @@
 """Builds the Switch app icon from a square PNG.
-usage: py -3 tools/make_logo.py <logo.png>
+usage: py -3 tools/make_logo.py switch/icon_source.png
 writes switch/icon.jpg (256x256, what nx_create_nro wants)."""
 import sys
 from pathlib import Path

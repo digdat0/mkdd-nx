@@ -125,9 +125,7 @@ bool hdtex_open(const char *path) {
 
 bool hdtex_available(void) { return s_n != 0; }
 
-int hdtex_find(uint32_t fmt, uint32_t w, uint32_t h, const uint8_t *raw, size_t len) {
-    if (!s_n || fmt == 8 || fmt == 9 || fmt == 10) return -1; /* paletted: not in the MKDD pack */
-    uint64_t hash = xxh64(raw, len, 0);
+static int find_hash(uint64_t hash, uint32_t fmt, uint32_t w, uint32_t h) {
     unsigned lo = 0, hi = s_n;
     while (lo < hi) {
         unsigned mid = (lo + hi) / 2;
@@ -137,6 +135,39 @@ int hdtex_find(uint32_t fmt, uint32_t w, uint32_t h, const uint8_t *raw, size_t 
     for (unsigned i = lo; i < s_n && s_idx[i].hash == hash; i++)
         if (s_idx[i].w == w && s_idx[i].h == h && s_idx[i].fmt == fmt) return (int)i;
     return -1;
+}
+
+/* MKDD Plus 3.3 shrinks the course select pictures to 97x70 (CMPR) to fit one per course for each
+ * of its five track sets. Its pictures of the 16 original courses (set 0) are the game's 256x184
+ * ones scaled down, so they get the HD pack's replacement of the original. Pairs of XXH64 hashes
+ * (Plus picture, original picture), matched by comparing the images. */
+static const uint64_t PLUS_PICTURES[16][2] = {
+    {0x4808e9e486c81173ull, 0xf9cba123e9b85332ull}, /* Baby Park */
+    {0xd68b1f386f232047ull, 0x96a90d4eaf298fcbull}, /* Bowser's Castle */
+    {0x44986d8abd793588ull, 0x68bb299bc94e7634ull}, /* Daisy Cruiser */
+    {0x37026c89a14e77cdull, 0x339e6359acd014aaull}, /* Dino Dino Jungle */
+    {0xa0faf1be851d0ffbull, 0xd655a9a4e6f6db30ull}, /* DK Mountain */
+    {0x2d18a6198fa30246ull, 0x8d3d28dedcad2918ull}, /* Dry Dry Desert */
+    {0x90e7ac567ff548bdull, 0xbac2911127470008ull}, /* Mushroom Bridge */
+    {0x3a07e7970614b4ecull, 0x0e73a95666d15996ull}, /* Mushroom City */
+    {0x3c7357e7e060c2baull, 0xceba35d8c0bb588dull}, /* Luigi Circuit */
+    {0x152ffbfca45548d4ull, 0xcd42e5c6e03811bfull}, /* Mario Circuit */
+    {0xf9695a7cb46e85eeull, 0x2c3e5929d385690eull}, /* Peach Beach */
+    {0x74341ec02acd3897ull, 0xae0be49ce04bca08ull}, /* Rainbow Road */
+    {0xa9401bd1cf26dfc0ull, 0xec570e75a4783eb2ull}, /* Sherbet Land */
+    {0x09b7ea753c27ee3dull, 0x5e41fe116c35678cull}, /* Waluigi Stadium */
+    {0x12df48cd6ab9f6feull, 0x4f0539b36f86a987ull}, /* Wario Colosseum */
+    {0x348d73d3fb5da663ull, 0xd503a93c7e3691a4ull}, /* Yoshi Circuit */
+};
+
+int hdtex_find(uint32_t fmt, uint32_t w, uint32_t h, const uint8_t *raw, size_t len) {
+    if (!s_n || fmt == 8 || fmt == 9 || fmt == 10) return -1; /* paletted: not in the MKDD pack */
+    uint64_t hash = xxh64(raw, len, 0);
+    int i = find_hash(hash, fmt, w, h);
+    if (i < 0 && fmt == 14 && w == 97 && h == 70)
+        for (unsigned k = 0; k < 16; k++)
+            if (PLUS_PICTURES[k][0] == hash) return find_hash(PLUS_PICTURES[k][1], 14, 256, 184);
+    return i;
 }
 
 void hdtex_info(int idx, unsigned *w, unsigned *h, unsigned *levels) {

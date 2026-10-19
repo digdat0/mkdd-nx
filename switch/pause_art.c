@@ -4,7 +4,9 @@
  * registered with the GX layer, and the renderer draws ours in their place (same panes, so the
  * game's own animation and text stay; its lines are hidden, see LINE_PANES). Icons follow the button mapping of the controller
  * that paused; a player on a GameCube controller sees the game's own picture. Art:
- * tools/make_pause_art.py (pause_art_data.S). */
+ * tools/make_pause_art.py (pause_art_data.S).
+ * Also MKDD Plus's title bars (SELECT CUP / COURSE / STAGE "/ Y X"), whose GameCube buttons are
+ * part of the picture: shown without them, with a line below that names the Switch buttons. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,6 +52,24 @@ static const struct { const char *file; int gc; int w, h; const char *arc; } SLO
     [S_MENUPAD] = {"gc_controller.bti", -1, PAD_W, PAD_H, "SceneData/English/menu.arc"},
 };
 static GLuint s_tex[S_COUNT];
+
+/* MKDD Plus's title bars (titleline.arc, 512x32 IA4) end in "/ Y X" with the GameCube's Y and X
+ * buttons drawn in (the buttons that change the track set). They are shown without the slash and
+ * the buttons, and the renderer draws a hint line right below (render_set_below): "PRESS (Y) OR
+ * (X) FOR MORE CUPS" in the game's lettering, with the Switch buttons mapped to GameCube Y and X.
+ * The original game's bars have no buttons (fewer shapes in the picture) and are left alone. */
+#define BAR_ARC "SceneData/English/titleline.arc"
+#define BAR_W 512
+#define BAR_H 32
+enum { BAR_FIRST = S_COUNT, BAR_COUNT = 3 };
+static const char *const BAR_FILES[BAR_COUNT] = {"selectcup.bti", "selectcourse.bti", "selectmap.bti"};
+static const char *const BAR_MORE[BAR_COUNT] = {"CUPS", "COURSES", "STAGES"};
+static uint8_t *s_bar[BAR_COUNT];     /* RGBA, the slash and buttons erased */
+static int s_bar_l[BAR_COUNT], s_bar_r[BAR_COUNT]; /* the words left: their left and right edge */
+static GLuint s_bar_tex[BAR_COUNT], s_hint_tex[BAR_COUNT];
+static uint64_t s_hint_key[BAR_COUNT];
+#define HINT_W (BAR_W * 2)
+#define HINT_H (BAR_H * 2)
 /* The game's own stick icon (decoded at start-up): a GameCube controller's STEER icon, centred in
  * the widened pane instead of stretched. */
 #define GC_STICK_SIZE 32
@@ -106,6 +126,67 @@ static unsigned patch_layout(const char *arc) {
     return n;
 }
 
+/* The picture's shapes from left to right (runs of columns with visible pixels, wider than 3):
+ * Plus's bars are "SELECT", "CUP", "/", Y, X. Returns the left edge of the slash (-1: not a
+ * bar with buttons), *l and *r the edges of the words before it. */
+static int bar_buttons(const uint8_t *rgba, int *l, int *r) {
+    int start[16], end[16], n = 0, run = -1;
+    for (int x = 0; x <= BAR_W; x++) {
+        bool on = false;
+        for (int y = 0; x < BAR_W && y < BAR_H && !on; y++) on = rgba[((size_t)y * BAR_W + x) * 4 + 3] > 40;
+        if (on && run < 0) run = x;
+        if (!on && run >= 0) {
+            if (x - run > 3 && n < 16) { start[n] = run; end[n] = x; n++; }
+            run = -1;
+        }
+    }
+    if (n < 5) return -1;
+    *l = start[0];
+    *r = end[n - 4];
+    return start[n - 3] - 2;
+}
+
+static void bars_init(void) {
+    unsigned n = 0;
+    for (int i = 0; i < BAR_COUNT; i++) {
+        uint64_t off;
+        uint32_t size;
+        uint8_t *b = NULL;
+        if (!arc_locate(BAR_ARC, BAR_FILES[i], &off, &size) || size > (1u << 20) || !(b = malloc(size))) continue;
+        disc_read(off, b, size);
+        uint32_t fmt = b[0], w = (uint32_t)(b[2] << 8 | b[3]), h = (uint32_t)(b[4] << 8 | b[5]), doff = be32(b + 0x1C);
+        size_t bytes = gx_tex_size(fmt, w, h);
+        uint8_t *rgba = fmt == 2 && w == BAR_W && h == BAR_H && bytes && doff + bytes <= size ? malloc((size_t)w * h * 4) : NULL;
+        if (rgba) {
+            GxTexture tx = {0};
+            tx.width = w; tx.height = h; tx.fmt = fmt; tx.raw = b + doff; tx.raw_len = bytes;
+            gx_texture_decode(&tx, rgba);
+            int l, r, x0 = bar_buttons(rgba, &l, &r);
+            if (x0 > 0) {
+                /* erase the slash and buttons, then centre the words left (as the bar was meant to be) */
+                int sh = BAR_W / 2 - (l + r) / 2;
+                for (int y = 0; y < BAR_H; y++) {
+                    uint8_t *row = rgba + (size_t)y * BAR_W * 4;
+                    memset(row + (size_t)x0 * 4, 0, (size_t)(BAR_W - x0) * 4);
+                    if (sh > 0) {
+                        memmove(row + (size_t)sh * 4, row, (size_t)(BAR_W - sh) * 4);
+                        memset(row, 0, (size_t)sh * 4);
+                    }
+                }
+                if (sh > 0) { l += sh; r += sh; }
+                s_bar[i] = rgba;
+                s_bar_l[i] = l;
+                s_bar_r[i] = r;
+                s_hint_key[i] = ~0ull;
+                gx_subst_register(BAR_FIRST + i, fmt, w, h, fnv_bytes(FNV_INIT, b + doff, bytes));
+                n++;
+            } else free(rgba);
+        }
+        free(b);
+    }
+    if (n) rt_log("pause art: %u title bars with GameCube buttons (MKDD Plus), shown with a Switch button hint", n);
+}
+
 void pause_art_init(void) {
     static const char *const LANGS[] = {"English", "French", "German", "Italian", "Spanish", "Japanese"};
     for (unsigned i = 0; i < sizeof LANGS / sizeof LANGS[0]; i++) {
@@ -137,6 +218,7 @@ void pause_art_init(void) {
         free(b);
     }
     rt_log("pause art: %u of %d pictures recognised", n, S_COUNT - 1);
+    bars_init();
 }
 
 /* The Switch buttons (badges) that give the GameCube button gc on the pausing controller. */
@@ -259,7 +341,88 @@ static void build_menupad(void) {
     free(px);
 }
 
+static GLuint upload_rgba(GLuint tex, int w, int h, const uint8_t *rgba) {
+    if (!tex) glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return tex;
+}
+
+static unsigned bar_texture(int i) {
+    if (!s_bar_tex[i]) s_bar_tex[i] = upload_rgba(0, BAR_W, BAR_H, s_bar[i]);
+    return s_bar_tex[i];
+}
+
+/* One MarioFont letter (white, dark outline) of height size at (x, y), or its advance only. */
+static float hint_letter(uint8_t *dst, char c, float x, int y, int size, bool draw) {
+    float sc = (float)size / 32.0f, uv[4], g0, g1;
+    if (c == ' ') return 11 * sc;
+    int aw, ah;
+    const uint8_t *atlas = uifont_atlas(&aw, &ah);
+    if (!atlas || !uifont_glyph(c, uv, &g0, &g1)) return 0;
+    if (draw) {
+        uint8_t cell[32 * 32 * 4];
+        int cx = (int)(uv[0] * aw + 0.5f), cy = (int)(uv[1] * ah + 0.5f);
+        for (int v = 0; v < 32; v++)
+            for (int u = 0; u < 32; u++) {
+                const uint8_t *s = atlas + ((size_t)(cy + v) * aw + (size_t)(cx + u)) * 2;
+                uint8_t *o = cell + ((size_t)v * 32 + u) * 4;
+                o[0] = o[1] = o[2] = s[0];
+                o[3] = s[1];
+            }
+        int px = (int)(x - g0 * sc + 0.5f);
+        if (px >= 0 && px + size <= HINT_W && y >= 0 && y + size <= HINT_H) put_cell(dst, HINT_W, px, y, size, cell, 32 * 4, 32);
+    }
+    return (g1 - g0 - 2) * sc;
+}
+
+/* "PRESS (Y) OR (X) FOR MORE CUPS", or its width; badges are the Switch buttons for GameCube Y, X. */
+static float hint_line(uint8_t *dst, int i, float x, int by, int bx, bool draw) {
+    const int size = 32, badge = 48, step = 40, y = (HINT_H - size) / 2; /* the badge art has a margin */
+    char tail[32];
+    snprintf(tail, sizeof tail, " FOR MORE %s", BAR_MORE[i]);
+    const char *parts[5] = {"PRESS ", NULL, " OR ", NULL, tail};
+    const int badges[5] = {0, by, 0, bx, 0};
+    float x0 = x;
+    for (int k = 0; k < 5; k++) {
+        if (!parts[k]) {
+            if (draw) put_badge(dst, HINT_W, (int)(x + 0.5f) - (badge - step) / 2, (HINT_H - badge) / 2, badge, badges[k]);
+            x += step;
+            continue;
+        }
+        for (const char *s = parts[k]; *s; s++) x += hint_letter(dst, *s, x, y, size, draw);
+    }
+    return x - x0;
+}
+
+static unsigned hint_texture(int i) {
+    int y_b[2], x_b[2];
+    int by = badges_for(GC_Y, PAUSE_FULL, y_b) ? y_b[0] : B_Y, bx = badges_for(GC_X, PAUSE_FULL, x_b) ? x_b[0] : B_X;
+    uint64_t key = (uint64_t)by << 8 | (uint64_t)bx;
+    if (s_hint_tex[i] && key == s_hint_key[i]) return s_hint_tex[i];
+    int aw, ah;
+    if (!uifont_atlas(&aw, &ah)) return 0; /* no MarioFont on the disc: no hint */
+    uint8_t *px = calloc((size_t)HINT_W * HINT_H, 4);
+    if (!px) return s_hint_tex[i];
+    /* centred under the bar's words */
+    float w = hint_line(px, i, 0, by, bx, false), x = (float)(s_bar_l[i] + s_bar_r[i]) - w / 2;
+    if (x < 0) x = 0;
+    if (x + w > HINT_W) x = HINT_W - w;
+    hint_line(px, i, x, by, bx, true);
+    s_hint_tex[i] = upload_rgba(s_hint_tex[i], HINT_W, HINT_H, px);
+    free(px);
+    s_hint_key[i] = key;
+    return s_hint_tex[i];
+}
+
+unsigned pause_art_below(unsigned id) {
+    return id >= BAR_FIRST && id < BAR_FIRST + BAR_COUNT && s_bar[id - BAR_FIRST] ? hint_texture((int)(id - BAR_FIRST)) : 0;
+}
+
 unsigned pause_art_texture(unsigned id) {
+    if (id >= BAR_FIRST && id < BAR_FIRST + BAR_COUNT) return s_bar[id - BAR_FIRST] ? bar_texture((int)(id - BAR_FIRST)) : 0;
     int kind = g_pause_kind;
     if (id == S_MENUPAD) {
         if (!s_tex[id]) build_menupad();

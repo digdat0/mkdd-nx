@@ -9,3 +9,5 @@ extern volatile int g_pause_kind;
 void pause_art_init(void);
 /* render_set_subst callback: our GL texture for a recognised picture (0 = the game's). */
 unsigned pause_art_texture(unsigned id);
+/* render_set_below callback: the line drawn under a recognised picture (MKDD Plus's title bars). */
+unsigned pause_art_below(unsigned id);

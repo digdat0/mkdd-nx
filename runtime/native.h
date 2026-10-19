@@ -13,7 +13,7 @@
  *   guest  1 if it may call guest code: the caller then stores its registers first (r1 etc.);
  *          also needed by any native that reads r1 (e.g. to use the original's stack frame as
  *          scratch): with 0 the register file's r1 can be stale and the scratch lands on the
- *          caller's live stack (build 1444: calcMPos corrupted the limb IK, stretched arms);
+ *          caller's live stack (calcMPos once corrupted the limb IK, stretched arms);
  *          2 if it writes MSR: callers that keep MSR in a local make a normal call instead;
  *          3 if it writes the GX gather pipe (verified by comparing the FIFO bytes);
  *          4 both 1 and 3

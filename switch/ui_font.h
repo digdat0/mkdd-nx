@@ -7,6 +7,8 @@
  * disc has no usable font: the menu then keeps its built-in bitmap font. */
 bool uifont_load(void);
 unsigned uifont_texture(void);
+/* The atlas on the CPU (RG8, w x h; uifont_glyph's uv are fractions of it), or NULL. */
+const uint8_t *uifont_atlas(int *w, int *h);
 /* Atlas rectangle (u0, v0, u1, v1) and the letter's horizontal extent within its 32 px cell. */
 bool uifont_glyph(char c, float uv[4], float *x0, float *x1);
 /* A file from race2d.arc (inside MRAM.arc) on the disc, malloc'd, or NULL. */

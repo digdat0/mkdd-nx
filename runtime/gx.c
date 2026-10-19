@@ -20,7 +20,7 @@
 #define TMEM_SIZE 0x100000u
 #define TEX_BUDGET (160u << 20)
 /* FIFO bytes the game may be ahead of the decoder: about 1.5 frames (s_qlimit), so a slow decoder
- * slows the game instead of building a backlog. Build 2105 allowed a fixed 4 MB, 20-35 race frames
+ * slows the game instead of building a backlog. A fixed 4 MB allowed 20-35 race frames
  * (115-220 KB each): when the decoder fell behind, the picture lagged the controls by up to half a
  * second (race 1 "laggy controls", the countdown). */
 #define GPU_QUEUE_MIN (128u << 10)
@@ -1437,7 +1437,6 @@ static bool vtx_same(const uint8_t *a, const uint8_t *b, unsigned n, uint32_t st
 }
 static bool s_vtxcheck;        /* PC: MKDD_VTXCHECK=1 runs vtx_fast and the general loop, compares */
 static uint64_t s_vtxcheck_n, s_vtxcheck_bad;
-static bool s_vtxslow;          /* PC: MKDD_VTXSLOW=1 uses only the general loop (timing) */
 
 /* Material, lights and the draw setup for a draw command (cmd: its VAT in the low bits). */
 static DrawSetup *draw_prepare(uint32_t cmd, const VtxFormat **fo) {
@@ -1730,7 +1729,7 @@ static size_t exec(const uint8_t *d, size_t len, unsigned depth);
 /* A display-list call (exec, command 0x40): reuse the list's kept output, or decode it and keep it.
  * False: not handled here, decode it normally. */
 static bool dl_call(uint32_t addr, uint32_t size, unsigned depth) {
-    if (!g_gx_vcache || s_vtxcheck || s_xfcheck || s_vtxslow || size < 4) return false;
+    if (!g_gx_vcache || s_vtxcheck || s_xfcheck || size < 4) return false;
     const uint8_t *d = g_ram + addr;
     if (d[0] < 0x80 || d[0] > 0xBF) return false; /* material and state lists */
     if (bits(G.bp[0x00], 14, 2) == 3) return false;
@@ -1830,7 +1829,7 @@ static void draw(uint32_t cmd, const uint8_t *c) {
     }
     if (!tris) return;
     /* A desynced FIFO (garbage read as draws) asked for 2 million vertices in one frame and the
-     * frame's vertex buffer grew until realloc failed (build 2017 crash). Real frames stay under
+     * frame's vertex buffer grew until realloc failed (a crash). Real frames stay under
      * 100k: drop draws past a cap instead. */
     if (G.frame->nverts + n > 400000) {
         static int logged;
@@ -1866,7 +1865,7 @@ static void draw(uint32_t cmd, const uint8_t *c) {
     if (!gpu) g_gx_cpu_verts += n;
     const uint32_t rec = S->rec;
     size_t o = 3;
-    const bool fast = gpu && !s_xfcheck && !s_vtxslow;
+    const bool fast = gpu && !s_xfcheck;
     static uint8_t *chk;
     static size_t chk_cap;
     if (fast) {
@@ -2238,7 +2237,6 @@ void gx_start_gpu(void) {
     if (getenv("MKDD_CPU_XFORM")) g_gx_cpu_xform = true;
     s_xfcheck = getenv("MKDD_XFCHECK") != NULL;
     s_vtxcheck = getenv("MKDD_VTXCHECK") != NULL;
-    s_vtxslow = getenv("MKDD_VTXSLOW") != NULL;
     s_vc_check = getenv("MKDD_VCACHECK") != NULL;
     if (getenv("MKDD_NOVCACHE")) g_gx_vcache = false;
     pmutex_init(&s_flock);
@@ -2569,8 +2567,8 @@ void gx_xf_report(char *out, size_t n) {
              (unsigned long long)s_vtxcheck_bad);
 }
 
-/* Debug menu DUMP FRAME: the latest presented frame as text (every batch's pixel pipeline, its
- * textures with their average colour, and a few vertices through the XF stage), for comparing a
+/* The latest presented frame as text (PC harness: MKDD_DUMP_FRAME): every batch's pixel pipeline, its
+ * textures with their average colour, and a few vertices through the XF stage, for comparing a
  * frame that draws wrong with one that draws right. */
 bool gx_dump_frame(const char *path) {
     Frame *f = gx_frame_acquire();

@@ -231,7 +231,7 @@ static const char *COPY_FS =
     "uniform uvec4 u_src;     // x, y, w, h of the source rectangle in console EFB pixels\n"
     "uniform uvec4 u_mode;    // x format, y box filter, z depth source, w flags (intensity, pixfmt<<8, gamma<<16)\n"
     "uniform vec4 u_vfilter;  // rows above / at / below, w = clamp flags\n"
-    "uniform int u_scale;\n"
+    "uniform float u_scale;\n"
     "uniform sampler2D efb_color;\n"
     "uniform highp sampler2D efb_depth;\n"
     "out vec4 o_color;\n"
@@ -250,11 +250,12 @@ static const char *COPY_FS =
     "    if (pixfmt == 2u) t = vec4(q(t.r, 31.0), q(t.g, 63.0), q(t.b, 31.0), 1.0);\n"
     "    return t;\n"
     "}\n"
+    "int sc(uint v) { return int(round(float(v) * u_scale)); }\n"
     "int copy_row(int y) {\n"
     "    uint flags = uint(u_vfilter.w);\n"
     "    int r = y;\n"
-    "    if ((flags & 1u) != 0u) r = max(r, int(u_src.y) * u_scale);\n"
-    "    if ((flags & 2u) != 0u) r = min(r, int(u_src.y + u_src.w) * u_scale - 1);\n"
+    "    if ((flags & 1u) != 0u) r = max(r, sc(u_src.y));\n"
+    "    if ((flags & 2u) != 0u) r = min(r, sc(u_src.y + u_src.w) - 1);\n"
     "    return r;\n"
     "}\n"
     "vec4 copy_tap(ivec2 s, int dy) {\n"
@@ -266,13 +267,14 @@ static const char *COPY_FS =
     "}\n"
     "void main() {\n"
     "    ivec2 p = ivec2(floor(gl_FragCoord.xy));\n"
-    "    ivec2 base = ivec2(u_src.xy) * u_scale;\n"
+    "    ivec2 base = ivec2(sc(u_src.x), sc(u_src.y));\n"
+    "    int row = int(round(u_scale));\n"
     "    int step_ = u_mode.y == 1u ? 2 : 1;\n"
     "    ivec2 s = base + step_ * p;\n"
     "    vec4 t;\n"
     "    if (u_mode.z == 1u) t = efb_texel(s);\n"
     "    else {\n"
-    "        t = copy_tap(s, -u_scale) * u_vfilter.x + copy_tap(s, 0) * u_vfilter.y + copy_tap(s, u_scale) * u_vfilter.z;\n"
+    "        t = copy_tap(s, -row) * u_vfilter.x + copy_tap(s, 0) * u_vfilter.y + copy_tap(s, row) * u_vfilter.z;\n"
     "        t = clamp(t, 0.0, 1.0);\n"
     "    }\n"
     "    uint gidx = (u_mode.w >> 16u) & 3u;\n"
@@ -441,8 +443,10 @@ static struct {
      * re-linked the big vertex shader: ~0.6 s each on Mesa). tev programs are then pipelines. */
     bool sso;
     GLuint vs_prog, cur_pipe;
-    GLint vs_squeeze;
+    GLint vs_squeeze, vs_shift;
     float squeeze;
+    GLuint below_tex;   /* the companion (render_set_below) of a picture bound for this draw */
+    unsigned below_unit;
     bool hud43;
     /* title screen in 16:9: the 4:3 picture with a blurred copy beside it (render_present) */
     bool backdrop;
@@ -758,7 +762,10 @@ bool render_init(void) {
         R.vs_prog = separable(GL_VERTEX_SHADER, PRE_VS, "pre-vs");
     }
     R.sso = R.vs_prog != 0;
-    if (R.sso) R.vs_squeeze = glGetUniformLocation(R.vs_prog, "u_squeeze");
+    if (R.sso) {
+        R.vs_squeeze = glGetUniformLocation(R.vs_prog, "u_squeeze");
+        R.vs_shift = glGetUniformLocation(R.vs_prog, "u_shift");
+    }
     else {
         rt_log("render: no separable programs, linking whole programs");
         R.tev_vs = compile(GL_VERTEX_SHADER, g_gx_cpu_xform_forced ? PRE_VS : XF_VS, "xf-vs");
@@ -943,6 +950,8 @@ static void state_reset(void) {
 
 static unsigned (*s_subst)(unsigned id);
 void render_set_subst(unsigned (*texture)(unsigned id)) { s_subst = texture; }
+static unsigned (*s_below)(unsigned id);
+void render_set_below(unsigned (*texture)(unsigned id)) { s_below = texture; }
 
 /* Redrawn movie planes (see MOVIE_DEBLOCK_FS): a few sets in turn, so a set is not redrawn while
  * the GPU may still be drawing the frame that used it. */
@@ -1061,7 +1070,12 @@ static void bind_slot(unsigned unit, uint64_t key) {
         return;
     }
     GLuint sub = gt->subst && s_subst ? s_subst(gt->subst) : 0;
-    if (sub) { unit_bind(unit, sub, R.samplers[0][0][1]); return; } /* clamped, linear */
+    if (sub) {
+        unit_bind(unit, sub, R.samplers[0][0][1]); /* clamped, linear */
+        GLuint below = s_below ? s_below(gt->subst) : 0;
+        if (below) { R.below_tex = below; R.below_unit = unit; }
+        return;
+    }
     unit_bind(unit, gt->tex, gt->hd == 2 ? R.samplers_mip[gt->wrap_s][gt->wrap_t] : R.samplers[gt->wrap_s][gt->wrap_t][gt->linear]);
 }
 
@@ -1293,7 +1307,9 @@ typedef struct {
 
 static inline uint32_t bitsu(uint32_t v, uint32_t lo, uint32_t n) { return (v >> lo) & ((1u << n) - 1); }
 
-static void decode_copy(const EfbCopy *e, uint32_t scale, CopyOp *c) {
+static uint32_t efb_px(uint32_t v, float scale) { return (uint32_t)((float)v * scale + 0.5f); }
+
+static void decode_copy(const EfbCopy *e, float scale, CopyOp *c) {
     uint32_t cmd = e->bp52;
     memset(c, 0, sizeof *c);
     c->at = e->at_batch;
@@ -1304,7 +1320,8 @@ static void decode_copy(const EfbCopy *e, uint32_t scale, CopyOp *c) {
     c->src[2] = bitsu(e->size, 0, 10) + 1;
     c->src[3] = bitsu(e->size, 10, 10) + 1;
     bool half = !c->xfb && (cmd >> 9) & 1;
-    uint32_t sw = c->src[2] * scale, sh = c->src[3] * scale;
+    uint32_t sw = efb_px(c->src[0] + c->src[2], scale) - efb_px(c->src[0], scale);
+    uint32_t sh = efb_px(c->src[1] + c->src[3], scale) - efb_px(c->src[1], scale);
     c->dst_w = half ? (sw / 2 ? sw / 2 : 1) : sw;
     c->dst_h = half ? (sh / 2 ? sh / 2 : 1) : sh;
     c->addr = gx_phys(e->dst);
@@ -1447,7 +1464,7 @@ static void tev_bytes(const TevState *t, uint8_t *b) {
     memcpy(b + 416, t->fog_color, 16);
 }
 
-bool render_update(int scale_in) {
+bool render_update(float scale_in) {
     Frame *f = gx_frame_acquire();
     if (!f) return false;
     uint64_t n = gx_frame_count();
@@ -1465,8 +1482,8 @@ bool render_update(int scale_in) {
         R.white_rt = R.white_tex = 0;
     }
     else if (R.tick % 30 == 0 && R.ntex > 768) evict_textures(120);
-    uint32_t scale = scale_in < 1 ? 1 : scale_in > 4 ? 4 : (uint32_t)scale_in;
-    ensure_efb((uint32_t)f->efb[0] * scale, (uint32_t)f->efb[1] * scale);
+    float scale = scale_in < 1.0f ? 1.0f : scale_in > 4.0f ? 4.0f : scale_in;
+    ensure_efb(efb_px(f->efb[0], scale), efb_px(f->efb[1], scale));
 
     unsigned ncopies = f->copies.len < MAX_COPIES ? (unsigned)f->copies.len : MAX_COPIES;
     static CopyOp copies[MAX_COPIES];
@@ -1547,10 +1564,10 @@ bool render_update(int scale_in) {
             uint32_t sc[4] = {~0u, ~0u, ~0u, ~0u}, cur_ub = ~0u;
             for (size_t i = next; i < end; i++) {
                 const Batch *b = &f->batches.data[i];
-                uint32_t x0 = b->rect[0] * scale, y0 = b->rect[1] * scale, x1 = b->rect[2] * scale, y1 = b->rect[3] * scale;
+                uint32_t x0 = efb_px(b->rect[0], scale), y0 = efb_px(b->rect[1], scale), x1 = efb_px(b->rect[2], scale), y1 = efb_px(b->rect[3], scale);
                 if (sq > 0 && b->hud) {
                     /* narrowed like the vertices, so 2D the game keeps beside the 4:3 screen stays hidden */
-                    float cx = f->efb[0] * (float)scale * 0.5f;
+                    float cx = (float)f->efb[0] * scale * 0.5f;
                     float sh = b->hud == 2 ? -sq * cx : b->hud == 3 ? sq * cx : 0.0f;
                     x0 = (uint32_t)(cx + ((float)x0 - cx) * (1.0f - sq) + sh + 0.5f);
                     x1 = (uint32_t)(cx + ((float)x1 - cx) * (1.0f - sq) + sh + 0.5f);
@@ -1569,9 +1586,20 @@ bool render_update(int scale_in) {
                     cur_ub = um ? ub_off[i] : (uint32_t)(i * R.ubo_stride);
                     glBindBufferRange(GL_UNIFORM_BUFFER, 0, sl->ub.buf, (GLintptr)cur_ub, TEV_UNIFORM_SIZE);
                 }
+                R.below_tex = 0;
                 for (unsigned m = 0; m < 8; m++) bind_slot(m, b->tev.textures[m]);
                 slot_layout(sl, b->layout);
                 glDrawElements(GL_TRIANGLES, (GLsizei)b->index_count, GL_UNSIGNED_INT, (const void *)(uintptr_t)(b->index_first * 4u));
+                if (R.below_tex && R.sso && R.vs_shift >= 0) {
+                    /* the same draw again, one 32-unit line of the game's 640x480 2D layout lower,
+                     * with the companion picture (unclipped: the game's scissor may end at the line) */
+                    unit_bind(R.below_unit, R.below_tex, R.samplers[0][0][1]);
+                    glScissor(0, 0, (GLsizei)R.efb_w, (GLsizei)R.efb_h);
+                    sc[0] = ~0u;
+                    glProgramUniform1f(R.vs_prog, R.vs_shift, 32.0f / 480.0f);
+                    glDrawElements(GL_TRIANGLES, (GLsizei)b->index_count, GL_UNSIGNED_INT, (const void *)(uintptr_t)(b->index_first * 4u));
+                    glProgramUniform1f(R.vs_prog, R.vs_shift, 0.0f);
+                }
                 /* nouveau sends its command buffer to the GPU only when it is full or at the swap:
                  * kick it every 32 draws so the GPU works while the rest of the frame is built */
                 if (++R.draws_since_flush >= 32) { glFlush(); R.draws_since_flush = 0; }
@@ -1594,7 +1622,7 @@ bool render_update(int scale_in) {
             glUniform4ui(R.copy_src, c->src[0], c->src[1], c->src[2], c->src[3]);
             glUniform4ui(R.copy_mode, c->mode[0], c->mode[1], c->mode[2], c->mode[3]);
             glUniform4f(R.copy_vfilter, c->vfilter[0], c->vfilter[1], c->vfilter[2], c->vfilter[3]);
-            glUniform1i(R.copy_scale, (GLint)scale);
+            glUniform1f(R.copy_scale, scale);
             unit_bind(0, R.efb_color.tex, 0);
             unit_bind(1, R.efb_depth, 0);
             glBindVertexArray(R.empty_vao);
@@ -1602,7 +1630,8 @@ bool render_update(int scale_in) {
             glBindVertexArray(sl->vao);
         }
         if (c->clear) {
-            uint32_t x = c->src[0] * scale, y = c->src[1] * scale, x1 = x + c->src[2] * scale, y1 = y + c->src[3] * scale;
+            uint32_t x = efb_px(c->src[0], scale), y = efb_px(c->src[1], scale);
+            uint32_t x1 = efb_px(c->src[0] + c->src[2], scale), y1 = efb_px(c->src[1] + c->src[3], scale);
             if (x1 > R.efb_w) x1 = R.efb_w;
             if (y1 > R.efb_h) y1 = R.efb_h;
             if (x1 > x && y1 > y) {
