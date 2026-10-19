@@ -1,7 +1,6 @@
 /* Nintendo Switch front end: SD folder + logs, crash.log, loading screen, disc lookup, boot,
  * render loop (GLES via SDL2 + Mesa), controller input (libnx HID) and audio (SDL2).
  * Platform glue adapted from the gcNX template (gc-decomp-switch-port skill). */
-#include <ctype.h>
 #include <dirent.h>
 #include <malloc.h>
 #include <math.h>
@@ -199,21 +198,6 @@ static int choose(const char *title, const char *a, const char *b, int sel, cons
         SDL_PumpEvents();
     }
     return sel;
-}
-
-/* Standard game or the mod, the last choice preselected. */
-static bool choose_mod(void) {
-    char name[80];
-    size_t k = 0;
-    for (const char *c = MOD_NAME; *c && k + 1 < sizeof name; c++) name[k++] = (char)toupper((unsigned char)*c);
-    name[k] = 0;
-    int sel = choose("WHICH GAME?", "MARIO KART: DOUBLE DASH!!", name, g_set.play_mod ? 1 : 0, "UP / DOWN TO CHOOSE, A TO START");
-    if (g_set.play_mod != (sel == 1)) {
-        g_set.play_mod = sel == 1;
-        settings_save();
-    }
-    rt_log("mod: playing %s", sel ? MOD_NAME : "the standard game");
-    return sel == 1;
 }
 
 /* The standard game's save file (unlocks, records, options; ghosts are files of their own). */
@@ -602,18 +586,23 @@ int main(int argc, char **argv) {
     if (!find_disc(disc, sizeof disc)) fatal("NO DISC IMAGE FOUND", "PUT YOUR GM4E01 .ISO OR .RVZ IN /SWITCH/MKDD-NX/");
     if (disc_open(disc, err, sizeof err)) {
         menu_font_load();  /* the loading screen's letters */
-        /* a mod in mods/: the player picks; from here on the disc is the mod's */
-        if (find_mod() && choose_mod()) {
-            screen("LOADING THE MOD", NULL, 0.1f);
-            if (!disc_overlay(PLUS_DIR, err, sizeof err)) {
-                rt_log("mod: %s", err);
-                fatal("COULD NOT LOAD THE MOD", "A FILE IS MISSING: SEE LOGS/MKDD.LOG");
+        /* MKDD Plus in mods/plus: played whenever it loads (from here on the disc is the mod's);
+         * otherwise, or if it can't be used, the standard game (the disc is left as it was) */
+        if (find_mod()) {
+            screen("LOADING MARIO KART: DOUBLE DASH!! PLUS", NULL, 0.1f);
+            if (disc_overlay(PLUS_DIR, err, sizeof err)) {
+                rt_log("mod: playing %s", MOD_NAME);
+                mkdir(MOD_SAVE_DIR, 0777);
+                offer_save_copy();
+                memcard_set_path(MOD_SAVE_DIR "/slotA.bin");
+            } else {
+                rt_log("mod: %s; playing the standard game", err);
+                for (int i = 0; i < 180 && appletMainLoop(); i++) { /* 3 s */
+                    screen("PLUS COULD NOT BE LOADED: A FILE IS MISSING", "STARTING THE STANDARD GAME (SEE LOGS/MKDD.LOG)", 0.1f);
+                }
             }
-            mkdir(MOD_SAVE_DIR, 0777);
-            offer_save_copy();
-            memcard_set_path(MOD_SAVE_DIR "/slotA.bin");
         }
-        pause_art_init();  /* the pause screen's controller picture, drawn as a Switch */
+        pause_art_init();  /* the pause screen's controller picture, drawn as a Pro Controller */
         render_set_subst(pause_art_texture);
     } else {
         rt_log("disc: %s", err);
@@ -713,9 +702,11 @@ int main(int argc, char **argv) {
             s_pad_quiet = 60;
         }
         /* SequenceApp::msScene (r13 0x803D1420 - 0x7740): 0 = SceneTitle, the "press start"
-         * screen. Its artwork is one 4:3 picture that 16:9 only stretched, so it stays 4:3. */
-        bool wide = g_set.wide && m_read_be(0x803C9CE0u, 4) != 0;
+         * screen. Its artwork is one 4:3 picture with the logo in it: in 16:9 it stays 4:3, whole,
+         * with a blurred, dimmed copy of it filling the sides (render_set_backdrop). */
+        bool title = m_read_be(0x803C9CE0u, 4) == 0, wide = g_set.wide && !title;
         g_aspect_scale = wide ? 4.0f / 3.0f : 1.0f;
+        render_set_backdrop(g_set.wide && title);
         static const float FOV_SCALE[3] = {1.0f, 1.15f, 1.3f}; /* tan(fovy / 2) times: NORMAL, WIDE, WIDER */
         g_fov_scale = FOV_SCALE[g_set.fov[g_set.wide] % 3];
         render_set_hud43(wide);
@@ -796,7 +787,48 @@ int main(int argc, char **argv) {
         pf_main += armTicksToNs(s0 - r0);
         pf_loops++;
         SDL_GL_SwapWindow(s_window);
-        t_swap += armTicksToNs(armGetSystemTick() - s0);
+        u64 s1 = armGetSystemTick();
+        t_swap += armTicksToNs(s1 - s0);
+        {
+            /* Hitch log: a new game frame more than 1.5 refreshes after the last one (a dropped
+             * frame), with what happened in between: this thread's longest render / present / swap,
+             * textures decoded and shader compiles here, the game thread's and the GX decoder's busy
+             * time, disc reads and GPU drains. At most 20 lines per 5 s. */
+            static u64 hl_tick;
+            static uint64_t hl_ntex, hl_tex_ns, hl_cns, hl_idle, hl_gx, hl_dvd, hl_drains, hl_drain_ns, hl_win;
+            static unsigned hl_progs, hl_loops, hl_lines;
+            static uint64_t hl_max_r, hl_max_p, hl_max_s;
+            uint64_t lr = armTicksToNs(p0 - r0), lp = armTicksToNs(s0 - p0), ls = armTicksToNs(s1 - s0);
+            if (lr > hl_max_r) hl_max_r = lr;
+            if (lp > hl_max_p) hl_max_p = lp;
+            if (ls > hl_max_s) hl_max_s = ls;
+            hl_loops++;
+            if (got) {
+                uint64_t ntex, tex_ns, cns;
+                unsigned progs;
+                render_hitch_stats(&ntex, &tex_ns, &progs, &cns);
+                uint64_t gap = hl_tick ? armTicksToNs(s1 - hl_tick) : 0, now_ns = armTicksToNs(s1);
+                if (now_ns - hl_win > 5000000000ull) { hl_win = now_ns; hl_lines = 0; }
+                if (gap > 25000000ull && !paused && hl_lines < 20) {
+                    hl_lines++;
+                    uint64_t idle = g_guest_idle_ns - hl_idle;
+                    rt_log("hitch: %.1f ms since the last game frame (%u loops; longest render %.1f, present %.1f, swap %.1f ms); "
+                           "%llu new textures (%.1f ms), %u shader compiles (%.1f ms); game thread busy %.1f ms, GX %.1f ms; "
+                           "%llu disc reads, %llu GPU drains (%.1f ms)",
+                           (double)gap / 1e6, hl_loops, (double)hl_max_r / 1e6, (double)hl_max_p / 1e6, (double)hl_max_s / 1e6,
+                           (unsigned long long)(ntex - hl_ntex), (double)(tex_ns - hl_tex_ns) / 1e6, progs - hl_progs,
+                           (double)(cns - hl_cns) / 1e6, idle < gap ? (double)(gap - idle) / 1e6 : 0.0,
+                           (double)(g_gx_busy_ns - hl_gx) / 1e6, (unsigned long long)(g_dvd_reads - hl_dvd),
+                           (unsigned long long)(g_gx_drains - hl_drains), (double)(g_gx_drain_ns - hl_drain_ns) / 1e6);
+                }
+                hl_tick = s1;
+                hl_ntex = ntex; hl_tex_ns = tex_ns; hl_progs = progs; hl_cns = cns;
+                hl_idle = g_guest_idle_ns; hl_gx = g_gx_busy_ns; hl_dvd = g_dvd_reads;
+                hl_drains = g_gx_drains; hl_drain_ns = g_gx_drain_ns;
+                hl_loops = 0;
+                hl_max_r = hl_max_p = hl_max_s = 0;
+            }
+        }
         if (++frames % 300 == 0) {
             u64 now = armGetSystemTick();
             uint32_t nb, nv, nt;

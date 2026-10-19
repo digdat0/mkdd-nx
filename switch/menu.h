@@ -18,7 +18,6 @@ typedef struct {
     bool border;       /* 4:3: checkered border art in the side bars during races */
     bool profiler;     /* sampling profiler (logs/mkdd_prof.bin), from the next start */
     int docked_res;    /* docked (TV): 0 native (the game's 640x480-ish frame), 1 rendered at 2x, 1080p output */
-    bool play_mod;     /* last start-up choice with a mod in mods/: the mod (else the standard game) */
     uint64_t map[GC_COUNT]; /* Switch buttons (HidNpadButton_*) that press each GameCube button */
 } Settings;
 

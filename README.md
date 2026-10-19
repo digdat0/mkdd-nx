@@ -211,8 +211,9 @@ as it is, and the standard game stays playable.
 
    Copy it as it is: don't delete `Course`, `CourseName`, `Movie` or `StaffGhosts` (the mod's
    folders don't have them; the steps for building a modded ISO on a PC don't apply here).
-3. Start the game: it asks which one to play (up / down, A). The choice is remembered for the next
-   start.
+3. Start the game: with the mod in `mods/plus/`, MKDD-NX plays Plus. To play the standard game
+   again, move or rename the `plus` folder. If a mod file is missing, the standard game starts
+   instead and `logs/mkdd.log` names the file.
 
 Plus keeps its own saves in `save/plus/`, apart from the standard game's. The first time you play
 Plus, if you have a standard save, the game offers to start Plus from a copy of it (unlocks and

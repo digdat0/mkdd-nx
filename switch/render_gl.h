@@ -10,6 +10,8 @@ bool render_update(int scale);
  * wide: the game camera is widened to match, see g_aspect_scale). */
 /* 16:9: draw the 2D layer at 4:3, the race HUD at the screen edges and the rest in the middle. */
 void render_set_hud43(bool on);
+/* 4:3 output with a blurred, dimmed copy of the picture filling the 16:9 sides (the title screen) */
+void render_set_backdrop(bool on);
 /* HD texture replacements (hdtex.h) on or off: takes effect next frame, every texture reloads. Stays
  * off without a texture file or BC7 support. */
 void render_set_hd(bool on);
@@ -27,6 +29,9 @@ void render_gpu_timer_begin(void);
 void render_gpu_timer_mid(void); /* between render_update and present */
 void render_gpu_timer_end(void);
 unsigned render_gpu_timer_take(double *avg_ms, double *max_ms, double *image_ms, double *output_ms);
+/* Running totals for the hitch log: textures decoded + uploaded and the time it took, TEV programs
+ * and the time spent compiling them. */
+void render_hitch_stats(uint64_t *new_tex, uint64_t *tex_ns, unsigned *programs, uint64_t *compile_ns);
 uint64_t render_take_gpu_wait(void); /* ns spent waiting for the GPU since the last call */
 /* adj: gamma exponent, saturation, contrast applied to the game image (1,1,1 = unchanged). */
 void render_present(int w, int h, const float adj[3], bool wide);

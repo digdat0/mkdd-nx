@@ -410,6 +410,51 @@ def _eabi_args():
     return b
 
 
+# Callee-saved GPRs / FPRs a function reads at entry (before writing them, saves to the stack
+# not counted): EABI code never does, but a mod's hooks do (MKDD Plus's item box hook reads its
+# caller's r29). Calls to these functions store those registers too (Gen.flush_call).
+NV_IN = {}
+_NV_REGS = {4 * r for r in range(14, 32)} | {0x4000 + 8 * r for r in range(14, 32)}
+_NV_SAVE = re.compile(r"(stw|stmw|stfd|stfs|psq_st)\s+[rf]\d+,[^,]*\(r1\)")
+
+
+def nonvol_analyze(by_func):
+    owner = {int(r["addr"], 16) for rows in by_func.values() for r in rows}
+    direct, calls = {}, {}
+    for e, rows in by_func.items():
+        own = {int(r["addr"], 16) for r in rows}
+        w, need, out = set(), set(), []
+        for r in rows:
+            save = bool(_NV_SAVE.match(r["asm"].strip()))
+            for o in (p for p in r["pcode"].split(" | ") if p):
+                mnem, _, ov, ins = parse_op(o)
+                if mnem in ("CALL", "BRANCH", "CBRANCH") and ins and ins[0][0] == "M":
+                    tg = ins[0][1]
+                    if tg in owner and tg not in own and tg not in SAVE_RESTORE:
+                        out.append((tg, frozenset(w)))
+                    continue
+                if not save:
+                    need |= {v[1] for v in ins if v and v[0] == "R" and v[1] in _NV_REGS and v[1] not in w}
+                if ov and ov[0] == "R" and ov[1] in _NV_REGS:
+                    w.add(ov[1])
+        direct[e], calls[e] = need, out
+    NV_IN.update(direct)
+    changed = True
+    while changed:
+        changed = False
+        for e, out in calls.items():
+            n = set(NV_IN[e])
+            for tg, w in out:
+                n |= NV_IN.get(tg, set()) - w
+            if n != NV_IN[e]:
+                NV_IN[e] = n
+                changed = True
+    for e in [e for e, n in NV_IN.items() if not n]:
+        del NV_IN[e]
+    print(f"nonvol: {len(NV_IN)} functions read a callee-saved register at entry: "
+          + " ".join(f"{e:08x}" for e in sorted(NV_IN)[:20]), flush=True)
+
+
 def abi_analyze(by_func, leaders):
     """Indirect calls (virtual functions, callbacks) are assumed to follow the EABI: the callee
     reads only argument registers. A whole-program union over every function that might be
@@ -679,14 +724,14 @@ class Gen:
         self.keep = set()
         return out
 
-    def flush_call(self, kill=frozenset()):
+    def flush_call(self, kill=frozenset(), target=None):
         """Before a call: store only the registers the callee may read. Callee-saved ones
         (NONVOL) stay in their locals: an EABI callee only saves and restores them, so the copy
-        in c->regs it sees (and puts back) is never used. Leaving the function by any other way
-        still stores everything."""
+        in c->regs it sees (and puts back) is never used, unless the callee reads them (NV_IN).
+        Leaving the function by any other way still stores everything."""
         if "--no-lazy" in FLAGS:
             return self.flush()
-        vol = {r for r in self.D if r not in NONVOL}
+        vol = {r for r in self.D if r not in NONVOL or r[0] in NV_IN.get(target, ())}
         out = "".join(f"WR(c,0x{o:x},{s},x{o:x});" for o, s in sorted(vol - kill))
         if "--abi-check" in FLAGS:  # a callee reading a skipped store sees the poison
             out += "".join(f"WR(c,0x{o:x},{s},ABI_POISON({s}));" for o, s in sorted(vol & kill))
@@ -820,7 +865,7 @@ class Gen:
             return f"{self.flush()}{target}{self.load_all()}"
         kill = (abi_kill(ABI["entry"].get(off, ABI["ind_use"]) | ABI["after"].get(self.cur, _ABI_ALL))
                 if ABI["on"] and off not in HOOKABLE else frozenset())
-        pre = self.flush_call(kill)
+        pre = self.flush_call(kill, off)
         call = f"f_{off:08X}(c,0x{off:x});" if off in self.entries else f"ctx_call(c,0x{off:x});"
         if off in INLINE:
             call = f"fi_{off:08X}(c,M);"
@@ -1197,6 +1242,7 @@ def main():
     if "--no-abi" not in FLAGS:  # on by default (it was opt-in, and a build without it lost ~6%)
         rounds = abi_analyze(by_func, leaders)
         print(f"abi: {rounds} rounds; read by indirect callees: {abi_names(ABI['ind_use']) or '-'}", flush=True)
+    nonvol_analyze(by_func)
     mod_analyze(by_func, funcs)
     g = Gen(entry_set, leaders)
     with io.StringIO() as fh:

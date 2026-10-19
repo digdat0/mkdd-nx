@@ -307,6 +307,7 @@ static const char *BLIT_FS =
     "precision highp float;\n"
     "uniform sampler2D xfb;\n"
     "uniform vec3 u_adj;\n" /* colour option: gamma exponent, saturation, contrast (1,1,1 = as rendered) */
+    "uniform float u_dim;\n" /* 0 = as is; the backdrop beside a 4:3 picture is dimmed */
     "in vec2 v_uv;\n"
     "out vec4 o_color;\n"
     "void main() {\n"
@@ -319,7 +320,7 @@ static const char *BLIT_FS =
     "    c = pow(c, vec3(u_adj.x));\n"
     "    c = mix(vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), c, u_adj.y);\n"
     "    c = (c - 0.5) * u_adj.z + 0.5;\n"
-    "    o_color = vec4(clamp(c, 0.0, 1.0), 1.0);\n"
+    "    o_color = vec4(clamp(c, 0.0, 1.0) * (1.0 - u_dim), 1.0);\n"
     "}\n";
 
 /* Movie frames (THP: the picture as Y, U, V I8 planes, colour at half size), redrawn at twice the
@@ -430,7 +431,7 @@ typedef struct { GLuint tex; uint32_t w, h; uint64_t freed; uint8_t chans; } Poo
 
 static struct {
     GLuint prog_tev, prog_copy, prog_blit;
-    GLint copy_src, copy_mode, copy_vfilter, copy_scale, blit_adj;
+    GLint copy_src, copy_mode, copy_vfilter, copy_scale, blit_adj, blit_dim;
     GLuint empty_vao;
     Slot slots[NSLOT];
     unsigned slot;
@@ -443,11 +444,15 @@ static struct {
     GLint vs_squeeze;
     float squeeze;
     bool hud43;
+    /* title screen in 16:9: the 4:3 picture with a blurred copy beside it (render_present) */
+    bool backdrop;
+    Target bd[4];
     unsigned draws_since_flush;
     uint64_t gpu_wait_ns; /* waiting for the GPU to finish the frame NSLOT frames back (render_take_gpu_wait) */
     U64Map progs;          /* tev_shader_key -> specialised program (0 = failed) */
     unsigned nprogs, compiles_this_frame;
     uint64_t compile_ns;
+    uint64_t new_tex, new_tex_ns; /* textures decoded and uploaded (for the hitch log) */
     GLuint cur_tex[8], cur_smp[8], cur_prog;
     int cur_unit;
     uint32_t cur_z, cur_blend, cur_cull, cur_pix;
@@ -777,6 +782,7 @@ bool render_init(void) {
     glUseProgram(R.prog_blit);
     glUniform1i(glGetUniformLocation(R.prog_blit, "xfb"), 0);
     R.blit_adj = glGetUniformLocation(R.prog_blit, "u_adj");
+    R.blit_dim = glGetUniformLocation(R.prog_blit, "u_dim");
 
     glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &R.ubo_align);
     if (R.ubo_align < 16) R.ubo_align = 16;
@@ -983,6 +989,7 @@ static void bind_slot(unsigned unit, uint64_t key) {
             unit_bind(unit, R.white, R.samplers[0][0][0]);
             return;
         }
+        uint64_t tex_t0 = plat_now_ns();
         size_t need = (size_t)t->width * t->height * 4;
         if (need > R.rgba_cap) { R.rgba_cap = need; R.rgba = realloc(R.rgba, need); }
         /* CMPR (most of MKDD's textures) stays compressed: an eighth of the memory and bandwidth of
@@ -1026,6 +1033,8 @@ static void bind_slot(unsigned unit, uint64_t key) {
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, sw[3]);
             }
         }
+        R.new_tex++;
+        R.new_tex_ns += plat_now_ns() - tex_t0;
         gt->chans = (uint8_t)chans;
         gt->w = t->width;
         gt->h = t->height;
@@ -1626,6 +1635,7 @@ bool render_update(int scale_in) {
 }
 
 void render_set_hud43(bool on) { R.hud43 = on; }
+void render_set_backdrop(bool on) { R.backdrop = on; }
 /* Anisotropic filtering of the linear samplers (game textures and HD replacements): 1 = off. */
 void render_set_aniso(float level) {
     if (level > R.aniso_max) level = R.aniso_max;
@@ -1738,9 +1748,38 @@ void render_present(int w, int h, const float adj[3], bool wide) {
     else vh = vw / aspect;
     GLint vx = (GLint)(((float)w - vw) / 2), vy = (GLint)(((float)h - vh) / 2);
     if (!R.have_xfb) { glClear(GL_COLOR_BUFFER_BIT); return; }
+    glUseProgram(R.prog_blit);
+    glUniform3f(R.blit_adj, adj[0], adj[1], adj[2]);
+    glActiveTexture(GL_TEXTURE0);
+    glBindVertexArray(R.empty_vao);
+    if (R.backdrop && vx > 0) {
+        /* halve the picture (each a linear 2:1 blit: a box filter), then draw the
+         * smallest scaled up to fill the width (cropped top and bottom), dimmed, in the side bars */
+        const Target *src = &R.xfb;
+        for (int i = 0; i < 4 && src->w > 100; i++) { /* down to about 80 pixels wide */
+            uint32_t bw = src->w / 2 ? src->w / 2 : 1, bh = src->h / 2 ? src->h / 2 : 1;
+            if (R.bd[i].w != bw || R.bd[i].h != bh) target_init(&R.bd[i], bw, bh);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, src->fbo);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, R.bd[i].fbo);
+            glBlitFramebuffer(0, 0, (GLint)src->w, (GLint)src->h, 0, 0, (GLint)bw, (GLint)bh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+            src = &R.bd[i];
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        GLint fh = w * 3 / 4;
+        glViewport(0, (h - fh) / 2, w, fh);
+        glUniform1f(R.blit_dim, 0.55f);
+        glBindTexture(GL_TEXTURE_2D, src->tex);
+        glBindSampler(0, R.samplers[0][0][1]);
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(0, 0, vx, h);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glScissor(vx + (GLint)vw, 0, w - vx - (GLint)vw, h);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glUniform1f(R.blit_dim, 0.0f);
+    }
     /* clear only the bars beside / above the picture (none when it fills the screen) */
     glEnable(GL_SCISSOR_TEST);
-    if (vx > 0) {
+    if (vx > 0 && !R.backdrop) {
         glScissor(0, 0, vx, h); glClear(GL_COLOR_BUFFER_BIT);
         glScissor(vx + (GLint)vw, 0, w - vx - (GLint)vw, h); glClear(GL_COLOR_BUFFER_BIT);
     }
@@ -1750,14 +1789,10 @@ void render_present(int w, int h, const float adj[3], bool wide) {
     }
     glDisable(GL_SCISSOR_TEST);
     glViewport(vx, vy, (GLsizei)vw, (GLsizei)vh);
-    glUseProgram(R.prog_blit);
-    glUniform3f(R.blit_adj, adj[0], adj[1], adj[2]);
-    glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, R.xfb.tex);
     glBindSampler(0, R.samplers[0][0][1]);
     /* The default framebuffer has row 0 at the bottom; the XFB has row 0 at the top: v_uv.y is 0
      * at the top of the screen, which samples row 0. */
-    glBindVertexArray(R.empty_vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindSampler(0, 0);
 }
@@ -1768,6 +1803,12 @@ void render_stats(uint32_t *batches, uint32_t *verts, uint32_t *textures) {
     *textures = R.ntex;
 }
 
+void render_hitch_stats(uint64_t *new_tex, uint64_t *tex_ns, unsigned *programs, uint64_t *compile_ns) {
+    *new_tex = R.new_tex;
+    *tex_ns = R.new_tex_ns;
+    *programs = R.nprogs;
+    *compile_ns = R.compile_ns;
+}
 void render_shader_stats(unsigned *programs, double *compile_ms) {
     *programs = R.nprogs;
     *compile_ms = (double)R.compile_ns / 1e6;

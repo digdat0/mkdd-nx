@@ -3307,6 +3307,21 @@ static uint64_t i_drawCourse__6Race2DFv(Ctx *c, uint8_t *M, ARGS) {
     race_hud_call(c, M, 0x801483B4u, (uint32_t)a0, 2); /* map, its kart icons and the top-4 rank column */
     return 0;
 }
+/* WipeManager::draw: the fades and wipes over each kart's 3D view (the black screen of a respawn,
+ * race start and end). They fill the 3D viewport, which widescreen widens, so they stay full
+ * width: marker 3, any number of players (J2DManager::draw calls it after Race2D::draw). */
+static uint64_t i_draw__11WipeManagerFv(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    hud_zone(3);
+    uint32_t old = ctx_gpr(c, 1), sp = old - 0x20;
+    mst(c, M, sp, 4, old);
+    ctx_set_gpr(c, 1, sp);
+    ctx_set_gpr(c, 3, (uint32_t)a0);
+    ctx_call_orig(c, 0x8012A358u);
+    ctx_set_gpr(c, 1, old);
+    hud_zone(0);
+    return 0;
+}
 
 /* ---- GX SDK: dirty state, texture loads (per particle in JParticle) ---- */
 #define GXDATA(c, M) ld32(c, M, (uint32_t)RD(c, REG_R2, 4) - 0x73f8)

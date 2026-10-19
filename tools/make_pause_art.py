@@ -1,5 +1,5 @@
-"""Pause-screen art (switch/pause_art_data.S): a Switch with neon Joy-Cons in place of the game's
-GameCube controller picture, and one badge per Switch button for the button icons.
+"""Pause-screen art (switch/pause_art_data.S): a Pro Controller (tools/pro_controller.png, cut out) in
+place of the game's GameCube controller picture (console(): the earlier Switch drawing), and one badge per Switch button for the button icons.
 
 The console picture replaces a 176x128 texture whose layout lines end at fixed points (the
 GameCube buttons); the sticks, shoulders and face buttons are placed near those points.
@@ -74,6 +74,67 @@ def console():
     return im.resize((352, 256), Image.LANCZOS)
 
 
+LIGHTEN = 1.0  # 1 = as drawn; smaller = lighter
+DETAIL = 1.5  # contrast around the face colour (85): grips, sticks and buttons darker, labels lighter
+GLOW = (255, 255, 255, 6, 0.8)  # soft halo so the dark controller stands out on navy: RGB, blur radius, strength
+
+
+def pro_controller():
+    """tools/pro_controller.png (a flat Pro Controller on light paper) cut out: the light background
+    and the controller's soft shadow, reached from the image border, become transparent; edge pixels
+    get partial alpha. Fitted to 352x256, centred."""
+    from collections import deque
+    src = Image.open(os.path.join(HERE, 'pro_controller.png')).convert('RGB')
+    W, H = src.size
+    px = src.load()
+    lum = [[sum(px[x, y]) / 3 for x in range(W)] for y in range(H)]
+    LO, HI = 95, 140  # below LO: controller; flood-filled pixels above LO: background
+    bg = [[False] * W for _ in range(H)]
+    q = deque()
+    for x in range(W):
+        q.extend(((x, 0), (x, H - 1)))
+    for y in range(H):
+        q.extend(((0, y), (W - 1, y)))
+    while q:
+        x, y = q.popleft()
+        if bg[y][x] or lum[y][x] < LO:
+            continue
+        bg[y][x] = True
+        for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            if 0 <= nx < W and 0 <= ny < H and not bg[ny][nx]:
+                q.append((nx, ny))
+    out = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+    o = out.load()
+    EDGE = (54, 57, 62)  # the grips' and top edge's colour, for partly covered pixels
+    for y in range(H):
+        for x in range(W):
+            if not bg[y][x]:
+                o[x, y] = px[x, y] + (255,)
+            elif lum[y][x] < HI:
+                o[x, y] = EDGE + (int(255 * (HI - lum[y][x]) / (HI - LO)),)
+    out = out.crop(out.getbbox())
+    # lighter greys: the dark original disappears against the pause screen's navy panels
+    r, g, b, a = out.split()
+    lift = lambda v: 255 - int((255 - v) * LIGHTEN)
+    out = Image.merge('RGBA', (r.point(lift), g.point(lift), b.point(lift), a))
+    r, g, b, a = out.split()
+    crisp = lambda v: max(0, min(255, int(85 + (v - 85) * DETAIL)))
+    out = Image.merge('RGBA', (r.point(crisp), g.point(crisp), b.point(crisp), a))
+    P = 4  # room for the glow
+    sc = min((352 - 2 * P) / out.width, (256 - 2 * P) / out.height)
+    out = out.resize((round(out.width * sc), round(out.height * sc)), Image.LANCZOS)
+    im = Image.new('RGBA', (352, 256), (0, 0, 0, 0))
+    pos = ((352 - out.width) // 2, (256 - out.height) // 2)
+    from PIL import ImageFilter
+    sil = Image.new('L', (352, 256), 0)
+    sil.paste(out.split()[3], pos)
+    if GLOW:
+        halo = sil.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.GaussianBlur(GLOW[3])).point(lambda v: int(v * GLOW[4]))
+        im.paste(Image.new('RGBA', (352, 256), GLOW[:3] + (255,)), (0, 0), halo)
+    im.alpha_composite(out, pos)
+    return im
+
+
 def badge(name):
     S = 4
     N = CELL * S
@@ -125,7 +186,7 @@ def badge(name):
 
 
 def main():
-    con = console()
+    con = pro_controller()
     rows = (len(BADGES) + BADGE_COLS - 1) // BADGE_COLS
     atlas = Image.new('RGBA', (BADGE_COLS * CELL, rows * CELL), (0, 0, 0, 0))
     for i, n in enumerate(BADGES):

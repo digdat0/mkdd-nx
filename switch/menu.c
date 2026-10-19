@@ -57,7 +57,6 @@ static void defaults(void) {
     g_set.border = false;
     g_set.docked_res = 1;
     g_set.profiler = false;
-    g_set.play_mod = false;
     memcpy(g_set.map, DEFAULT_MAP, sizeof g_set.map);
 }
 
@@ -91,7 +90,6 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "aniso")) g_set.aniso = atoi(v) < 0 ? 0 : atoi(v) > 4 ? 4 : atoi(v);
         else if (!strcmp(k, "border")) g_set.border = atoi(v) != 0;
         else if (!strcmp(k, "docked_res")) g_set.docked_res = atoi(v) != 0;
-        else if (!strcmp(k, "play_mod")) g_set.play_mod = atoi(v) != 0;
         else
             for (int i = 0; i < GC_COUNT; i++)
                 if (!strcmp(k, GC_KEYS[i])) g_set.map[i] = strtoull(v, NULL, 16) & mappable();
@@ -106,8 +104,8 @@ void settings_save(void) {
     FILE *f = fopen(s_path, "w");
     if (!f) return;
     fprintf(f, "display=%d\nshow_fps=%d\nlogging=%d\nrumble=%d\nunlock_all=%d\nhd_textures=%d\nfov_4_3=%d\nfov_16_9=%d\naniso=%d\nborder=%d\n"
-            "docked_res=%d\nprofiler=%d\nplay_mod=%d\n", g_set.wide, g_set.show_fps, g_set.logging, g_set.rumble, g_set.unlock_all,
-            g_set.hd_textures, g_set.fov[0], g_set.fov[1], g_set.aniso, g_set.border, g_set.docked_res, g_set.profiler, g_set.play_mod);
+            "docked_res=%d\nprofiler=%d\n", g_set.wide, g_set.show_fps, g_set.logging, g_set.rumble, g_set.unlock_all,
+            g_set.hd_textures, g_set.fov[0], g_set.fov[1], g_set.aniso, g_set.border, g_set.docked_res, g_set.profiler);
     for (int i = 0; i < GC_COUNT; i++) fprintf(f, "%s=%llx\n", GC_KEYS[i], (unsigned long long)g_set.map[i]);
     fclose(f);
 }
@@ -647,6 +645,18 @@ static void panel(float x, float y, float w, float h, float k, const char *title
 }
 
 /* A menu row: label left, value right; the selected one sits on a blue arrow bar. */
+/* A row with its label in the given colours (top, bottom). */
+static void mrow_c(float x, float y, float w, float rh, float k, bool sel, const char *label, uint32_t ct, uint32_t cb) {
+    float ts = 34 * k;
+    if (ts > rh * 0.7f) ts = rh * 0.7f;
+    if (sel) {
+        grad(x + 14 * k, y + rh * 0.06f, w - 72 * k, rh * 0.88f, 0x5AA0FFE8u, 0x3C7CF0E8u);
+        arrow(x + w - 58 * k, y + rh * 0.06f, 30 * k, rh * 0.88f, 0x4890F8E8u);
+        arrow(x + 22 * k, y + rh * 0.3f, 14 * k, rh * 0.4f, 0xFFFFFFFFu);
+    }
+    mtext(x + 50 * k, y + (rh - ts) * 0.5f, ts, ct, cb, label);
+}
+
 static void mrow(float x, float y, float w, float rh, float k, bool sel, const char *label, const char *value, bool more) {
     float ts = 34 * k, ty;
     if (ts > rh * 0.7f) ts = rh * 0.7f;
@@ -941,21 +951,30 @@ static bool loading_back(int w, int h) {
     return true;
 }
 
-/* A choice on the loading screen (which game to play): a title line and the options, sel
+/* A choice on the loading screen (the Plus save copy): a title line and the options, sel
  * highlighted, in the message box grown to fit them. */
 void menu_choice(int w, int h, const char *title, const char *const *opts, int n, int sel, const char *hint) {
     if (!loading_back(w, h)) return;
     float k = (float)h / 720.0f, fw = (float)w;
-    float rh = 58 * k, bw = 860 * k, bh = (78 + (float)n * 58 + (hint ? 44 : 14)) * k, bx = (fw - bw) / 2, by = 360 * k;
+    /* about 30% taller than a plain list: more room around the title and between the rows */
+    float rh = 74 * k, bw = 860 * k, bh = (100 + (float)n * 74 + (hint ? 60 : 20)) * k, by = 340 * k;
+    /* wide enough for the longest option: label inset 50, highlight end 72 past it, row margins 2 x 40 */
+    for (int i = 0; i < n; i++) {
+        float need = mtext_w(opts[i], 34 * k) + 50 * k + 72 * k + 24 * k + 80 * k;
+        if (need > bw) bw = need;
+    }
+    if (bw > fw - 40 * k) bw = fw - 40 * k;
+    float bx = (fw - bw) / 2;
     round_box(bx - 8 * k, by - 8 * k, bw + 16 * k, bh + 16 * k, 22 * k, 0xD61C1CFFu);
     round_box(bx - 3 * k, by - 3 * k, bw + 6 * k, bh + 6 * k, 18 * k, 0xFFFFFFFFu);
     round_box(bx, by, bw, bh, 16 * k, 0x102268F8u);
     float ts = 40 * k, tw = mtext_w(title, ts);
-    mtext((fw - tw) / 2, by + 20 * k, ts, C_TITLE_T, C_TITLE_B, title);
-    for (int i = 0; i < n; i++) mrow(bx + 40 * k, by + 74 * k + (float)i * rh, bw - 80 * k, rh, k, i == sel, opts[i], NULL, false);
+    mtext((fw - tw) / 2, by + 28 * k, ts, C_TITLE_T, C_TITLE_B, title);
+    for (int i = 0; i < n; i++)  /* white options */
+        mrow_c(bx + 40 * k, by + 96 * k + (float)i * rh + 5 * k, bw - 80 * k, rh - 10 * k, k, i == sel, opts[i], 0xFFFFFFFFu, 0xFFFFFFFFu);
     if (hint) {
         float hs = 26 * k, hw = mtext_w(hint, hs);
-        mtext((fw - hw) / 2, by + bh - 38 * k, hs, C_DIM, C_DIM, hint);
+        mtext((fw - hw) / 2, by + bh - 46 * k, hs, C_DIM, C_DIM, hint);
     }
     end();
 }

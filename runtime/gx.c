@@ -1976,6 +1976,7 @@ static void draw(uint32_t cmd, const uint8_t *c) {
         }
     }
     if (hud && xmin <= -0.98f && xmax >= 0.98f && !(textured && G.movie)) hud = false;
+    if (G.hud_zone == 3) hud = false; /* WipeManager: fades over the (widened) 3D view */
     uint32_t side = 0;
     if (hud && G.hud_zone) {
         float mid = 0.5f * (xmin + xmax);
