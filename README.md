@@ -14,7 +14,8 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 - 4:3 or 16:9. In 16:9 the game camera is genuinely wider rather than stretched.
 - Field of view options: Normal, Wide, Wider.
 - Texture filtering: 2x, 4x, 8x or 16x anisotropic.
-- Docked: 1080p output, rendered at 2x the original resolution for a sharper picture.
+- Higher internal resolution: up to 2x docked (1080p output) and 1.5x handheld, with an Auto mode
+  that lowers it only when the frame rate would drop.
 - Colour options: Accurate, Vivid, or your own brightness, contrast and saturation.
 - Up to 4 players, controller syncing from the game menu, and button remapping.
 - Unlock-all option that never touches your save.
@@ -23,10 +24,12 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 
 **Resolution**
 
-- **Handheld:** the game renders at its original GameCube resolution (about 640×480), scaled to the
-  1280×720 screen. 4:3 shows a 960×720 picture with bars at the sides. 16:9 fills the screen with a
+- **Handheld:** the 1280×720 screen. By default (Auto) the game renders at 1.5× (960×720) and steps
+  down to 1.25× or the original GameCube resolution (about 640×480) when the frame rate would drop.
+  4:3 shows a picture with bars at the sides. 16:9 fills the screen with a
   wider camera, not a stretch; the field of view setting picks how wide.
-- **Docked:** the output is 1080p, and by default the game renders at 2× (1280×960).
+- **Docked:** the output is 1080p. By default (Auto) the game renders at 2× (1280×960) and steps
+  down to 1.75×, 1.5× or 1.25× when the frame rate would drop.
 
 **Mods**
 
