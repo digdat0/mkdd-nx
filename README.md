@@ -8,13 +8,12 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 
 **Game**
 
-- Close to 60 fps at stock Switch clocks; the heaviest moments drop a few frames. No overclock
-  needed (it doesn't hurt either).
+- Close to 60 fps at stock Switch clocks; the heaviest moments drop a few frames. 
 - Plays the USA release (GM4E01) from an `.iso`, `.gcm`, `.ciso` or `.rvz` disc image.
 - 4:3 or 16:9. In 16:9 the game camera is genuinely wider rather than stretched.
 - Field of view options: Normal, Wide, Wider.
 - Texture filtering: 2x, 4x, 8x or 16x anisotropic.
-- Higher internal resolution: up to 2x docked (1080p output) and 1.5x handheld, with an Auto mode
+- Higher  resolution: up to 2x docked (1080p output) and 1.5x handheld, with an Auto mode
   that lowers it only when the frame rate would drop.
 - Colour options: Accurate, Vivid, or your own brightness, contrast and saturation.
 - Up to 4 players, controller syncing from the game menu, and button remapping.
