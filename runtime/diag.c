@@ -14,6 +14,7 @@ static uint32_t s_seen_count[MAX_SEEN];
 static unsigned s_nseen, s_lines;
 static FILE *s_log;
 volatile uint32_t g_log_mask = LOG_GAME | LOG_AUDIO;
+volatile bool g_log_boot = true;
 static char s_trace_path[512];
 static struct { const char *name; uint64_t n; } s_intr[64];
 static unsigned s_nintr;
@@ -39,7 +40,8 @@ void diag_flush(void) {
 }
 
 void rt_log(const char *fmt, ...) {
-    if (!g_log_mask) return; /* Logging off: don't even format the line */
+    uint32_t mask = g_log_mask | (g_log_boot ? LOG_GAME : 0);
+    if (!mask) return; /* Logging off: don't even format the line */
     char msg[1024];
     va_list ap;
     va_start(ap, fmt);
@@ -50,7 +52,7 @@ void rt_log(const char *fmt, ...) {
         snprintf(msg + n, sizeof msg - n, " in %#010x %s", g_last_fn, m_name(g_last_fn));
     }
     bool audio = !strncmp(msg, "DSP", 3) || !strncmp(msg, "audio", 5) || !strncmp(msg, "AI ", 3) || !strncmp(msg, "AX", 2);
-    if (!(g_log_mask & (audio ? LOG_AUDIO : LOG_GAME))) return;
+    if (!(mask & (audio ? LOG_AUDIO : LOG_GAME))) return;
     uint64_t h = fnv_bytes(FNV_INIT, msg, strlen(msg));
     lock();
     for (unsigned i = 0; i < s_nseen; i++)
@@ -60,6 +62,7 @@ void rt_log(const char *fmt, ...) {
         double t = (double)plat_now_ns() / 1e9;
         fprintf(stderr, "[mkdd %.3f] %s\n", t, msg);
         if (s_log) fprintf(s_log, "[%.3f] %s\n", t, msg);
+        if (g_log_boot && s_log) fflush(s_log);
     }
     pmutex_unlock(&s_lock);
 }

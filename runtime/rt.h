@@ -177,3 +177,6 @@ void diag_flush(void);
  * Switch profiler; LOG_AUDIO = audio lines (DSP, AI timing, audio thread). 0 writes nothing. */
 enum { LOG_GAME = 1, LOG_AUDIO = 2 };
 extern volatile uint32_t g_log_mask;
+/* Start-up: game lines are logged whatever LOGGING says, each written to the SD card at once, so
+ * a start that crashes or hangs shows its last step. The front end clears it at the first game frame. */
+extern volatile bool g_log_boot;

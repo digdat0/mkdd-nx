@@ -777,7 +777,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
         float rh = 58 * k, maxh = (float)h - 40 * k;
         if (top + rh * (float)rows + foot > maxh) rh = (maxh - top - foot) / (float)rows;
         float ph = top + rh * (float)rows + foot, x = ((float)w - pw) / 2, y = ((float)h - ph) / 2;
-        if (s_page != PAGE_COLOR) rect(0, 0, (float)w, (float)h, 0x00000070u); /* colour page: the image undimmed */
+        /* the image is never dimmed behind the menu: colour and picture changes show as they look in play */
         const char *title = s_page == PAGE_MAP ? "BUTTON MAPPING" : s_page == PAGE_EXIT ? "EXIT THE GAME?"
                             : s_page == PAGE_COLOR ? "COLOR" : s_page == PAGE_DEBUG ? "DEBUGGING"
                             : s_page == PAGE_GFX ? "GRAPHICS" : s_page == PAGE_UPDATE ? "UPDATE"
@@ -906,7 +906,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                 else vp = NULL;
                 mrow(x, ROW_Y(i, K_COUNT), pw, rh, k, s_sel[PAGE_COLOR] == i, labels[i], vp, false);
             }
-            hint = "LEFT/RIGHT: CHANGE   HOLD Y: PREVIEW   B: BACK";
+            hint = "LEFT/RIGHT: CHANGE (SAVED)   HOLD Y: PREVIEW   B: BACK";
         } else if (s_page == PAGE_MAP) {
             for (int i = 0; i < P_COUNT; i++, ry += rh) {
                 char label[32], value[64];

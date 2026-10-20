@@ -11,7 +11,7 @@ set(CMAKE_C_RESPONSE_FILE_LINK_FLAG "@")
 
 set(ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 # The app's version: the NACP's and the updater's (only update.c sees it, so a bump rebuilds one file)
-set(MKDD_VERSION "1.3.2")
+set(MKDD_VERSION "1.3.3")
 if(NOT GEN_DIR)
     message(FATAL_ERROR "set -DGEN_DIR=<output of tools/gen_c.py>")
 endif()

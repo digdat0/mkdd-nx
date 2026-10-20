@@ -608,6 +608,21 @@ static GLuint tev_compile(const TevState *t, uint64_t key) {
 }
 
 void render_shader_cache(const char *path, void (*progress)(unsigned done, unsigned total)) {
+    /* A marker file is there while the cached shaders compile. Still there at the next start: that
+     * warm-up crashed or hung (a bad entry would do it on every start), so the cache is set aside
+     * as <path>.bad and the game starts with none; shaders then compile during play again. */
+    char mark[512], bad[512];
+    snprintf(mark, sizeof mark, "%s.warming", path);
+    snprintf(bad, sizeof bad, "%s.bad", path);
+    FILE *mf = fopen(mark, "rb");
+    if (mf) {
+        fclose(mf);
+        remove(bad);
+        bool moved = rename(path, bad) == 0;
+        remove(mark);
+        rt_log("render: the last shader warm-up did not finish; shader cache %s (%s)", moved ? "set aside" : "not found",
+               moved ? bad : path);
+    }
     size_t size = 0;
     uint8_t *d = plat_read_file(path, &size);
     uint32_t hdr[2] = {CACHE_MAGIC, (uint32_t)sizeof(TevState)};
@@ -631,6 +646,8 @@ void render_shader_cache(const char *path, void (*progress)(unsigned done, unsig
         glBindVertexArray(R.empty_vao);
         state_reset();
     }
+    if (total && (mf = fopen(mark, "wb"))) fclose(mf);
+    if (total) rt_log("render: compiling %u cached shaders", total);
     uint64_t t0 = plat_now_ns();
     for (unsigned i = 0; i < total; i++) {
         TevState t;
@@ -658,6 +675,7 @@ void render_shader_cache(const char *path, void (*progress)(unsigned done, unsig
         if (R.sso) glBindProgramPipeline(0);
         state_reset();
         rt_log("render: %u cached shaders ready in %.1f s", total, (double)(plat_now_ns() - t0) / 1e9);
+        remove(mark);
     }
     free(d);
     s_cache = fopen(path, valid ? "ab" : "wb");

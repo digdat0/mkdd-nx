@@ -861,6 +861,9 @@ int main(int argc, char **argv) {
                 appletSetCpuBoostMode(ApmCpuBoostMode_Normal); /* boost throttles the GPU */
                 boost = false;
                 rt_log("first game frame at %.1f s", (double)armTicksToNs(armGetSystemTick() - s_boot_tick) / 1e9);
+                if (!g_log_mask) rt_log("logging is off (DEBUGGING > LOGGING): nothing more is logged");
+                g_log_boot = false;
+                diag_flush();
             }
         }
         u64 fps_ns = armTicksToNs(armGetSystemTick() - fps_tick);
