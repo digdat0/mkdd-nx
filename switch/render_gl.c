@@ -1087,10 +1087,14 @@ static void bind_slot(unsigned unit, uint64_t key) {
         unit_bind(unit, e, R.samplers[gt->wrap_s][gt->wrap_t][1]);
         return;
     }
+    /* The callbacks may create their textures on first use, which binds on the active unit and
+     * leaves it with none: forget that unit's bind, or a texture recorded there was skipped and
+     * sampled as nothing (RTGP's cup select drew its cups black after its title bar was made). */
     GLuint sub = gt->subst && s_subst ? s_subst(gt->subst) : 0;
+    GLuint below = sub && s_below ? s_below(gt->subst) : 0;
+    if (gt->subst && R.cur_unit >= 0) R.cur_tex[R.cur_unit] = ~0u;
     if (sub) {
         unit_bind(unit, sub, R.samplers[0][0][1]); /* clamped, linear */
-        GLuint below = s_below ? s_below(gt->subst) : 0;
         if (below) { R.below_tex = below; R.below_unit = unit; }
         return;
     }

@@ -87,8 +87,22 @@ int main(int argc, char **argv) {
             }
             gx_frame_release(f);
         }
-        /* MKDD_DUMP_FRAME=<seconds>: the frame at that time as frame.txt (gx_dump_frame) */
-        if (getenv("MKDD_DUMP_FRAME") && step == atoi(getenv("MKDD_DUMP_FRAME")) * 60) gx_dump_frame("frame.txt");
+        /* MKDD_DUMP_FRAME=<seconds>[,<seconds>...]: the frame at each time as frame.txt, then
+         * frame_<seconds>.txt for the later ones (gx_dump_frame) */
+        if (getenv("MKDD_DUMP_FRAME") && step % 60 == 0) {
+            const char *d = getenv("MKDD_DUMP_FRAME");
+            for (bool first = true; *d; first = false) {
+                int s = atoi(d);
+                if (step == s * 60) {
+                    char path[64];
+                    if (first) snprintf(path, sizeof path, "frame.txt");
+                    else snprintf(path, sizeof path, "frame_%d.txt", s);
+                    gx_dump_frame(path);
+                }
+                while (*d && *d != ',') d++;
+                if (*d) d++;
+            }
+        }
         /* MKDD_WIDE_AT=<seconds>: switch to 16:9 mid-run (the widescreen change while playing) */
         if (getenv("MKDD_WIDE_AT") && step == atoi(getenv("MKDD_WIDE_AT")) * 60) g_aspect_scale = 4.0f / 3.0f;
         if (step % 300 == 0) {
