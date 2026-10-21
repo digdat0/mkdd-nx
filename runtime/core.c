@@ -115,17 +115,19 @@ void ctx_lc_dma(Ctx *c) {
 static uint16_t *s_slots;
 static uint32_t s_base, s_nslots;
 
-/* slot i + 1: FUNCS[i]; FUNC_COUNT + i + 1: MOD_FUNCS[i] (with a mod running) */
-static const FuncEntry *slot_entry(uint32_t i) { return i <= FUNC_COUNT ? &FUNCS[i - 1] : &MOD_FUNCS[i - 1 - FUNC_COUNT]; }
+/* slot i + 1: FUNCS[i]; FUNC_COUNT + i + 1: the running mod's functions[i] */
+static const FuncEntry *s_mod_funcs;
+static const FuncEntry *slot_entry(uint32_t i) { return i <= FUNC_COUNT ? &FUNCS[i - 1] : &s_mod_funcs[i - 1 - FUNC_COUNT]; }
 
 void core_build_dispatch(void) {
-    unsigned nmod = g_mod ? MOD_FUNC_COUNT : 0;
+    const FuncEntry *mf = s_mod_funcs = g_mod ? MODS[g_mod - 1].funcs : NULL;
+    unsigned nmod = g_mod ? MODS[g_mod - 1].func_count : 0;
     s_base = FUNCS[0].start & ~3u;
     uint32_t end = s_base;
     for (unsigned i = 0; i < FUNC_COUNT; i++)
         if (FUNCS[i].end > end) end = FUNCS[i].end;
     for (unsigned i = 0; i < nmod; i++)
-        if (MOD_FUNCS[i].end > end) end = MOD_FUNCS[i].end;
+        if (mf[i].end > end) end = mf[i].end;
     s_nslots = (end - s_base) / 4 + 1;
     s_slots = calloc(s_nslots, sizeof *s_slots);
     /* Ranges can nest (small orphan pseudo-functions inside a function around switch tables).
@@ -135,8 +137,8 @@ void core_build_dispatch(void) {
     for (unsigned i = 0; i < FUNC_COUNT; i++)
         for (uint32_t a = FUNCS[i].start; a < FUNCS[i].end; a += 4) s_slots[(a - s_base) / 4] = (uint16_t)(i + 1);
     for (unsigned i = 0; i < nmod; i++)
-        if (MOD_FUNCS[i].start >= s_base)
-            for (uint32_t a = MOD_FUNCS[i].start; a < MOD_FUNCS[i].end; a += 4) s_slots[(a - s_base) / 4] = (uint16_t)(FUNC_COUNT + i + 1);
+        if (mf[i].start >= s_base)
+            for (uint32_t a = mf[i].start; a < mf[i].end; a += 4) s_slots[(a - s_base) / 4] = (uint16_t)(FUNC_COUNT + i + 1);
 }
 
 bool core_dispatch(Ctx *c, uint32_t addr) {

@@ -5,7 +5,7 @@
  * game's own animation and text stay; its lines are hidden, see LINE_PANES). Icons follow the button mapping of the controller
  * that paused; a player on a GameCube controller sees the game's own picture. Art:
  * tools/make_pause_art.py (pause_art_data.S).
- * Also MKDD Plus's title bars (SELECT CUP / COURSE / STAGE "/ Y X"), whose GameCube buttons are
+ * Also the mods' title bars (SELECT CUP / COURSE / STAGE "/ Y X", RTGP "/ Y"), whose GameCube buttons are
  * part of the picture: shown without them, with a line below that names the Switch buttons. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,7 +54,8 @@ static const struct { const char *file; int gc; int w, h; const char *arc; } SLO
 static GLuint s_tex[S_COUNT];
 
 /* MKDD Plus's title bars (titleline.arc, 512x32 IA4) end in "/ Y X" with the GameCube's Y and X
- * buttons drawn in (the buttons that change the track set). They are shown without the slash and
+ * buttons drawn in (the buttons that change the track set); Retro Track Grand Prix's in "/ Y" (its X
+ * changes the set too). They are shown without the slash and
  * the buttons, and the renderer draws a hint line right below (render_set_below): "PRESS (Y) OR
  * (X) FOR MORE CUPS" in the game's lettering, with the Switch buttons mapped to GameCube Y and X.
  * The original game's bars have no buttons (fewer shapes in the picture) and are left alone. */
@@ -127,8 +128,9 @@ static unsigned patch_layout(const char *arc) {
 }
 
 /* The picture's shapes from left to right (runs of columns with visible pixels, wider than 3):
- * Plus's bars are "SELECT", "CUP", "/", Y, X. Returns the left edge of the slash (-1: not a
- * bar with buttons), *l and *r the edges of the words before it. */
+ * Plus's bars are "SELECT", "CUP", "/", Y, X, RTGP's "SELECT", "CUP", "/", Y; the slash and the
+ * buttons are the narrow shapes at the end (~30 px, a word is wider). Returns the left edge of the
+ * slash (-1: not a bar with buttons), *l and *r the edges of the words before it. */
 static int bar_buttons(const uint8_t *rgba, int *l, int *r) {
     int start[16], end[16], n = 0, run = -1;
     for (int x = 0; x <= BAR_W; x++) {
@@ -140,10 +142,12 @@ static int bar_buttons(const uint8_t *rgba, int *l, int *r) {
             run = -1;
         }
     }
-    if (n < 5) return -1;
+    int t = 0;
+    while (t < n && end[n - 1 - t] - start[n - 1 - t] <= 40) t++;
+    if (t < 2 || t > 3 || n - t < 1) return -1;
     *l = start[0];
-    *r = end[n - 4];
-    return start[n - 3] - 2;
+    *r = end[n - t - 1];
+    return start[n - t] - 2;
 }
 
 static void bars_init(void) {
@@ -184,7 +188,7 @@ static void bars_init(void) {
         }
         free(b);
     }
-    if (n) rt_log("pause art: %u title bars with GameCube buttons (MKDD Plus), shown with a Switch button hint", n);
+    if (n) rt_log("pause art: %u title bars with GameCube buttons (a mod's), shown with a Switch button hint", n);
 }
 
 void pause_art_init(void) {
@@ -380,7 +384,8 @@ static float hint_letter(uint8_t *dst, char c, float x, int y, int size, bool dr
 
 /* "PRESS (Y) OR (X) FOR MORE CUPS", or its width; badges are the Switch buttons for GameCube Y, X. */
 static float hint_line(uint8_t *dst, int i, float x, int by, int bx, bool draw) {
-    const int size = 32, badge = 48, step = 40, y = (HINT_H - size) / 2; /* the badge art has a margin */
+    /* pad: moved down a little, clear of the bar above (the badge art has a margin) */
+    const int size = 32, badge = 48, step = 40, pad = 6, y = (HINT_H - size) / 2 + pad;
     char tail[32];
     snprintf(tail, sizeof tail, " FOR MORE %s", BAR_MORE[i]);
     const char *parts[5] = {"PRESS ", NULL, " OR ", NULL, tail};
@@ -388,7 +393,7 @@ static float hint_line(uint8_t *dst, int i, float x, int by, int bx, bool draw) 
     float x0 = x;
     for (int k = 0; k < 5; k++) {
         if (!parts[k]) {
-            if (draw) put_badge(dst, HINT_W, (int)(x + 0.5f) - (badge - step) / 2, (HINT_H - badge) / 2, badge, badges[k]);
+            if (draw) put_badge(dst, HINT_W, (int)(x + 0.5f) - (badge - step) / 2, (HINT_H - badge) / 2 + pad, badge, badges[k]);
             x += step;
             continue;
         }

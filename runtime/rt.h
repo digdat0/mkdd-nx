@@ -155,6 +155,18 @@ enum { MTX_COPY, MTX_CONCAT, MTX_MULTVEC, VEC_CROSS, VEC_MAG, MTX_INVERSE };
 /* MKDD Plus 3.3: engine classes listed 50cc, 150cc, 200cc, Mirror (the mod has 200cc second). Run
  * once the mod's main.dol is in memory. */
 void plus_class_order(void);
+void sha1_hex(const uint8_t *data, size_t n, char out[41]);
+
+/* ---- mod_install.c: a mod's xdelta patch or patched disc image -> a mods/<key> folder ---- */
+typedef bool (*ModProgress)(void *ud, uint64_t done, uint64_t total); /* false: cancel */
+/* Which of MODS (n = MODS[n - 1]) the patch or image at path makes, against the open disc image
+ * (no overlay yet); 0 with a message when none or it can't be read. */
+unsigned mod_identify(const char *path, char *err, size_t errlen);
+/* Install it to out_dir (written as out_dir.tmp, renamed when complete); returns its MODS number,
+ * 0 with a message on failure (nothing left behind). */
+unsigned mod_install(const char *path, const char *out_dir, ModProgress cb, void *ud, char *err, size_t errlen);
+/* Log code words the game rewrote since boot (call once a frame; checks about once a second). */
+void machine_watch_code(void);
 void cheats_unlock_all(void);
 void cheats_set(bool on); /* on: unlock_all; off: the earned bits back */
 bool cheats_active(void);
@@ -177,6 +189,9 @@ void diag_flush(void);
  * Switch profiler; LOG_AUDIO = audio lines (DSP, AI timing, audio thread). 0 writes nothing. */
 enum { LOG_GAME = 1, LOG_AUDIO = 2 };
 extern volatile uint32_t g_log_mask;
+/* Race HUD elements not drawn, single player only (native.c drawK2D): HUD_* bits. */
+enum { HUD_PLACE = 1, HUD_ITEMS = 2, HUD_LAPS = 4, HUD_MAP = 8, HUD_SPEED = 16, HUD_ORDER = 32, HUD_ALL = 63 };
+extern volatile uint32_t g_hud_hide;
 /* Start-up: game lines are logged whatever LOGGING says, each written to the SD card at once, so
  * a start that crashes or hangs shows its last step. The front end clears it at the first game frame. */
 extern volatile bool g_log_boot;

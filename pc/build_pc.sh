@@ -19,6 +19,7 @@ RTF="-std=gnu11 -O2 -g -ffp-contract=off -fwrapv -fno-strict-aliasing -I../runti
 GENF="-std=gnu11 -O2 -ffp-contract=off -fwrapv -fno-strict-aliasing -I../runtime -I$GEN -w $MKDD_GENF_EXTRA"
 jobs=()
 for f in ../runtime/*.c main_pc.c prof_win.c ../switch/tev_gen.c; do
+    [ "$f" = ../runtime/mod_install.c ] && continue  # needs liblzma; the harness plays installed mods (MKDD_MOD)
     o=$OUT/rt_$(basename "${f%.c}").o
     if [ ! -f "$o" ] || [ "$f" -nt "$o" ] || [ -n "$(find ../runtime -name '*.h' -newer "$o")" ]; then jobs+=("gcc $RTF -c $f -o $o"); fi
 done

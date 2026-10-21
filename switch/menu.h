@@ -13,10 +13,11 @@ typedef struct {
     bool unlock_all;   /* every character, kart, cup and mode, this session only (never saved) */
     int logging;       /* 0 disabled, 1 game, 2 game + audio, 3 audio */
     bool hd_textures;  /* use the HD texture file (HD_FILE) when there is one */
-    bool plus;         /* play MKDD Plus when it is in mods/plus, from the next start */
+    char mod[16];      /* the mod to play, from the next start: "auto" (the first found), "off" or a MODS key */
     int fov[2];        /* race camera field of view for 4:3 / 16:9: 0 normal (the game's), 1 wide, 2 wider */
     int aniso;         /* texture filtering: 0 normal, 1-4 anisotropic 2x / 4x / 8x / 16x */
     bool border;       /* 4:3: checkered border art in the side bars during races */
+    unsigned hud_hide; /* race HUD elements turned off, single player: HUD_* bits (runtime/rt.h) */
     bool profiler;     /* sampling profiler (logs/mkdd_prof.bin), from the next start */
     int docked_res;    /* docked (TV), 1080p output: DOCKED_NATIVE (the game's 640x480-ish frame), _2X, _1_5X or
                         * _AUTO (2x, stepping down while the GPU can't keep up). Values kept from when it was on/off. */
@@ -67,8 +68,11 @@ void menu_choice(int w, int h, const char *title, const char *const *opts, int n
 void menu_loading(int w, int h, const char *line1, const char *line2, float progress);
 /* The 4:3 border art in the side bars beside a w x h screen's 4:3 picture (after render_present). */
 void menu_border(int w, int h);
-/* What the start-up found: MKDD Plus usable in mods/plus, and whether this session plays it. */
-void menu_set_plus(bool found, bool running);
+/* What the start-up found: the mods usable in mods/ (bit n - 1 for MODS[n - 1]) and the one this
+ * session plays (0: none). */
+void menu_set_mods(unsigned found, unsigned running);
+/* The mod the MOD setting picks among the found ones (bit mask as above): 0 none, n = MODS[n - 1]. */
+unsigned mods_pick(unsigned found);
 /* Open the menu (game paused) on its main page, with notice as the hint until the cursor moves. */
 void menu_open(const char *notice);
 /* 5x7 bitmap ("0"/"1" x 35, rows top first) for c, or NULL. */

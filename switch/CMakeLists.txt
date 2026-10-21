@@ -11,7 +11,7 @@ set(CMAKE_C_RESPONSE_FILE_LINK_FLAG "@")
 
 set(ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 # The app's version: the NACP's and the updater's (only update.c sees it, so a bump rebuilds one file)
-set(MKDD_VERSION "1.3.3")
+set(MKDD_VERSION "1.4.0")
 if(NOT GEN_DIR)
     message(FATAL_ERROR "set -DGEN_DIR=<output of tools/gen_c.py>")
 endif()
@@ -34,7 +34,7 @@ set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/pause_art_data.S PROPERT
 
 add_executable(MKDD-NX ${SW_SOURCES} ${RT_SOURCES} ${GEN_SOURCES} ${GEN_DIR}/table.c ${CMAKE_CURRENT_SOURCE_DIR}/pause_art_data.S)
 set_property(SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/update.c APPEND PROPERTY COMPILE_DEFINITIONS MKDD_VERSION="${MKDD_VERSION}")
-target_link_libraries(MKDD-NX SDL2 EGL GLESv2 glapi drm_nouveau curl z zstd nx m)
+target_link_libraries(MKDD-NX SDL2 EGL GLESv2 glapi drm_nouveau curl z zstd lzma nx m)
 # Mesa is C++: link with the C++ driver so libstdc++ / libsupc++ come in
 set_target_properties(MKDD-NX PROPERTIES LINKER_LANGUAGE CXX)
 

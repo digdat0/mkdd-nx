@@ -9,7 +9,7 @@
 #include "table.h"
 
 uint8_t *g_ram, *g_aram;
-bool g_mod; /* running a mod's code (table.h MOD_*) */
+unsigned g_mod; /* the mod whose code is running: 0 = none, n = MODS[n - 1] */
 
 void core_build_dispatch(void);
 bool core_dispatch(Ctx *c, uint32_t addr);
@@ -90,7 +90,7 @@ static void sha1_block(uint32_t h[5], const uint8_t *p) {
     }
     h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e;
 }
-static void sha1_hex(const uint8_t *data, size_t n, char out[41]) {
+void sha1_hex(const uint8_t *data, size_t n, char out[41]) {
     uint32_t h[5] = {0x67452301u, 0xEFCDAB89u, 0x98BADCFEu, 0x10325476u, 0xC3D2E1F0u};
     size_t i = 0;
     for (; i + 64 <= n; i += 64) sha1_block(h, data + i);
@@ -102,6 +102,38 @@ static void sha1_hex(const uint8_t *data, size_t n, char out[41]) {
     for (int j = 0; j < 8; j++) tail[tl - 1 - j] = (uint8_t)(bits >> (8 * j));
     for (size_t j = 0; j < tl; j += 64) sha1_block(h, tail + j);
     for (int j = 0; j < 5; j++) snprintf(out + 8 * j, 9, "%08x", (unsigned)h[j]);
+}
+
+/* ---- code watch: the generated C is the code as main.dol has it, so an instruction the game
+ * rewrites at run time changes nothing (unless gen_c.py reads it from memory: --dyn-imm). A copy of
+ * the code sections taken at boot shows which words a game or mod rewrites; each is logged once. */
+static struct { uint32_t addr, size; uint8_t *copy; } s_code[7];
+static unsigned s_code_n;
+
+static void code_watch_start(const uint32_t *addr, const uint32_t *size) {
+    for (unsigned i = 0; i < s_code_n; i++) free(s_code[i].copy);
+    s_code_n = 0;
+    for (int i = 0; i < 7; i++) { /* the DOL's text sections */
+        if (!size[i]) continue;
+        uint8_t *copy = malloc(size[i]);
+        if (!copy) continue;
+        for (uint32_t k = 0; k < size[i]; k += 4) put_be(copy + k, 4, m_read_be(addr[i] + k, 4));
+        s_code[s_code_n].addr = addr[i], s_code[s_code_n].size = size[i], s_code[s_code_n++].copy = copy;
+    }
+}
+
+void machine_watch_code(void) {
+    static unsigned frame, reported;
+    if (++frame % 60 || reported >= 256) return; /* about once a second; a flood is cut short */
+    for (unsigned i = 0; i < s_code_n; i++)
+        for (uint32_t k = 0; k < s_code[i].size; k += 4) {
+            uint32_t was = (uint32_t)get_be(s_code[i].copy + k, 4), now = (uint32_t)m_read_be(s_code[i].addr + k, 4);
+            if (was == now) continue;
+            put_be(s_code[i].copy + k, 4, now);
+            rt_log("code watch: %#010x rewritten %08x -> %08x (%s)", s_code[i].addr + k, was, now,
+                   core_function_name(s_code[i].addr + k));
+            if (++reported >= 256) { rt_log("code watch: 256 words rewritten, no more reported"); return; }
+        }
 }
 
 /* Load the game's code and data from main.dol on the disc (it is not part of the build): find it
@@ -130,10 +162,13 @@ static bool load_dol(const char *disc_path, char *err, size_t errlen) {
     /* a mod (disc_overlay) brings its own main.dol: the one its code was generated from */
     const char *mod = disc_overlay_name();
     if (mod) {
-        if (!MOD_DOL_SHA1[0] || strcmp(sha, MOD_DOL_SHA1) != 0) {
+        unsigned n = 0;
+        while (n < MOD_COUNT && strcmp(sha, MODS[n].dol_sha1) != 0) n++;
+        if (n == MOD_COUNT) {
             free(dol);
-            rt_log("boot: %s's main.dol SHA-1 %s, supported: %s", mod, sha, MOD_DOL_SHA1[0] ? MOD_DOL_SHA1 : "none");
-            snprintf(err, errlen, "%s: main.dol is not the supported version of the mod (%s, SHA-1 %.8s)", mod, MOD_NAME, sha);
+            rt_log("boot: %s's main.dol SHA-1 %s is none of this build's %u mods", mod, sha, MOD_COUNT);
+            for (unsigned i = 0; i < MOD_COUNT; i++) rt_log("boot:   %s (%s): %s", MODS[i].name, MODS[i].key, MODS[i].dol_sha1);
+            snprintf(err, errlen, "%s: main.dol is not a supported mod version (SHA-1 %.8s)", mod, sha);
             return false;
         }
         /* every section: a mod can add some (MKDD Plus: code at 0x803e2300) */
@@ -141,9 +176,10 @@ static bool load_dol(const char *disc_path, char *err, size_t errlen) {
         for (int i = 0; i < 18; i++)
             if (size[i]) m_load(addr[i], dol + off[i], size[i]), loaded++;
         free(dol);
-        g_mod = true;
-        rt_log("boot: %s's main.dol loaded (%u bytes, %u sections, SHA-1 ok)", mod, dol_size, loaded);
-        plus_class_order(); /* the only mod this build knows (MOD_DOL_SHA1) */
+        g_mod = n + 1;
+        rt_log("boot: %s's main.dol loaded: %s (%u bytes, %u sections, SHA-1 ok)", mod, MODS[n].name, dol_size, loaded);
+        if (!strcmp(MODS[n].key, "plus")) plus_class_order();
+        code_watch_start(addr, size);
         return true;
     }
     if (strcmp(sha, DOL_SHA1) != 0) {
@@ -165,6 +201,7 @@ static bool load_dol(const char *disc_path, char *err, size_t errlen) {
         m_load(SECTIONS[s].addr, dol + off[i], SECTIONS[s].size);
     }
     free(dol);
+    code_watch_start(addr, size);
     rt_log("boot: main.dol loaded from the disc (%u bytes, %u sections, SHA-1 ok)", dol_size, SECTION_COUNT);
     return true;
 }

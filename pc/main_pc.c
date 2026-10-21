@@ -39,6 +39,7 @@ int main(int argc, char **argv) {
     }
     diag_start_watchdog("mkdd_trace.log");
     if (getenv("MKDD_WIDE")) g_aspect_scale = 4.0f / 3.0f;
+    if (getenv("MKDD_HUD_HIDE")) g_hud_hide = (uint32_t)strtoul(getenv("MKDD_HUD_HIDE"), NULL, 0);
     PadStatus pad = {0};
     pad.connected = true;
     pad_set(0, &pad);

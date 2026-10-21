@@ -454,7 +454,7 @@ bool rt_hle(Ctx *c, uint32_t addr) {
         cheats_tick();
         watch_scene_load(c);
         read_race_phase();
-        if (g_log_mask & LOG_GAME) watch_flow(p[0].button);
+        if (g_log_mask & LOG_GAME) watch_flow(p[0].button), machine_watch_code();
         ctx_set_gpr(c, 3, 0);
         break;
     }

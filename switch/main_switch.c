@@ -4,11 +4,13 @@
 #include <dirent.h>
 #include <malloc.h>
 #include <math.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 #include <switch.h>
@@ -34,11 +36,10 @@ const char g_build_stamp[] = __DATE__ " " __TIME__;
 #define SAVE_DIR APP_DIR "/save"
 #define MODS_DIR APP_DIR "/mods"
 #define HD_PATH MODS_DIR "/hd/" HD_FILE
-#define PLUS_DIR MODS_DIR "/plus"
-#define MOD_SAVE_DIR SAVE_DIR "/plus" /* a mod's saves: MKDD Plus keeps its records in another layout */
 #define APP_TITLE "MARIO KART DOUBLE DASH"
 
 static SDL_Window *s_window;
+static const char *s_mod_key; /* the mods/ folder this session plays, NULL for the standard game */
 static u64 s_boot_tick;
 static Ctx s_boot;
 
@@ -167,16 +168,23 @@ static bool find_disc(char *out, size_t n) {
     return best < 99;
 }
 
-/* MKDD Plus extracted to mods/plus (sys/main.dol, sys/fst.bin, files/). Only when this build
- * carries a mod's code (MOD_NAME). */
-static bool find_mod(void) {
-    if (!MOD_NAME[0]) return false;
-    struct stat st;
-    bool ok = stat(PLUS_DIR "/sys/main.dol", &st) == 0 && stat(PLUS_DIR "/sys/fst.bin", &st) == 0 &&
-              stat(PLUS_DIR "/files", &st) == 0 && S_ISDIR(st.st_mode);
-    if (ok) rt_log("mod: found " PLUS_DIR);
-    else if (stat(PLUS_DIR, &st) == 0) rt_log("mod: " PLUS_DIR " needs sys/main.dol, sys/fst.bin and files/");
-    return ok;
+/* The mods this build carries code for, extracted to mods/<key> (sys/main.dol, sys/fst.bin,
+ * files/): bit n - 1 for MODS[n - 1]. */
+static unsigned find_mods(void) {
+    unsigned found = 0;
+    for (unsigned i = 0; i < MOD_COUNT && i < 32; i++) {
+        char dir[256], p[300];
+        struct stat st;
+        snprintf(dir, sizeof dir, MODS_DIR "/%s", MODS[i].key);
+        if (stat(dir, &st) != 0) continue;
+        bool ok = true;
+        snprintf(p, sizeof p, "%s/sys/main.dol", dir), ok = ok && stat(p, &st) == 0;
+        snprintf(p, sizeof p, "%s/sys/fst.bin", dir), ok = ok && stat(p, &st) == 0;
+        snprintf(p, sizeof p, "%s/files", dir), ok = ok && stat(p, &st) == 0 && S_ISDIR(st.st_mode);
+        if (ok) found |= 1u << i, rt_log("mod: found %s (%s)", dir, MODS[i].name);
+        else rt_log("mod: %s needs sys/main.dol, sys/fst.bin and files/", dir);
+    }
+    return found;
 }
 
 /* A choice of two on the loading screen: up/down, then A. */
@@ -235,20 +243,152 @@ static bool copy_file(const char *from, const char *to) {
     return ok;
 }
 
-/* Plus with no save yet and a standard save there: offer to start Plus from a copy of it. Plus
- * keeps the game's save format, so the copy loads as it is; the standard save is left alone. */
-static void offer_save_copy(void) {
+/* A mod with no save yet (save_dir) and a standard save there: offer to start the mod from a copy
+ * of it. The mods keep the game's save format, so the copy loads as it is; the standard save is
+ * left alone. */
+static void offer_save_copy(const char *save_dir, const char *key) {
     struct stat st;
-    if (has_gci(MOD_SAVE_DIR "/card_a") || stat(SAVE_DIR SYSTEM_GCI, &st) != 0) return;
-    if (choose("PLUS HAS NO SAVE YET", "COPY MY MARIO KART SAVE", "START A NEW SAVE", 0,
+    char card[300], gci[400], title[64];
+    snprintf(card, sizeof card, "%s/card_a", save_dir);
+    if (has_gci(card) || stat(SAVE_DIR SYSTEM_GCI, &st) != 0) return;
+    snprintf(title, sizeof title, "%s HAS NO SAVE YET", key);
+    for (char *t = title; *t; t++) *t = (char)toupper((unsigned char)*t);
+    if (choose(title, "COPY MY MARIO KART SAVE", "START A NEW SAVE", 0,
                "UNLOCKS AND RECORDS; YOUR SAVE STAYS AS IT IS") != 0) {
-        rt_log("plus: new save");
+        rt_log("mod: new save");
         return;
     }
-    mkdir(MOD_SAVE_DIR "/card_a", 0777);
-    bool ok = copy_file(SAVE_DIR SYSTEM_GCI, MOD_SAVE_DIR SYSTEM_GCI);
-    rt_log("plus: copying the standard save %s", ok ? "done" : "FAILED");
+    mkdir(card, 0777);
+    snprintf(gci, sizeof gci, "%s" SYSTEM_GCI, save_dir);
+    bool ok = copy_file(SAVE_DIR SYSTEM_GCI, gci);
+    rt_log("mod: copying the standard save %s", ok ? "done" : "FAILED");
     if (!ok) screen("COULD NOT COPY THE SAVE", "STARTING WITH A NEW ONE", -1), svcSleepThread(2500000000ll);
+}
+
+/* ---- mod install: an xdelta patch or a patched disc image in mods/ becomes mods/<key> ---- */
+#define MODS_SEEN CFG_DIR "/mods_seen.txt" /* "<name> <size> <mods_sig>": files in mods/ that are no mod this build knows */
+
+/* The mods this build knows, as a word (a build that knows more checks those files again). */
+static const char *mods_sig(void) {
+    static char sig[8 * 32 + 1];
+    size_t k = 0;
+    for (unsigned i = 0; i < MOD_COUNT && k + 8 < sizeof sig; i++) k += (size_t)snprintf(sig + k, sizeof sig - k, "%.8s", MODS[i].dol_sha1);
+    return sig;
+}
+
+static bool upper_cpy(char *dst, size_t size, const char *s) {
+    size_t i = 0;
+    for (; s[i] && i + 1 < size; i++) dst[i] = (char)toupper((unsigned char)s[i]);
+    dst[i] = 0;
+    return true;
+}
+
+/* "name\nsize" from an installed mod's source.txt, or a mods_seen.txt line, matches this file. */
+static bool file_listed(const char *list, const char *name, long long size, bool lines) {
+    FILE *f = fopen(list, "r");
+    if (!f) return false;
+    char a[256], b[64], want[64];
+    snprintf(want, sizeof want, "%lld", size);
+    bool hit = false;
+    if (!lines) {
+        hit = fgets(a, sizeof a, f) && fgets(b, sizeof b, f) && (a[strcspn(a, "\r\n")] = 0, b[strcspn(b, "\r\n")] = 0, 1) &&
+              !strcmp(a, name) && !strcmp(b, want);
+    } else {
+        char line[400], key[400];
+        snprintf(key, sizeof key, "%s %s %s", name, want, mods_sig());
+        while (!hit && fgets(line, sizeof line, f)) line[strcspn(line, "\r\n")] = 0, hit = !strcmp(line, key);
+    }
+    fclose(f);
+    return hit;
+}
+
+typedef struct { const char *title; PadState pad; u64 shown; } InstallUi;
+static bool install_progress(void *ud, uint64_t done, uint64_t total) {
+    InstallUi *ui = ud;
+    padUpdate(&ui->pad);
+    if (padGetButtonsDown(&ui->pad) & HidNpadButton_B) return false;
+    u64 now = armGetSystemTick();
+    if (now - ui->shown < armNsToTicks(100000000)) return true; /* 10 updates a second at most */
+    ui->shown = now;
+    char line[96];
+    snprintf(line, sizeof line, "%u%%   B: CANCEL", total ? (unsigned)(done * 100 / total) : 0);
+    screen(ui->title, line, total ? (float)done / (float)total : 0.f);
+    return true;
+}
+
+/* Each mod file in mods/ (.xdelta / .xd3 / .vcdiff patch of the clean disc, or a patched .iso /
+ * .gcm) not installed yet: say which mod it is, offer to install it, then to delete the file. */
+static void install_mods(void) {
+    DIR *d = opendir(MODS_DIR);
+    if (!d) return;
+    char names[16][256];
+    int count = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) && count < 16) {
+        const char *dot = strrchr(e->d_name, '.');
+        if (dot && (!strcasecmp(dot, ".xdelta") || !strcasecmp(dot, ".xd3") || !strcasecmp(dot, ".vcdiff") ||
+                    !strcasecmp(dot, ".iso") || !strcasecmp(dot, ".gcm")))
+            snprintf(names[count++], sizeof names[0], "%s", e->d_name);
+    }
+    closedir(d);
+    for (int i = 0; i < count; i++) {
+        char path[512], err[256], line1[96], line2[96];
+        struct stat st;
+        snprintf(path, sizeof path, MODS_DIR "/%s", names[i]);
+        if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+        bool done = file_listed(MODS_SEEN, names[i], (long long)st.st_size, true);
+        for (unsigned m = 0; m < MOD_COUNT && !done; m++) {
+            char src[300];
+            snprintf(src, sizeof src, MODS_DIR "/%s/source.txt", MODS[m].key);
+            done = file_listed(src, names[i], (long long)st.st_size, false);
+        }
+        if (done) continue;
+        rt_log("install: checking %s (%lld bytes)", path, (long long)st.st_size);
+        upper_cpy(line2, sizeof line2, names[i]);
+        screen("CHECKING A MOD FILE", line2, 0.05f);
+        unsigned n = mod_identify(path, err, sizeof err);
+        if (!n) {
+            rt_log("install: %s: %s", names[i], err);
+            FILE *f = fopen(MODS_SEEN, "a");
+            if (f) fprintf(f, "%s %lld %s\n", names[i], (long long)st.st_size, mods_sig()), fclose(f);
+            upper_cpy(line1, sizeof line1, err);
+            for (int k = 0; k < 240 && appletMainLoop(); k++) screen(line2, line1, 0.05f); /* 4 s */
+            continue;
+        }
+        const ModInfo *mi = &MODS[n - 1];
+        struct statvfs vf;
+        double free_gb = statvfs(APP_DIR, &vf) == 0 ? (double)vf.f_bavail * vf.f_frsize / 1e9 : -1;
+        snprintf(line1, sizeof line1, "INSTALL %s?", mi->name);
+        upper_cpy(line1, sizeof line1, line1);
+        char hint[96];
+        if (free_gb >= 0) snprintf(hint, sizeof hint, "TAKES A FEW MINUTES; SD CARD: %.1f GB FREE", free_gb);
+        else snprintf(hint, sizeof hint, "TAKES A FEW MINUTES");
+        if (choose(line1, "INSTALL NOW", "NOT NOW", 0, hint) != 0) {
+            rt_log("install: %s: not now", names[i]);
+            continue;
+        }
+        char out[300];
+        snprintf(out, sizeof out, MODS_DIR "/%s", mi->key);
+        snprintf(line1, sizeof line1, "INSTALLING %s", mi->name);
+        upper_cpy(line1, sizeof line1, line1);
+        InstallUi ui = {line1, {0}, 0};
+        padInitializeDefault(&ui.pad);
+        padUpdate(&ui.pad);
+        if (!mod_install(path, out, install_progress, &ui, err, sizeof err)) {
+            upper_cpy(line2, sizeof line2, err);
+            for (int k = 0; k < 300 && appletMainLoop(); k++) screen("THE MOD WAS NOT INSTALLED", line2, -1); /* 5 s */
+            continue;
+        }
+        snprintf(g_set.mod, sizeof g_set.mod, "%s", mi->key); /* play what was just installed */
+        settings_save();
+        snprintf(line1, sizeof line1, "%s IS INSTALLED", mi->name);
+        upper_cpy(line1, sizeof line1, line1);
+        snprintf(hint, sizeof hint, "THE MOD NO LONGER NEEDS IT: FREES %.1f GB", (double)st.st_size / 1e9);
+        if (choose(line1, "KEEP THE MOD FILE", "DELETE THE MOD FILE", 0, hint) == 1) {
+            bool ok = remove(path) == 0;
+            rt_log("install: deleting %s %s", path, ok ? "done" : "FAILED");
+        }
+    }
 }
 
 /* ---- audio: SDL pulls from the AI queue, resampled from the game rate (32/48 kHz) ---- */
@@ -696,27 +836,37 @@ int main(int argc, char **argv) {
     if (!find_disc(disc, sizeof disc)) fatal("NO DISC IMAGE FOUND", "PUT YOUR GM4E01 .ISO OR .RVZ IN /SWITCH/MKDD-NX/");
     if (disc_open(disc, err, sizeof err)) {
         menu_font_load();  /* the loading screen's letters */
-        /* MKDD Plus in mods/plus: played when it loads and the menu's MODS page has it on (from
-         * here on the disc is the mod's); otherwise, or if it can't be used, the standard game
-         * (the disc is left as it was) */
-        bool plus_found = find_mod(), plus_running = false;
-        if (plus_found && !g_set.plus) rt_log("mod: MKDD Plus is turned off in the menu (MODS); playing the standard game");
-        if (plus_found && g_set.plus) {
-            screen("LOADING MARIO KART: DOUBLE DASH!! PLUS", NULL, 0.1f);
-            if (disc_overlay(PLUS_DIR, err, sizeof err)) {
-                rt_log("mod: playing %s", MOD_NAME);
-                plus_running = true;
-                mkdir(MOD_SAVE_DIR, 0777);
-                offer_save_copy();
-                memcard_set_path(MOD_SAVE_DIR "/slotA.bin");
+        /* A mod in mods/<key>: played when it loads and the menu's MODS page picks it (from here on
+         * the disc is the mod's); otherwise, or if it can't be used, the standard game (the disc is
+         * left as it was) */
+        if (MOD_COUNT) install_mods();
+        unsigned found = find_mods(), pick = mods_pick(found);
+        if (found && !pick) rt_log("mod: none picked in the menu (MODS: %s); playing the standard game", g_set.mod);
+        if (pick) {
+            const ModInfo *mi = &MODS[pick - 1];
+            char dir[256], line[96];
+            snprintf(dir, sizeof dir, MODS_DIR "/%s", mi->key);
+            snprintf(line, sizeof line, "LOADING %s", mi->name);
+            for (char *t = line; *t; t++) *t = (char)toupper((unsigned char)*t);
+            screen(line, NULL, 0.1f);
+            if (disc_overlay(dir, err, sizeof err)) {
+                rt_log("mod: playing %s", mi->name);
+                s_mod_key = mi->key;
+                snprintf(dir, sizeof dir, SAVE_DIR "/%s", mi->key);
+                mkdir(dir, 0777);
+                offer_save_copy(dir, mi->key);
+                snprintf(line, sizeof line, "%s/slotA.bin", dir);
+                memcard_set_path(line);
             } else {
                 rt_log("mod: %s; playing the standard game", err);
+                found &= ~(1u << (pick - 1)); /* failed to load: not offered */
+                pick = 0;
                 for (int i = 0; i < 180 && appletMainLoop(); i++) { /* 3 s */
-                    screen("PLUS COULD NOT BE LOADED: A FILE IS MISSING", "STARTING THE STANDARD GAME (SEE LOGS/MKDD.LOG)", 0.1f);
+                    screen("THE MOD COULD NOT BE LOADED: A FILE IS MISSING", "STARTING THE STANDARD GAME (SEE LOGS/MKDD.LOG)", 0.1f);
                 }
             }
         }
-        menu_set_plus(plus_running || (plus_found && !g_set.plus), plus_running); /* failed to load: not offered */
+        menu_set_mods(found, pick);
         pause_art_init();  /* the pause screen's controller picture, drawn as a Pro Controller */
         render_set_subst(pause_art_texture);
         render_set_below(pause_art_below);
@@ -731,8 +881,12 @@ int main(int argc, char **argv) {
     render_shader_cache(CFG_DIR "/shaders.bin", shader_progress);
     if (!machine_boot(disc, &s_boot, err, sizeof err)) {
         rt_log("boot failed: %s", err);
-        if (disc_overlay_active()) fatal("THIS VERSION OF THE MOD IS NOT SUPPORTED", "NEEDS MKDD PLUS 3.3 (NTSC): SEE LOGS/MKDD.LOG");
+        if (disc_overlay_active()) fatal("THIS VERSION OF THE MOD IS NOT SUPPORTED", "SEE LOGS/MKDD.LOG FOR THE SUPPORTED VERSIONS");
         fatal("COULD NOT START THE GAME", "WRONG DISC: NEEDS MARIO KART DOUBLE DASH USA (GM4E01)");
+    }
+    if (s_mod_key && (!g_mod || strcmp(MODS[g_mod - 1].key, s_mod_key) != 0)) { /* another mod's main.dol in the folder */
+        rt_log("boot: mods/%s holds %s", s_mod_key, g_mod ? MODS[g_mod - 1].name : "no mod");
+        fatal("THE MOD FOLDER HOLDS ANOTHER MOD", "SEE LOGS/MKDD.LOG");
     }
     diag_start_watchdog(LOG_DIR "/mkdd_trace.log");
     cheats_set(g_set.unlock_all); /* session only: the save never gets these bits */
@@ -825,6 +979,7 @@ int main(int argc, char **argv) {
         render_set_backdrop(g_set.wide && title);
         static const float FOV_SCALE[3] = {1.0f, 1.15f, 1.3f}; /* tan(fovy / 2) times: NORMAL, WIDE, WIDER */
         g_fov_scale = FOV_SCALE[g_set.fov[g_set.wide] % 3];
+        g_hud_hide = g_set.hud_hide;
         render_set_hud43(wide);
         render_set_hd(g_set.hd_textures);
         static const float ANISO[5] = {1, 2, 4, 8, 16};

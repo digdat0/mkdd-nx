@@ -32,8 +32,9 @@
 
 #define LIKELY(x) __builtin_expect(!!(x), 1)
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)
-/* A mod's code is running (machine.c): its functions hand over to their fp_ versions (tools/gen_mod.py). */
-extern bool g_mod;
+/* The mod whose code is running (machine.c): 0 = none, n = MODS[n - 1]; its functions hand over to
+ * their fp<n>_ versions (tools/gen_mod.py). */
+extern unsigned g_mod;
 #define ALWAYS_INLINE static inline __attribute__((always_inline))
 
 /* One guest CPU thread. Guest code runs on exactly one host thread at a time (the runtime's

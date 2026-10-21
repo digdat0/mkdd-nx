@@ -18,6 +18,7 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 - Colour options: Accurate, Vivid, or your own brightness, contrast and saturation.
 - Up to 4 players, controller syncing from the game menu, and button remapping.
 - Unlock-all option that never touches your save.
+- Race HUD options: hide the position, items, laps, map, speedometer or race order in single player races.
 - In-game updater that installs the latest GitHub release.
 - On-screen FPS counter, and debug logging for bug reports (both under Debugging).
 
@@ -35,6 +36,7 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 - The [MKDD HD texture pack](https://sites.google.com/view/mkddhd/home-page): see [HD textures](#hd-textures).
 - The [Mario Kart: Double Dash!! Plus](https://mkdd.org/wiki/Mario_Kart:_Double_Dash!!_Plus) mod (v3.3 NTSC):
   see [MKDD Plus](#mkdd-plus).
+- The [Retro Track Grand Prix 2.1](https://gamebanana.com/mods/594415) mod: see [Retro Track Grand Prix](#retro-track-grand-prix).
 
 ## Getting started
 
@@ -54,8 +56,9 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 3. Copy your disc image into the same folder. If there is more than one, the game uses an `.iso` /
    `.gcm` first, then `.ciso`, then `.rvz`. Swapping an `.iso` for an `.rvz` (or back) is fine: saves,
    settings and HD textures carry over.
-4. Optional: HD textures in `mods/hd/` and the MKDD Plus mod in `mods/plus/` (see [HD textures](#hd-textures)
-   and [MKDD Plus](#mkdd-plus)).
+4. Optional: HD textures in `mods/hd/`, the MKDD Plus mod in `mods/plus/`, the Retro Track Grand Prix
+   patch in `mods/` (see [HD textures](#hd-textures), [MKDD Plus](#mkdd-plus) and
+   [Retro Track Grand Prix](#retro-track-grand-prix)).
 5. Start it from the homebrew menu with **title takeover**: hold **R** while starting any game
    from the HOME menu, then pick MKDD-NX. (The album / applet mode has too little memory.)
 
@@ -65,6 +68,7 @@ sdmc:/switch/MKDD-NX/
     Mario Kart - Double Dash!! (USA).iso     (or .rvz)
     mods/hd/hd-textures.bin  (optional)
     mods/plus/files, sys     (optional: MKDD Plus)
+    mods/MKDD RTGP 2.1 Update.xdelta   (optional: Retro Track Grand Prix, installed on the next start)
 ```
 
 The first start takes longer while shaders are compiled; later starts reuse them. Press **-** at
@@ -107,8 +111,8 @@ also opens by itself when a controller in use disconnects; reconnect it and clos
 |---|---|
 | Graphics | the page below |
 | Controls | **Sync controllers** (the system screen for pairing, the player order and single Joy-Cons), **Button mapping** (pick a GameCube button, press the Switch button for it) and **Rumble strength** (Off / Low (default) / High; the game's own Rumble option must be on too) |
-| Game | **Unlock all**: every character, kart, cup and mode while it is on; never written to your save, so your own progress stays as it is |
-| Mods | **MKDD Plus** (On (default) / Off when the mod is in `mods/plus/`, else NOT FOUND; see [MKDD Plus](#mkdd-plus)), **HD textures** (Off (default) / On when `mods/hd/hd-textures.bin` is in the app folder (see [HD textures](#hd-textures)), else NO PACK) and **Restart now**, which starts the game again to apply an MKDD Plus change (unsaved race progress is lost) |
+| Game | **Unlock all**: every character, kart, cup and mode while it is on; never written to your save, so your own progress stays as it is. **Race HUD**: turn each part of the race HUD on or off (position, items, laps, map, speedometer, race order; left/right turns them all on or off). Single player races only: split screen keeps the full HUD, and the lap timer always shows |
+| Mods | **Mod**: which installed mod to play, PLUS or RTGP, or OFF for the standard game (NONE FOUND when no mod is installed; see [MKDD Plus](#mkdd-plus) and [Retro Track Grand Prix](#retro-track-grand-prix)). **HD textures** (Off (default) / On when `mods/hd/hd-textures.bin` is in the app folder (see [HD textures](#hd-textures)), else NO PACK) and **Restart now**, which starts the game again to apply a Mod change (unsaved race progress is lost) |
 | Update | shows this version and the latest release; **Check for updates** downloads and installs the newest `MKDD-NX.nro`, then **Restart now** starts it (save your progress first) |
 | Debugging | the page below |
 | Exit game | back to the homebrew menu |
@@ -215,7 +219,7 @@ as it is, and the standard game stays playable.
    Copy it as it is: don't delete `Course`, `CourseName`, `Movie` or `StaffGhosts` (the mod's
    folders don't have them; the steps for building a modded ISO on a PC don't apply here).
 3. Start the game: with the mod in `mods/plus/`, MKDD-NX plays Plus. To play the standard game
-   again, turn **MKDD Plus** off on the menu's **Mods** page and choose **Restart now** (or move or
+   again, set **Mod** to OFF on the menu's **Mods** page and choose **Restart now** (or move or
    rename the `plus` folder). If a mod file is missing, the standard game starts
    instead and `logs/mkdd.log` names the file.
 
@@ -228,6 +232,39 @@ play (the mod removes it). HD textures still apply where the mod uses the game's
 (characters, karts, menus it didn't change); its new courses show their original textures. Only
 version 3.3 NTSC works: the game's code is built for that exact version, and another one is
 refused with a message.
+
+## Retro Track Grand Prix
+
+MKDD-NX can also play **Retro Track Grand Prix 2.1** (RTGP), with its retro cups and courses. It comes
+as a patch of the game's disc; MKDD-NX installs it on the Switch, so you don't need a PC tool to patch
+your disc image, and the standard game stays playable.
+
+1. Download `mario_kart_double_dash_rtgp_2_1.zip` from the mod's [GameBanana page](https://gamebanana.com/mods/594415) and
+   unzip it. The mod is too big for GameBanana: the zip only holds `OPEN ME.txt` with the link to the
+   patch. Download the patch from that link: `MKDD RTGP 2.1 Update.xdelta` (about 2 GB).
+2. On the SD card, create `sdmc:/switch/MKDD-NX/mods/` and copy the `.xdelta` file into it, as it is
+   (any name ending in `.xdelta` works):
+
+   ```
+   sdmc:/switch/MKDD-NX/
+       MKDD-NX.nro
+       Mario Kart - Double Dash!! (USA).iso     (or .rvz)
+       mods/
+           MKDD RTGP 2.1 Update.xdelta
+   ```
+
+3. Start the game. It finds the patch and asks **INSTALL RETRO TRACK GRAND PRIX 2.1?**: choose
+   **INSTALL NOW**. It takes a few minutes (B cancels) and writes the mod's files to `mods/rtgp/`
+   (about 2 GB more on the SD card; the patch is applied to your own disc image, which stays as it is,
+   and an `.rvz` works as well as an `.iso`).
+4. When it's done, the game offers to delete the `.xdelta` file: it is no longer needed, and deleting it
+   frees about 2 GB. Then the game starts in RTGP.
+
+To switch between RTGP, Plus and the standard game, change **Mod** on the menu's **Mods** page and
+choose **Restart now**. RTGP keeps its own saves in `save/rtgp/`, apart from the standard game's and
+Plus's (the first time, the game offers to start from a copy of your standard save). In a cup, X and Y
+switch between the mod's course sets. Only version 2.1 works; a patch for another version or another
+game is reported on screen and left alone.
 
 ## Reporting bugs
 
@@ -262,6 +299,7 @@ come from the [doldecomp/mkdd](https://github.com/doldecomp/mkdd) decompilation 
   `tools/hdtex_pack.py` converts (not included here).
 - **That1loser4**, creator of [Mario Kart: Double Dash!! Plus](https://mkdd.org/wiki/Mario_Kart:_Double_Dash!!_Plus),
   and everyone who contributed courses to it. The mod is not included here: get it from its own release.
+- The creators of [Retro Track Grand Prix](https://gamebanana.com/mods/594415). The mod is not included here: get it from its own page.
 
 The code in this repository is released under the MIT licence (`LICENSE`). Mario Kart:
 Double Dash!! and its characters are Nintendo's; this project is not affiliated with Nintendo.

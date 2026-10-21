@@ -3282,9 +3282,34 @@ static void hud_zone(uint32_t on) {
     fifo32(&p, on);
     hw_gather_copy(b, 6);
 }
+/* HUD elements the player turned off (g_hud_hide, HUD_* bits), single player only: drawK2D skips
+ * their pictures, found by pane tag (race2d.arc p1_race.blo; drawCourse's map kart icons have tag 0). */
+volatile uint32_t g_hud_hide;
+static uint32_t s_hud_hide, s_hud_zone; /* while Race2D::draw / drawCourse run: the bits, the marker */
+static bool hud_hidden(Ctx *c, uint8_t *M, uint32_t pane) {
+    char t[9];
+    int n = 0;
+    for (int i = 0; i < 8; i++) {
+        char ch = (char)mld(c, M, pane + 0x10 + i, 1); /* J2DPane mTag: u64, the name right-aligned */
+        if (ch) t[n++] = ch;
+    }
+    t[n] = 0;
+    uint32_t h = s_hud_hide;
+#define PRE(p) (!strncmp(t, p, sizeof p - 1))
+    if (h & HUD_PLACE && PRE("pos1")) return true;                                     /* pos11-18, pos11g-18g */
+    if (h & HUD_ITEMS && (PRE("slot1") || PRE("itm1"))) return true;
+    if (h & HUD_LAPS && (PRE("m1_lap") || PRE("ml1_"))) return true;
+    if (h & HUD_SPEED && (PRE("sp_mtr") || PRE("km_h") || ((PRE("sp1") || PRE("sp2") || PRE("sp3")) && n == 3))) return true;
+    if (h & HUD_ORDER && (PRE("CI_") || PRE("cw1") || PRE("posc") || (PRE("c1") && n == 3))) return true; /* top-4 column */
+    if (h & HUD_MAP && (PRE("course") || (!n && s_hud_zone == 2))) return true;
+#undef PRE
+    return false;
+}
 static void race_hud_call(Ctx *c, uint8_t *M, uint32_t fn, uint32_t self, uint32_t zone) {
     uint32_t rm = ld32(c, M, ctx_gpr(c, 13) - 0x5c38), info = rm ? ld32(c, M, rm + 0x38) : 0;
     bool one = info && (int16_t)ld16(c, M, info + 0x20) == 1;
+    s_hud_zone = zone;
+    s_hud_hide = one ? g_hud_hide : 0;
     if (one) hud_zone(zone);
     uint32_t old = ctx_gpr(c, 1), sp = old - 0x20;
     mst(c, M, sp, 4, old);
@@ -3292,6 +3317,7 @@ static void race_hud_call(Ctx *c, uint8_t *M, uint32_t fn, uint32_t self, uint32
     ctx_set_gpr(c, 3, self);
     ctx_call_orig(c, fn); /* the recompiled function's entry would come back here */
     ctx_set_gpr(c, 1, old);
+    s_hud_zone = s_hud_hide = 0;
     if (one) hud_zone(0);
 }
 volatile uint32_t g_race_frames;
@@ -4287,6 +4313,7 @@ static uint64_t i_drawK2D__10K2DPictureFffffb(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t self = (uint32_t)a0;
     if (!mld(c, M, self + 0xb0, 1)) return 0;
+    if (s_hud_hide && hud_hidden(c, M, self)) return 0;
     uint32_t old_sp = frame_push(c, M, 0x80), sp = old_sp - 0x80;
     for (uint32_t i = 0; (i & 0xFF) < mld(c, M, self + 0x110, 1); i++) vcall2(c, ld32(c, M, ld32(c, M, self) + 0x100), self, i);
     vcall1(c, 0x800bd5d8u, mld(c, M, self + 0x110, 1)); /* GXSetNumTexGens */
