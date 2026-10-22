@@ -91,7 +91,9 @@ static struct {
     uint64_t lblock_gen;
     uint32_t lblock_off;
     unsigned movie;        /* frames left in which a movie counts as playing (end_frame) */
-    uint32_t hud_zone;     /* CP 0x01 marker (native.c): 1 inside the race HUD's draw, 2 its map */
+    uint32_t hud_zone;     /* CP 0x01 marker (native.c): 1 inside the race HUD's draw, 2 its map, 3 a wipe,
+                            * 4-6 a MODERN HUD picture kept in the middle, at the left, at the right edge
+                            * (bits 8 and up: its group, MG_*) */
 } G;
 
 /* ---- frames shared with the renderer ---- */
@@ -897,6 +899,45 @@ static void screen_offset(float *x, float *y) {
 }
 
 /* Scissor box (BP 0x20/0x21) intersected with the viewport, in EFB pixels. */
+/* classic places: race2d.arc p1_race.blo */
+const HudMove g_hud_move[MG_COUNT] = {
+    [MG_PLACE] = {23, 16, 10, 8, 0.6f, 5},      /* 23-119 x 16-112 */
+    [MG_ITEMS] = {23, 16, 18, 8, 0.6f, 5},      /* 118-273 x 5-98: a gap after the place */
+    [MG_LAP] = {27, 384, 204.5f, 6, 0.6f, 4},   /* 27-132 x 384-428: ends at 267.5 */
+    [MG_TIME] = {422, 23, 283.5f, 7.5f, 0.75f, 4}, /* digits 422-582 x 25-49 ("TIME" not drawn): 283.5-403.5, top with the word LAP */
+    [MG_MAP] = {602, 40.8f, 610, -12, 0.7f, 6},    /* drawn 457-602 x 41-331, the course's picture starts lower */
+    [MG_ORDER] = {19, 114, 10, 263, 0.55f, 5},  /* rows 62.3 apart from 114; a 5th ends at 440 */
+    [MG_SPEED] = {601, 446, 612, 455, 0.8f, 6}, /* 484-601 x 328-446 (its lowest block 436) */
+    /* two players, p2_race.blo: player 1 at the top of the top screen, player 2 at the bottom of the
+     * bottom one (place and items at the left, LAP and timer in the middle), the map and the race
+     * order between them at the edges */
+    [MG2_PLACE1] = {525, 48, 10, 8, 0.75f, 5},     /* 525-583 x 48-106 */
+    [MG2_ITEMS1] = {81, 17, 58, 13, 0.75f, 5},     /* 78-196 x 1-84 */
+    [MG2_LAP1] = {27, 21, 202, 22.8f, 0.8f, 4},    /* 27-108.5 x 17-55, the count right of LAP (native.c LAP2_COUNT_DX): ends at 267 */
+    [MG2_TIME1] = {434, 22, 279, 22.4f, 0.8f, 4},  /* digits 434-593 x 22-44, level with the word LAP: the pair centred */
+    [MG2_PLACE2] = {525, 347, 10, 396.5f, 0.75f, 5},
+    [MG2_ITEMS2] = {81, 383, 58, 401.4f, 0.75f, 5},
+    [MG2_LAP2] = {28, 367, 202, 413.8f, 0.8f, 4},
+    [MG2_TIME2] = {434, 405, 279, 413.4f, 0.8f, 4},
+    [MG2_MAP] = {587, 124, 602, 141, 0.8f, 6},     /* 483-587 x 124-331 */
+    [MG2_ORDER] = {19, 97, 8, 152, 0.6f, 5},
+    /* four players, p4_race.blo: items in each quarter's outer top corner, the place in its outer
+     * bottom corner with LAP beside it (native.c LAP4_*: the count right of the word), the map in
+     * the middle; corners: the screen's edges, 6 in from the split at 224 */
+    [MG4_PLACE1] = {22, 221, 8, 218, 0.7f, 5},     /* 22-67 x 176-221 */
+    [MG4_ITEMS1] = {19, 16, 8, 6, 0.7f, 5},        /* 19-126 x 16-88 */
+    [MG4_LAP1] = {22, 221, 8, 218, 0.7f, 5},       /* the place's corner: 68-145 x 184-212 beside it */
+    [MG4_PLACE1 + 3] = {586, 222, 600, 218, 0.7f, 6},
+    [MG4_ITEMS1 + 3] = {589, 16, 600, 6, 0.7f, 6},
+    [MG4_LAP1 + 3] = {586, 222, 600, 218, 0.7f, 6}, /* 461-538, left of the place */
+    [MG4_PLACE1 + 6] = {21, 428, 8, 442, 0.7f, 5},
+    [MG4_ITEMS1 + 6] = {19, 227, 8, 229, 0.7f, 5},
+    [MG4_LAP1 + 6] = {21, 428, 8, 442, 0.7f, 5},
+    [MG4_PLACE1 + 9] = {587, 428, 600, 442, 0.7f, 6},
+    [MG4_ITEMS1 + 9] = {589, 227, 600, 229, 0.7f, 6},
+    [MG4_LAP1 + 9] = {587, 428, 600, 442, 0.7f, 6},
+    [MG4_MAP] = {304, 225, 304, 225, 0.75f, 4},    /* 240-368 x 97-353, smaller about its middle */
+};
 static void pixel_rect(float xoff, float yoff, uint32_t out[4]) {
     uint32_t tl = G.bp[0x20], br = G.bp[0x21];
     float sc[4];
@@ -1816,6 +1857,30 @@ static void vc_frame(uint32_t frame_verts) {
 }
 
 
+/* A MODERN HUD picture's scissor (EFB pixels), when the game clips it to less than the HUD's 608 x
+ * 448: moved like the picture (the race HUD's units to pixels through the 2D projection). */
+static bool modern_rect(const DrawSetup *S, unsigned g, uint32_t out[4]) {
+    const HudMove *mv = &g_hud_move[g];
+    float ew = G.efb[0], eh = G.efb[1];
+    float ax = S->ax * S->pr[0] * ew * 0.5f, bx = (S->ax * S->pr[1] + S->bx + 1) * ew * 0.5f;
+    float ay = -S->ay * S->pr[2] * eh * 0.5f, by = (1 - S->ay * S->pr[3] - S->by) * eh * 0.5f;
+    if (fabsf(ax) < 1e-6f || fabsf(ay) < 1e-6f) return false;
+    const uint32_t *r = S->rect;
+    float l = bx, t = by, rr = ax * 608 + bx, bb = ay * 448 + by;
+    if ((float)r[0] <= l + 2 && (float)r[1] <= t + 2 && (float)r[2] >= rr - 2 && (float)r[3] >= bb - 2) return false; /* not clipped */
+    float px[2] = {(float)r[0], (float)r[2]}, py[2] = {(float)r[1], (float)r[3]};
+    for (int i = 0; i < 2; i++) {
+        px[i] = clampf(mv->s * (px[i] - bx) + ax * (mv->nx - mv->s * mv->ox) + bx, 0, ew);
+        py[i] = clampf(mv->s * (py[i] - by) + ay * (mv->ny - mv->s * mv->oy) + by, 0, eh);
+    }
+    out[0] = (uint32_t)roundf(px[0]), out[1] = (uint32_t)roundf(py[0]);
+    out[2] = (uint32_t)roundf(px[1]), out[3] = (uint32_t)roundf(py[1]);
+    if (out[2] < out[0]) out[2] = out[0];
+    if (out[3] < out[1]) out[3] = out[1];
+    if (g_hud_log) rt_log("hudlog scissor g%u efb %gx%g layout %g,%g-%g,%g rect %u,%u-%u,%u -> %u,%u-%u,%u", g, ew, eh, l, t, rr, bb, r[0], r[1], r[2], r[3], out[0], out[1], out[2], out[3]);
+    return true;
+}
+
 static void draw(uint32_t cmd, const uint8_t *c) {
     uint32_t prim = cmd & 0xF8;
     if (bits(G.bp[0x00], 14, 2) == 3) return; /* cull all */
@@ -1983,6 +2048,8 @@ static void draw(uint32_t cmd, const uint8_t *c) {
          * frame and icon then fell on different sides (the frame drifted to the middle). Map
          * routine: also the left rank column. */
         side = mid < -0.2f ? 1 : mid > 0.2f || G.hud_zone == 2 ? 2 : 0;
+        uint32_t z = G.hud_zone & 0xFF;
+        if (z >= 4 && z <= 6) side = z - 4; /* MODERN HUD: the group's side */
     }
     if (hud) {
         uint32_t fl = XV_HUD | (side == 1 ? XV_HUD_LEFT : side == 2 ? XV_HUD_RIGHT : 0);
@@ -1994,7 +2061,11 @@ static void draw(uint32_t cmd, const uint8_t *c) {
         }
     }
 
-    Batch *bt = batch_for(G.mat_key, &G.mat_tev, S->rect, hud ? 1 + side : 0, layout, start);
+    const uint32_t *rect = S->rect;
+    uint32_t mrect[4];
+    unsigned mg = G.hud_zone >> 8;
+    if (hud && mg && mg < MG_COUNT && modern_rect(S, mg, mrect)) rect = mrect;
+    Batch *bt = batch_for(G.mat_key, &G.mat_tev, rect, hud ? 1 + side : 0, layout, start);
     if (!bt) return;
     uint32_t base = s_vb_frame == fr && s_vb_layout == layout && start == fr->vb.len ? s_vb_next : (uint32_t)(start / stride);
     fr->vb.len = start + (size_t)n * stride;

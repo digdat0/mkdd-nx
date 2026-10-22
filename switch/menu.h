@@ -4,26 +4,44 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-enum { GC_A, GC_B, GC_X, GC_Y, GC_Z, GC_L, GC_R, GC_START, GC_COUNT };
+/* The GameCube buttons, then the port's own button actions (MAP_FP: first person on / off) */
+enum { GC_A, GC_B, GC_X, GC_Y, GC_Z, GC_L, GC_R, GC_START, GC_COUNT, MAP_FP = GC_COUNT, MAP_JUMP, MAP_CAM_RESET, MAP_COUNT };
 typedef struct {
     bool wide;         /* 16:9: wider game camera, race HUD at the screen edges, menus 4:3 in the middle
                           (else 4:3 pillarboxed) */
     int show_fps;      /* 0 off, 1 FPS, 2 FPS + frame times (GAME / GX / RENDER ms) */
     int rumble;        /* 0 off, 1 low, 2 high */
     bool unlock_all;   /* every character, kart, cup and mode, this session only (never saved) */
+    bool any_kart;     /* kart screen: no weight classes, every unlocked kart for any drivers */
+    int special_mode;  /* SPECIAL ITEMS: 0 normal, 1 any (every character as Petey / King Boo), 2 custom */
+    int special[20];   /* custom, by character ID - 1: SPECIAL_NAMES index (9 = any) */
+    int mt_sweeps;     /* MINI-TURBO SWEEPS: drift stages to blue sparks, 3 (the game's), 2 or 1 */
+    int mt_speed;      /* MINI-TURBO SPEED: MT_SPEEDS index, 0 the game's */
+    int mt_length;     /* MINI-TURBO LENGTH: MT_LENGTHS index, 0 the game's */
+    int jump;          /* JUMP: 0 off, 1-3 low / mid / high hop on the JUMP button (map[MAP_JUMP]) */
+    int laps;          /* LAPS: Grand Prix and Versus races, 0 the course's own, else 1-7 */
+    int free_cam;      /* FREE CAMERA: 0 off, the right stick turns the race camera round the kart and
+                        * when let go 1 snaps back, 2 eases back, 3 stays (CAMERA RESET: back) */
+    int cam_height;    /* CAMERA HEIGHT: the chase camera's, 0-3 low / medium / regular (the game's) / high */
+    int cam_dist;      /* CAMERA DISTANCE: the chase camera's, 0-4 very close / close / regular (the game's) / far / very far */
     int logging;       /* 0 disabled, 1 game, 2 game + audio, 3 audio */
     bool hd_textures;  /* use the HD texture file (HD_FILE) when there is one */
     char mod[16];      /* the mod to play, from the next start: "auto" (the first found), "off" or a MODS key */
-    int fov[2];        /* race camera field of view for 4:3 / 16:9: 0 normal (the game's), 1 wide, 2 wider */
+    int fov[2];        /* race camera field of view for 4:3 / 16:9: 0 normal (the game's), 1 wide, 2 wider, 3 widest, 4 wideee */
     int aniso;         /* texture filtering: 0 normal, 1-4 anisotropic 2x / 4x / 8x / 16x */
     bool border;       /* 4:3: checkered border art in the side bars during races */
     unsigned hud_hide; /* race HUD elements turned off, single player: HUD_* bits (runtime/rt.h) */
+    int hud_style;     /* race HUD, single player: 0 classic (the game's), 1 modern (runtime native.c MODERN, the default) */
+    bool speed_kmh;    /* speedometer in km/h; mph (the US game's) when false */
+    int camera;        /* race camera, 1 and 2 player: 0 the game's, 1-3 first person, eye low / mid / high */
+    int fp_forward;    /* first person: eye this far ahead of the kart's centre (settings.ini only) */
     bool profiler;     /* sampling profiler (logs/mkdd_prof.bin), from the next start */
     int docked_res;    /* docked (TV), 1080p output: DOCKED_NATIVE (the game's 640x480-ish frame), _2X, _1_5X or
                         * _AUTO (2x, stepping down while the GPU can't keep up). Values kept from when it was on/off. */
     int handheld_res;  /* handheld, 1280x720 screen: HANDHELD_NATIVE (640x480-ish), _1_25X, _1_5X (960x720, the
                         * screen's own lines) or _AUTO (1.5x, stepping down while the GPU can't keep up) */
-    uint64_t map[GC_COUNT]; /* Switch buttons (HidNpadButton_*) that press each GameCube button */
+    uint64_t map[MAP_COUNT]; /* Switch buttons (HidNpadButton_*) that press each GameCube button: the
+                             * BUTTON MAPPING page's actions (menu.c ACTIONS), one per Switch button */
 } Settings;
 enum { DOCKED_NATIVE, DOCKED_2X, DOCKED_1_5X, DOCKED_AUTO };
 enum { HANDHELD_NATIVE, HANDHELD_1_25X, HANDHELD_1_5X, HANDHELD_AUTO };
@@ -75,5 +93,7 @@ void menu_set_mods(unsigned found, unsigned running);
 unsigned mods_pick(unsigned found);
 /* Open the menu (game paused) on its main page, with notice as the hint until the cursor moves. */
 void menu_open(const char *notice);
+void special_apply(void); /* SPECIAL ITEMS settings -> the runtime's g_special */
+void cheats_apply(void);  /* the CHEATS page's game settings (special items, mini-turbo) -> the runtime */
 /* 5x7 bitmap ("0"/"1" x 35, rows top first) for c, or NULL. */
 const char *font_glyph(char c);

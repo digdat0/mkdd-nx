@@ -173,6 +173,19 @@ void cheats_before_save(void) {
     m_write_be(SECRET_GAME, 2, s_earned[1]);
 }
 void cheats_after_save(void) { if (s_unlock) apply_unlock(); }
+
+/* LAPS: RaceMgr::sForceTotalLapNum (r13 - 0x5c34, s16), the game's own debug override: nonzero
+ * becomes the lap count when a race's RaceMgr is made (the same address in Plus and RTGP). Set
+ * only for Grand Prix and Versus (gRaceInfo +8: race mode 2 / 3), so Time Trial records and
+ * ghosts stay 3 laps and battles keep theirs. Up to 7, Baby Park's: Lakitu's lap signs go that far. */
+#define LAPS_FORCE 0x803CB7ECu
+#define RACE_INFO_MODE (0x803B145Cu + 8)
+volatile uint32_t g_laps;
+void laps_tick(void) {
+    uint32_t mode = (uint32_t)m_read_be(RACE_INFO_MODE, 4), n = g_laps <= 7 ? g_laps : 0;
+    uint32_t want = mode == 2 || mode == 3 ? n : 0;
+    if (m_read_be(LAPS_FORCE, 2) != want) m_write_be(LAPS_FORCE, 2, want);
+}
 void cheats_after_load(void) {
     if (!s_unlock) return;
     s_earned[0] = (uint16_t)m_read_be(SECRET_KARTS, 2);

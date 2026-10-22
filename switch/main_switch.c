@@ -594,6 +594,7 @@ static void update_pads(void) {
     if ((s_player_style[0] & HidNpadStyleTag_NpadJoyRight) && (held1 & HidNpadButton_StickR) && (down1 & HidNpadButton_Plus))
         down1 |= HidNpadButton_Minus;
     bool menu = menu_input(down1, held1, &s_quit);
+    uint32_t jump = 0, cam_reset = 0; /* JUMP (menu.c ACTIONS, GAME > JUMP): the ports holding it, for the game thread */
     for (int p = 0; p < 4; p++) {
         PadStatus s = {0};
         int src = s_player_src[p];
@@ -602,6 +603,8 @@ static void update_pads(void) {
             PadState *pad = &s_src[src];
             u64 b = padGetButtons(pad);
             if (pad == p1) b &= ~menu_blocked();
+            if (b & g_set.map[MAP_JUMP]) jump |= 1u << p;
+            if (b & g_set.map[MAP_CAM_RESET]) cam_reset |= 1u << p;
             u32 st = s_player_style[p];
             bool single = (st & (HidNpadStyleTag_NpadJoyLeft | HidNpadStyleTag_NpadJoyRight)) &&
                           !(st & (HidNpadStyleTag_NpadJoyDual | HidNpadStyleTag_NpadFullKey | HidNpadStyleTag_NpadHandheld));
@@ -618,11 +621,49 @@ static void update_pads(void) {
                 g_pause_kind = st & HidNpadStyleTag_NpadGc ? PAUSE_GC
                                : single ? (st & HidNpadStyleTag_NpadJoyLeft ? PAUSE_LEFT : PAUSE_RIGHT) : PAUSE_FULL;
             start_was[p] = start;
+            /* FREE CAMERA: the right stick (a GameCube pad's C stick) sideways; races never read it */
+            float pan = s.substick_x / 100.0f;
+            g_cam_pan[p] = g_set.free_cam && !single && (pan > 0.3f || pan < -0.3f) ? (pan > 1 ? 1 : pan < -1 ? -1 : pan) : 0;
             if ((s.button & PAD_TRIGGER_R) && !s.trigger_r) s.trigger_r = 255;
             if ((s.button & PAD_TRIGGER_L) && !s.trigger_l) s.trigger_l = 255;
         }
+        /* FIRST PERSON (menu.c ACTIONS, a full controller's button): the camera between NORMAL
+         * and first person, DRIVER HIGH (CAMERA VIEW 3); saved with the
+         * next settings change, not now (an SD card write mid-race can stall a frame) */
+        if (p == 0) {
+            static bool was;
+            int src = s_player_src[0];
+            u32 st = s_player_style[0];
+            bool full = !(st & HidNpadStyleTag_NpadGc) &&
+                        (!(st & (HidNpadStyleTag_NpadJoyLeft | HidNpadStyleTag_NpadJoyRight)) ||
+                         (st & (HidNpadStyleTag_NpadJoyDual | HidNpadStyleTag_NpadFullKey | HidNpadStyleTag_NpadHandheld)));
+            bool on = src >= 0 && !menu && full && (padGetButtons(&s_src[src]) & g_set.map[MAP_FP] & ~menu_blocked());
+            if (on && !was) g_set.camera = g_set.camera ? 0 : 3;
+            was = on;
+        }
+        /* REAR VIEW (GameCube Y, menu.c ACTIONS): while this player's race camera runs (its
+         * view updated in the last few polls; view = player, any number of screens), their Y
+         * turns that camera around instead of reaching the game, so it never throws an item
+         * (X does). A press belongs to whoever had it when it began, until it is let go: one
+         * held from a menu stays the game's, one held into the finish never becomes an item throw. */
+        {
+            static uint32_t last_frames[4], idle[4];
+            static bool ours[4], theirs[4];
+            uint32_t f = g_cam_frames[p];
+            idle[p] = f != last_frames[p] ? 0 : idle[p] < 100 ? idle[p] + 1 : idle[p];
+            last_frames[p] = f;
+            bool steal = idle[p] < 4;
+            if (!(s.button & PAD_Y)) ours[p] = theirs[p] = false;
+            else if (!ours[p] && !theirs[p]) ours[p] = steal, theirs[p] = !steal;
+            uint32_t bit = 1u << p;
+            g_look_back = ours[p] && steal ? g_look_back | bit : g_look_back & ~bit;
+            if (ours[p]) s.button &= ~PAD_Y;
+        }
         pad_set(p, &s);
     }
+    g_jump_held = jump;
+    g_cam_reset = cam_reset;
+    g_cam_back = g_set.free_cam == 2 ? CAM_EASE : g_set.free_cam == 3 ? CAM_STAY : CAM_SNAP;
 }
 
 static void game_thread(void *arg) {
@@ -977,9 +1018,25 @@ int main(int argc, char **argv) {
         bool title = m_read_be(0x803C9CE0u, 4) == 0, wide = g_set.wide && !title;
         g_aspect_scale = wide ? 4.0f / 3.0f : 1.0f;
         render_set_backdrop(g_set.wide && title);
-        static const float FOV_SCALE[3] = {1.0f, 1.15f, 1.3f}; /* tan(fovy / 2) times: NORMAL, WIDE, WIDER */
-        g_fov_scale = FOV_SCALE[g_set.fov[g_set.wide] % 3];
+        static const float FOV_SCALE[5] = {1.0f, 1.15f, 1.3f, 1.45f, 2.0f}; /* tan(fovy / 2) times: NORMAL, WIDE, WIDER, WIDEST, WIDEEE */
+        g_fov_scale = FOV_SCALE[g_set.fov[g_set.wide] % 5];
         g_hud_hide = g_set.hud_hide;
+        g_hud_modern = g_set.hud_style == 1;
+        g_speed_kmh = g_set.speed_kmh;
+        g_any_kart = g_set.any_kart;
+        g_laps = (uint32_t)g_set.laps;
+        {
+            static const float HEIGHTS[4] = {0.45f, 0.7f, 1.0f, 1.5f};
+            static const float DISTS[5] = {0.55f, 0.75f, 1.0f, 1.3f, 1.6f};
+            g_cam_height = HEIGHTS[g_set.cam_height & 3];
+            g_cam_dist = DISTS[g_set.cam_dist % 5];
+        }
+        cheats_apply();
+        g_hud_log = g_set.logging ? 600 : 0; /* the race HUD in the log too (bug reports) */
+        static const float FP_UP[4] = {0, 70.0f, 100.0f, 140.0f}; /* CAMERA: eye height above the kart's centre */
+        g_first_person = g_set.camera & 3;
+        g_fp_up = FP_UP[g_set.camera & 3];
+        g_fp_fwd = (float)g_set.fp_forward;
         render_set_hud43(wide);
         render_set_hd(g_set.hd_textures);
         static const float ANISO[5] = {1, 2, 4, 8, 16};
@@ -1047,13 +1104,14 @@ int main(int argc, char **argv) {
             color_adjust(adj);
             render_present(w, h, adj, wide);
             /* 4:3 border art only while a race is on screen (Race2D::draw ran within the last
-             * half second; kept while the menu pauses the game) */
+             * half second; kept while the menu pauses the game), never on the title screen (its
+             * demo race: the 16:9 blurred sides, or plain bars in 4:3) */
             static uint32_t race_seen;
             static u64 race_tick;
             if (g_race_frames != race_seen) { race_seen = g_race_frames; race_tick = armGetSystemTick(); }
             static bool racing;
             if (!menu_is_open()) racing = race_tick && armTicksToNs(armGetSystemTick() - race_tick) < 500000000ull;
-            if (g_set.border && !wide && racing) menu_border(w, h);
+            if (g_set.border && !wide && !title && racing) menu_border(w, h);
             menu_draw(w, h, s_fps, perf);
         } else screen("BOOTING", NULL, 0.8f);
         render_gpu_timer_end();

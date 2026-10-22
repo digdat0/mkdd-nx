@@ -132,6 +132,16 @@ bool pthread_start(const char *name, ThreadFn fn, void *arg, size_t stack, int c
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
     pthread_t t;
     int r = pthread_create(&t, &attr, thread_main, s);
+#ifdef __SWITCH__
+    /* A boot once hung on the loading screen when a game thread failed to start (fine on the next
+     * launch): the system can refuse a thread for a moment (its thread resources still held by the
+     * last app). Try again for a second before giving up. */
+    for (int tries = 0; r && tries < 20; tries++) {
+        svcSleepThread(50000000);
+        r = pthread_create(&t, &attr, thread_main, s);
+    }
+    if (r) fprintf(stderr, "thread %s: pthread_create failed (%d)\n", name, r);
+#endif
     pthread_attr_destroy(&attr);
 #ifdef __SWITCH__
     if (r) { free(mem); free(s); return false; }

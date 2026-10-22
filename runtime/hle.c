@@ -31,6 +31,7 @@ enum {
     H_HID2,
     H_THP_DECODE, H_OS_REPORT, H_OS_PANIC, H_RESET_IGNORED, H_PPC_HALT,
     H_SYS_FETCH, H_SYS_STORE, H_CARD, H_GX_DRAW_DONE, H_SET_PRIORITY,
+    H_MT_CHECK, H_MT_RELEASE, H_MT_DASH, H_JUMP,
 };
 
 static const struct { const char *name; int id; } BIND[] = {
@@ -62,6 +63,8 @@ static const struct { const char *name; int id; } BIND[] = {
     {"OSResetSystem", H_RESET_IGNORED}, {"__OSDoHotReset", H_RESET_IGNORED}, {"PPCHalt", H_PPC_HALT},
     {"fetch__10SystemFileFv", H_SYS_FETCH}, {"store__10SystemFileFv", H_SYS_STORE},
     {"GXDrawDone", H_GX_DRAW_DONE},
+    {"FUN_802ab538", H_MT_CHECK}, {"FUN_802ab8a4", H_MT_RELEASE}, {"FUN_802a9354", H_MT_DASH},
+    {"FUN_802ad9d0", H_JUMP},
 };
 
 typedef struct { uint32_t addr; int id; const char *name; } Hook;
@@ -69,6 +72,114 @@ static Hook *s_hooks;
 static unsigned s_nhooks;
 extern volatile uint32_t g_sleep_lr;
 static volatile uint64_t s_hid2; /* the CPU's HID2 (bit 32 set once some thread has published it) */
+
+/* A players' kart: its body's game status (+0x578) has 2 (a person drives it) and neither 0x10 (a
+ * ghost) nor 0x80 (a replay). Bit 0 is tag mode (two players in one kart), not this. */
+static bool is_player(Ctx *c, uint8_t *M, uint32_t body) {
+    uint32_t s = (uint32_t)mld(c, M, body + 0x578, 4);
+    return (s & 2) && !(s & 0x90);
+}
+
+/* MINI-TURBO (the - menu's cheats), for players' karts (is_player; the
+ * CPU drivers keep the game's). The body (KartGame / KartStrat +0, the same code in Plus and
+ * RTGP): +0x570 flags (0x200 mini-turbo boosting), +0x574 flags (3: drifting left / right),
+ * +0x59e frames of boost left, +0x5a0 the kart's mini-turbo length (from its parameters),
+ * +0x5c7 the drift stage, 0-2 (the game's drift count, 1-3, is this + 1).
+ * FUN_802ab538 (KartGame::CheckDriftTurbo): each sweep of the stick (out of the turn, then
+ *   back) moves the stage on, 2 = blue sparks; g_mt_sweeps 2 or 1 makes that 1 sweep or none.
+ * FUN_802ab8a4 (the drift's update): releasing the drift at stage 2 sets 0x200 and copies the
+ *   length into +0x59e; g_mt_length scales the frames then.
+ * FUN_802a9354 (KartStrat::DoDash, first in the kart's FUN_802a77f4 / FUN_802a81fc, the accel
+ *   update): while 0x200, aims the speed at 1.3 (r2 - 0x2d18) times the kart's top speed (+0x3f0).
+ *   The accel update then moves the kart's speed limit (+0x3ec) to 1.3 times its target too
+ *   (FUN_802a6fc4) and caps it at 200 (r2 - 0x2d0c); the kart's physics (FUN_802a5454) clamp
+ *   the velocity to that limit. Every reader of the two constants runs in a kart's update after
+ *   its DoDash, so a players' boosting kart gets g_mt_speed for 1.3 and the cap raised by as much
+ *   from its DoDash until the next kart's (mt_restore). */
+volatile uint32_t g_mt_sweeps = 3;
+volatile float g_mt_speed = 1.3f, g_mt_length = 1.0f;
+static uint32_t s_mt_saved[2]; /* r2 - 0x2d18, r2 - 0x2d0c while raised */
+static bool s_mt_raised;
+static void mt_restore(Ctx *c, uint8_t *M) {
+    if (!s_mt_raised) return;
+    uint32_t r2 = (uint32_t)ctx_gpr(c, 2);
+    mst(c, M, r2 - 0x2d18, 4, s_mt_saved[0]);
+    mst(c, M, r2 - 0x2d0c, 4, s_mt_saved[1]);
+    s_mt_raised = false;
+}
+static bool mini_turbo(Ctx *c, int id, uint32_t addr) {
+    uint8_t *M = c->ram;
+    if (id == H_MT_DASH) mt_restore(c, M);
+    uint32_t body = (uint32_t)mld(c, M, ctx_gpr(c, 3), 4);
+    if (!body || !IS_RAM(body) || !is_player(c, M, body)) return false;
+    if (id == H_MT_CHECK) {
+        if (g_mt_sweeps >= 3) return false;
+        ctx_call_orig(c, addr);
+        uint32_t stage = (uint32_t)mld(c, M, body + 0x5c7, 1);
+        if ((mld(c, M, body + 0x574, 4) & 3) && stage < 2 && (g_mt_sweeps <= 1 || stage >= 1)) mst(c, M, body + 0x5c7, 1, 2);
+        return true;
+    }
+    if (id == H_MT_RELEASE) {
+        float k = g_mt_length;
+        if (k == 1.0f) return false;
+        uint32_t before = (uint32_t)mld(c, M, body + 0x59e, 2);
+        ctx_call_orig(c, addr);
+        uint32_t left = (uint32_t)mld(c, M, body + 0x59e, 2);
+        if ((mld(c, M, body + 0x570, 4) & 0x200) && left != before && left == (uint32_t)mld(c, M, body + 0x5a0, 2)) {
+            float n = (float)left * k;
+            mst(c, M, body + 0x59e, 2, n > 65535.0f ? 65535u : (uint32_t)n);
+            rt_log("mini-turbo: boost %u -> %u frames", left, (unsigned)mld(c, M, body + 0x59e, 2));
+        }
+        return true;
+    }
+    float v = g_mt_speed, cap;
+    if (v == 1.3f || !(mld(c, M, body + 0x570, 4) & 0x200)) return false;
+    uint32_t r2 = (uint32_t)ctx_gpr(c, 2), bits;
+    s_mt_saved[0] = (uint32_t)mld(c, M, r2 - 0x2d18, 4);
+    s_mt_saved[1] = (uint32_t)mld(c, M, r2 - 0x2d0c, 4);
+    s_mt_raised = true;
+    memcpy(&bits, &v, 4);
+    mst(c, M, r2 - 0x2d18, 4, bits);
+    memcpy(&cap, &s_mt_saved[1], 4);
+    cap *= v / 1.3f;
+    memcpy(&bits, &cap, 4);
+    mst(c, M, r2 - 0x2d0c, 4, bits);
+    return false; /* DoDash and the rest of this kart's update run with them */
+}
+
+/* JUMP (the - menu's GAME page): FUN_802ad9d0 (KartGame::MakeJump, each kart each frame: the
+ * drift button's hop) runs, then a players' kart whose driver's or rider's controller port
+ * (KartCtrl (r13 - 0x4e98) +0x20 / +0x24 + 8 * kart: KartGamePads, their port at +0xac) has
+ * just pressed JUMP (g_jump_held, the front end's) and has wheels on the ground (+0x5a4) gets
+ * g_jump_power upward on its velocity (+0x260, y +0x264; gravity takes about 12-18 a frame). */
+volatile uint32_t g_jump_held;
+volatile float g_jump_power;
+static bool jump(Ctx *c, uint32_t addr) {
+    static bool was[8];
+    uint8_t *M = c->ram;
+    float v = g_jump_power;
+    if (v <= 0) return false;
+    uint32_t body = (uint32_t)mld(c, M, ctx_gpr(c, 3), 4);
+    ctx_call_orig(c, addr);
+    if (!body || !IS_RAM(body) || !is_player(c, M, body)) return true;
+    uint32_t kart = (uint32_t)mld(c, M, body + 0x5b3, 1) & 7, ctrl = (uint32_t)mld(c, M, ctx_gpr(c, 13) - 0x4e98, 4);
+    bool held = false;
+    for (int r = 0; r < 2 && ctrl && IS_RAM(ctrl); r++) {
+        uint32_t pad = (uint32_t)mld(c, M, ctrl + 0x20 + 4 * r + 8 * kart, 4);
+        uint32_t port = pad && IS_RAM(pad) ? (uint32_t)mld(c, M, pad + 0xac, 4) : 4;
+        if (port < 4 && (g_jump_held >> port & 1)) held = true;
+    }
+    if (held && !was[kart] && mld(c, M, body + 0x5a4, 4)) {
+        uint32_t bits = (uint32_t)mld(c, M, body + 0x264, 4);
+        float y;
+        memcpy(&y, &bits, 4);
+        y = (y > 0 ? y : 0) + v;
+        memcpy(&bits, &y, 4);
+        mst(c, M, body + 0x264, 4, bits);
+    }
+    was[kart] = held;
+    return true;
+}
 
 static int cmp_hook(const void *a, const void *b) {
     uint32_t x = ((const Hook *)a)->addr, y = ((const Hook *)b)->addr;
@@ -295,6 +406,7 @@ bool rt_hle(Ctx *c, uint32_t addr) {
     switch (h->id) {
     case H_DISABLE: case H_ENABLE: case H_RESTORE: case H_MTMSR:
     case H_MTX_COPY: case H_MTX_CONCAT: case H_MTX_MULTVEC: case H_VEC_CROSS: case H_VEC_MAG: case H_MTX_INVERSE:
+    case H_MT_CHECK: case H_MT_RELEASE: case H_MT_DASH: case H_JUMP:
         break;
     default:
         hw_gx_flush();
@@ -452,6 +564,7 @@ bool rt_hle(Ctx *c, uint32_t addr) {
             m_write_be(o + 11, 1, 0);
         }
         cheats_tick();
+        laps_tick();
         watch_scene_load(c);
         read_race_phase();
         if (g_log_mask & LOG_GAME) watch_flow(p[0].button), machine_watch_code();
@@ -548,6 +661,8 @@ bool rt_hle(Ctx *c, uint32_t addr) {
         ctx_set_gpr(c, 3, (uint32_t)r);
         break;
     }
+    case H_MT_CHECK: case H_MT_RELEASE: case H_MT_DASH: return mini_turbo(c, h->id, addr);
+    case H_JUMP: return jump(c, addr);
     default: return false;
     }
     return true;

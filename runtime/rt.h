@@ -171,6 +171,10 @@ void cheats_unlock_all(void);
 void cheats_set(bool on); /* on: unlock_all; off: the earned bits back */
 bool cheats_active(void);
 void cheats_tick(void);
+/* LAPS (the - menu's GAME page, misc.c laps_tick, each pad read): the next Grand Prix or Versus
+ * race's lap count, 1-7; 0 the course's own. */
+extern volatile uint32_t g_laps;
+void laps_tick(void);
 void cheats_before_save(void);
 void cheats_after_save(void);
 void cheats_after_load(void);
@@ -189,9 +193,49 @@ void diag_flush(void);
  * Switch profiler; LOG_AUDIO = audio lines (DSP, AI timing, audio thread). 0 writes nothing. */
 enum { LOG_GAME = 1, LOG_AUDIO = 2 };
 extern volatile uint32_t g_log_mask;
-/* Race HUD elements not drawn, single player only (native.c drawK2D): HUD_* bits. */
-enum { HUD_PLACE = 1, HUD_ITEMS = 2, HUD_LAPS = 4, HUD_MAP = 8, HUD_SPEED = 16, HUD_ORDER = 32, HUD_ALL = 63 };
+/* Race HUD elements not drawn, single player only (native.c drawK2D): HUD_* bits. HUD_TIME only
+ * until the player finishes. */
+enum { HUD_PLACE = 1, HUD_ITEMS = 2, HUD_LAPS = 4, HUD_MAP = 8, HUD_SPEED = 16, HUD_ORDER = 32, HUD_TIME = 64, HUD_ALL = 127 };
 extern volatile uint32_t g_hud_hide;
+/* Race HUD style, 1-4 players while racing (native.c MODERN): 0 the game's, 1 smaller, in the
+ * corners and the top centre. g_speed_kmh: the speedometer in km/h (the US game's is mph). */
+extern volatile uint32_t g_hud_modern, g_speed_kmh;
+/* Diagnostics: the race HUD's pictures logged every 300 race frames from this one (0: never). */
+extern volatile uint32_t g_hud_log;
+/* First-person race camera, single player and two player split screen (native.c FUN_802b6bd4): nonzero = on. */
+extern volatile uint32_t g_first_person;
+extern float g_fp_up, g_fp_fwd, g_fp_look;
+/* Look back (held by the front end): bit v turns view v's race camera around (view = player, any
+ * number of screens). g_cam_frames[v] counts view v's race camera updates, so the front end knows
+ * when that player's Y is a look-back button. */
+extern volatile uint32_t g_look_back, g_cam_frames[4];
+/* FREE CAMERA (native.c FUN_802b6bd4): view v's right stick sideways, -1..1 (0 inside the dead
+ * zone, or FREE CAMERA off): the race camera turns round its kart while held. Let go, it goes
+ * back by g_cam_back: CAM_SNAP at once, CAM_EASE gliding, CAM_STAY not (until bit v of
+ * g_cam_reset, view v's CAMERA RESET button held, puts it back). */
+enum { CAM_SNAP, CAM_EASE, CAM_STAY };
+extern volatile float g_cam_pan[4];
+extern volatile uint32_t g_cam_back, g_cam_reset;
+/* CAMERA HEIGHT (native.c FUN_802b6bd4): the chase camera's height above its kart times this; 1 the game's */
+extern volatile float g_cam_height;
+/* CAMERA DISTANCE (the same): the chase camera's distance behind its kart (across the kart's up axis) times this */
+extern volatile float g_cam_dist;
+/* Kart screen: every unlocked kart for any pair of drivers, whatever their weight class (nonzero = on). */
+extern volatile uint32_t g_any_kart;
+/* SPECIAL ITEMS, by character ID (1-20): 0 the character's own special, an item kind (fireballs 7,
+ * heart 0x11, egg 0xe, chain chomp 0x15, golden mushroom 8, triple shells 0xb, giant banana 4,
+ * Bowser shell 1, bob-omb 0xc) or SPECIAL_ANY (all of them, as Petey and King Boo), from the next race. */
+/* MINI-TURBO, players' karts (hle.c): drift stages to blue sparks (3 the game's: the drift and
+ * 2 sweeps; 2: 1 sweep; 1: at once), boost speed (times top speed, the game's 1.3) and length
+ * (times the kart's own). */
+extern volatile uint32_t g_mt_sweeps;
+extern volatile float g_mt_speed, g_mt_length;
+/* JUMP (hle.c): controller ports holding the JUMP button (bit = port, the front end's), and the
+ * hop's upward speed (0: off). One hop per press, players' karts on the ground. */
+extern volatile uint32_t g_jump_held;
+extern volatile float g_jump_power;
+#define SPECIAL_ANY 0xFF
+extern volatile uint8_t g_special[21];
 /* Start-up: game lines are logged whatever LOGGING says, each written to the SD card at once, so
  * a start that crashes or hangs shows its last step. The front end clears it at the first game frame. */
 extern volatile bool g_log_boot;

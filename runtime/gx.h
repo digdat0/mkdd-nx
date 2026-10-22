@@ -19,10 +19,21 @@
  * to the middle of the screen: all but full-width ones (backgrounds, fades, dimming), which
  * stretch to the edges. While a movie plays, textured full-width draws (the movie) narrow too. */
 #define XV_HUD 0x40000000u
-/* With XV_HUD: the draw belongs to the race HUD (Race2D, single player) and sits in the left / right
+/* With XV_HUD: the draw belongs to the race HUD (Race2D, any number of players) and sits in the left / right
  * third of the screen, so the widescreen HUD moves it to that screen edge instead of the middle. */
 #define XV_HUD_LEFT 0x20000000u
 #define XV_HUD_RIGHT 0x10000000u
+/* The MODERN race HUD (native.c): groups of the game's HUD pictures, each moved (x, y) -> (nx, ny) +
+ * s * ((x, y) - (ox, oy)) in the race HUD's 608 x 448 units and kept at one side of the widescreen
+ * HUD (zone: the decoder's marker 4 middle, 5 left, 6 right). The marker's bits 8 and up name the
+ * group, so the decoder moves a clipped picture's scissor with it (the item roulette's window). */
+enum { MG_NONE, MG_PLACE, MG_ITEMS, MG_LAP, MG_TIME, MG_MAP, MG_ORDER, MG_SPEED,
+       /* two players (p2_race.blo, top / bottom screens): each player's pieces, the shared map and order */
+       MG2_PLACE1, MG2_ITEMS1, MG2_LAP1, MG2_TIME1, MG2_PLACE2, MG2_ITEMS2, MG2_LAP2, MG2_TIME2, MG2_MAP, MG2_ORDER,
+       /* three and four players (p4_race.blo, quarters): each player's pieces (player p: + 3p), the map */
+       MG4_PLACE1, MG4_ITEMS1, MG4_LAP1, MG4_MAP = MG4_PLACE1 + 12, MG_COUNT };
+typedef struct { float ox, oy, nx, ny, s; uint32_t zone; } HudMove;
+extern const HudMove g_hud_move[MG_COUNT];
 #define XV_REC_MASK 0x0FFFFFFFu
 typedef struct {
     float pos[4];

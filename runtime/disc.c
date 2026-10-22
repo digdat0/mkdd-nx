@@ -20,11 +20,11 @@ static void raw_read(uint64_t off, uint8_t *dst, size_t n);
  * returns, so the GX decoder thread faulted reading a display list in those pages. */
 #define BOUNCE (256u << 10)
 static uint8_t s_bounce[BOUNCE];
-static struct { uint64_t off; uint8_t b; } s_patch[1024];
+static struct { uint64_t off; uint8_t b; } s_patch[8192]; /* the pause layout's panes, six languages */
 static unsigned s_npatch;
 
 void disc_patch(uint64_t off, const void *bytes, size_t n) {
-    for (size_t i = 0; i < n && s_npatch < 1024; i++) {
+    for (size_t i = 0; i < n && s_npatch < 4096; i++) {
         s_patch[s_npatch].off = off + i;
         s_patch[s_npatch++].b = ((const uint8_t *)bytes)[i];
     }

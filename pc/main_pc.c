@@ -40,9 +40,19 @@ int main(int argc, char **argv) {
     diag_start_watchdog("mkdd_trace.log");
     if (getenv("MKDD_WIDE")) g_aspect_scale = 4.0f / 3.0f;
     if (getenv("MKDD_HUD_HIDE")) g_hud_hide = (uint32_t)strtoul(getenv("MKDD_HUD_HIDE"), NULL, 0);
+    /* MKDD_FP=<eye height>,<eye forward>: first-person camera */
+    if (getenv("MKDD_FP")) {
+        g_first_person = 1;
+        sscanf(getenv("MKDD_FP"), "%f,%f", &g_fp_up, &g_fp_fwd);
+    }
+    if (getenv("MKDD_HUD_MODERN")) g_hud_modern = 1;
+    if (getenv("MKDD_KMH")) g_speed_kmh = 1;
+    if (getenv("MKDD_HUD_LOG")) { extern volatile uint32_t g_hud_log; g_hud_log = (uint32_t)atoi(getenv("MKDD_HUD_LOG")); }
+    if (getenv("MKDD_LOOK_BACK")) g_look_back = 1; /* the race camera turned around throughout */
     PadStatus pad = {0};
     pad.connected = true;
     pad_set(0, &pad);
+    if (getenv("MKDD_PAD2")) pad_set(1, &pad); /* connected from the start, as port 1 */
     /* MKDD_PROF=<seconds>: sample all threads from then on, write prof.txt at exit */
     const char *pe = getenv("MKDD_PROF");
     int prof_at = pe ? atoi(pe) : -1;
@@ -69,6 +79,7 @@ int main(int argc, char **argv) {
         else seg_mask = 0;
         pad.button = (uint16_t)seg_mask;
         pad_set(0, &pad);
+        if (getenv("MKDD_PAD2")) pad_set(1, &pad); /* a second pad pressing the same buttons (two players) */
         /* MKDD_DUMP_TEV=dir: write the specialised shader of every TEV configuration seen */
         static U64Map seen;
         static unsigned nseen;
@@ -105,6 +116,9 @@ int main(int argc, char **argv) {
         }
         /* MKDD_WIDE_AT=<seconds>: switch to 16:9 mid-run (the widescreen change while playing) */
         if (getenv("MKDD_WIDE_AT") && step == atoi(getenv("MKDD_WIDE_AT")) * 60) g_aspect_scale = 4.0f / 3.0f;
+        /* MKDD_MODERN_OFF=<race frame>: MODERN off from then (its slide back, as after the finish) */
+        extern volatile uint32_t g_race_frames;
+        if (getenv("MKDD_MODERN_OFF") && g_race_frames >= (uint32_t)atoi(getenv("MKDD_MODERN_OFF"))) g_hud_modern = 0;
         if (step % 300 == 0) {
             Frame *f = gx_frame_acquire();
             fprintf(stderr, "[t=%5.1fs] frames %llu  batches %zu  verts %zu  dsp subframes %llu  voices %llu  AI buffers %llu  fn entries %llu  last %s\n",

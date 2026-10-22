@@ -11,16 +11,22 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 - Close to 60 fps at stock Switch clocks; the heaviest moments drop a few frames. 
 - Plays the USA release (GM4E01) from an `.iso`, `.gcm`, `.ciso` or `.rvz` disc image.
 - 4:3 or 16:9. In 16:9 the game camera is genuinely wider rather than stretched.
-- Field of view options: Normal, Wide, Wider.
+- Field of view options: Normal, Wide, Wider, Widest, Wideee.
+- Camera options: first person from the driver's seat (three eye heights), rear view on Y, camera
+  height and distance, and a free camera on the right stick that turns 360° around your kart.
 - Texture filtering: 2x, 4x, 8x or 16x anisotropic.
 - Higher  resolution: up to 2x docked (1080p output) and 1.5x handheld, with an Auto mode
   that lowers it only when the frame rate would drop.
 - Colour options: Accurate, Vivid, or your own brightness, contrast and saturation.
 - Up to 4 players, controller syncing from the game menu, and button remapping.
 - Unlock-all option that never touches your save.
-- Race HUD options: hide the position, items, laps, map, speedometer or race order in single player races.
+- Race HUD options: a MODERN style for 1 to 4 players, MPH or KM/H, and hiding the position, items,
+  laps, map, speedometer or race order one by one.
+- Jump button, and 1 to 7 laps per Grand Prix or Versus race.
+- Cheats: no weight classes, any special item for any character, and stronger mini-turbos (fewer
+  sweeps, more speed, longer boosts).
 - In-game updater that installs the latest GitHub release.
-- On-screen FPS counter, and debug logging for bug reports (both under Debugging).
+- On-screen FPS counter, and debug logging for bug reports (both under Debug).
 
 **Resolution**
 
@@ -92,8 +98,9 @@ then wireless controllers as the system numbers them (so handheld + one Pro Cont
 order and single Joy-Cons. Connects and disconnects are logged (`pad:` lines in `mkdd.log`).
 
 - **Handheld, Pro Controller, Joy-Con pair:** A/B/X/Y as on the GameCube, + = Start,
-  ZR = R (drift), ZL = L, L/R = Z, left stick (or the D-pad) = control stick, right stick =
-  C-stick. Remappable in the menu (applies to all of these).
+  ZR = R (drift), L/R = Z, left stick (or the D-pad) = control stick. ZL = jump (when Game >
+  Jump is on), Y = rear view in races, right stick click = first person on and off, right stick
+  sideways = free camera. Remappable in the menu (applies to all of these).
 - **Single Joy-Con, held sideways:** the four face buttons sit where a GameCube pad's A (right),
   B (bottom), X (top) and Y (left) are; SL = L, SR = R, the top shoulder or stick click = Z,
   + (right Joy-Con) or ZL / - (left Joy-Con) = Start. Player 1 on a single right Joy-Con opens
@@ -110,12 +117,14 @@ also opens by itself when a controller in use disconnects; reconnect it and clos
 | Option | |
 |---|---|
 | Graphics | the page below |
-| Controls | **Sync controllers** (the system screen for pairing, the player order and single Joy-Cons), **Button mapping** (pick a GameCube button, press the Switch button for it) and **Rumble strength** (Off / Low (default) / High; the game's own Rumble option must be on too) |
-| Game | **Unlock all**: every character, kart, cup and mode while it is on; never written to your save, so your own progress stays as it is. **Race HUD**: turn each part of the race HUD on or off (position, items, laps, map, speedometer, race order; left/right turns them all on or off). Single player races only: split screen keeps the full HUD, and the lap timer always shows |
+| Controls | **Sync controllers** (the system screen for pairing, the player order and single Joy-Cons) and **Button mapping** (each Switch button's GameCube button or action: first person, jump, camera reset) |
+| Camera | the page below |
+| Game | the page below |
+| Cheats | the page below |
 | Mods | **Mod**: which installed mod to play, PLUS or RTGP, or OFF for the standard game (NONE FOUND when no mod is installed; see [MKDD Plus](#mkdd-plus) and [Retro Track Grand Prix](#retro-track-grand-prix)). **HD textures** (Off (default) / On when `mods/hd/hd-textures.bin` is in the app folder (see [HD textures](#hd-textures)), else NO PACK) and **Restart now**, which starts the game again to apply a Mod change (unsaved race progress is lost) |
-| Update | shows this version and the latest release; **Check for updates** downloads and installs the newest `MKDD-NX.nro`, then **Restart now** starts it (save your progress first) |
-| Debugging | the page below |
-| Exit game | back to the homebrew menu |
+| Exit game | back to the homebrew menu. **Update** and **Debug** sit on the same row: press right |
+| Update | shows this version and the latest release; **Check for updates** downloads and installs the newest `MKDD-NX.nro`, then **Restart now** starts it (save your progress first). The button reads UPDATE: NEW when there is one |
+| Debug | the page below |
 
 **Graphics**
 
@@ -126,10 +135,41 @@ also opens by itself when a controller in use disconnects; reconnect it and clos
 | Docked resolution | on the TV (1080p output): Native (640x480), 1.5X, 2X (1280x960) or Auto (default: 2X, stepping down when the frame rate drops); handheld uses Handheld resolution |
 | Handheld resolution | on the Switch screen (1280x720): Native (the game's own 640x480), 1.25X, 1.5X (960x720, as many lines as the screen) or Auto (default: 1.5X, stepping down when the frame rate drops) |
 | Texture filtering | Normal / 2x / 4x / 8x / 16x anisotropic filtering: sharper roads and walls at a distance (most visible with HD textures, which have mipmaps) |
-| Field of view | Normal / Wide / Wider race camera, kept separately for 4:3 (default Normal) and 16:9 (default Wider); the row changes the current display mode's |
 | Color | Accurate / Vivid / Custom brightness, contrast, saturation (hold Y on that page to preview); saved to `config/color.ini` |
 
-**Debugging**
+**Camera**
+
+| Option | |
+|---|---|
+| Camera view | Normal (the game's chase camera) or Driver low / mid / high: first person from the driver's seat, in 1 and 2 player races. The right stick click switches between Normal and Driver high. Y looks behind you in any view |
+| Camera height | Low / Medium / Regular (default, the game's) / High: the chase camera's height; it never goes below the kart |
+| Camera distance | Very close / Close / Regular (default, the game's) / Far / Very far: how far the chase camera sits behind the kart |
+| Field of view | Normal / Wide / Wider / Widest / Wideee race camera, kept separately for 4:3 (default Normal) and 16:9 (default Wider); the row changes the current display mode's |
+| Free camera | the right stick (a GameCube pad's C-stick) turns the camera around the kart. When you let go: Snap back (default), Ease back (glides back in about a third of a second) or Stay (until **Camera reset**, a button you choose in Button mapping). Off turns it off. Not on a single sideways Joy-Con |
+
+**Game**
+
+| Option | |
+|---|---|
+| Race HUD | Classic (the game's) or Modern: smaller pieces in the screen corners, 1 to 4 players |
+| Speed | the speedometer in MPH or KM/H |
+| HUD assets | turn each part of the race HUD on or off (position, items, laps, map, speedometer, race order; left/right turns them all on or off) |
+| Jump | Off / Low / Mid (default) / High: a hop on the Jump button (ZL by default) that keeps your speed and follows the slope |
+| Rumble strength | Off / Low (default) / High; the game's own Rumble option must be on too |
+| Laps | Normal (the course's) or 1 to 7 laps, for Grand Prix and Versus races from the next race; Time Trial and Battle keep theirs |
+
+**Cheats**
+
+| Option | |
+|---|---|
+| Unlock all | every character, kart, cup and mode while it is on; never written to your save, so your own progress stays as it is |
+| No weight classes | any unlocked kart for any pair of drivers, whatever their weight |
+| Special items | Normal, Any (any character can get any special item), or Custom (choose each character's) |
+| Mini-turbo sweeps | how many steering sweeps charge a mini-turbo: 3 (the game's), 2 or 1 |
+| Mini-turbo speed | up to +100% boost speed (the speed cap rises with it while boosting) |
+| Mini-turbo length | up to 4x as long a boost |
+
+**Debug**
 
 | Option | |
 |---|---|
@@ -150,7 +190,7 @@ resolution with mipmaps.
 
 ### The easy way: MKDD-NX HD Textures app
 
-Download the app for your computer from the [latest release](https://github.com/digdat0/mkdd-nx/releases/latest):
+Download the app for your computer from the [v1.4.1 release](https://github.com/digdat0/mkdd-nx/releases/tag/v1.4.1):
 `MKDD-NX-HD-Textures.exe` (Windows) or `MKDD-NX-HD-Textures-arm64.dmg` / `-x86_64.dmg` (Mac with Apple
 Silicon / Intel). Nothing else needs installing.
 
@@ -268,7 +308,7 @@ game is reported on screen and left alone.
 
 ## Reporting bugs
 
-1. Press **-**, open **Debugging** and set **Logging** to **GAME** (GAME + AUDIO for sound problems).
+1. Press **-**, go down to **Exit game**, press right twice for **Debug**, open it and set **Logging** to **GAME** (GAME + AUDIO for sound problems).
 2. Play until the problem happens again, then exit the game from the menu (**Exit game**) if you
    can. After a crash or freeze, restart the console first.
 3. Put the SD card in a PC and zip (or copy) the whole `sdmc:/switch/MKDD-NX/logs/` folder.
@@ -300,6 +340,7 @@ come from the [doldecomp/mkdd](https://github.com/doldecomp/mkdd) decompilation 
 - **That1loser4**, creator of [Mario Kart: Double Dash!! Plus](https://mkdd.org/wiki/Mario_Kart:_Double_Dash!!_Plus),
   and everyone who contributed courses to it. The mod is not included here: get it from its own release.
 - The creators of [Retro Track Grand Prix](https://gamebanana.com/mods/594415). The mod is not included here: get it from its own page.
+- **realneonplayz** on [SteamGridDB](https://www.steamgriddb.com/), for the app icon.
 
 The code in this repository is released under the MIT licence (`LICENSE`). Mario Kart:
 Double Dash!! and its characters are Nintendo's; this project is not affiliated with Nintendo.

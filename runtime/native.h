@@ -25,6 +25,9 @@
 #include "gc_core.h"
 
 #define NATIVE_LIST(X) \
+    X(changeKart__9SceneMenuFiiii, "rrrrr", 'r', 1) \
+    X(getSpecialKind__7ItemObjFRCiRCUc, "rr", 'r', 0) \
+    X(IsSpecialCharacter__10ItemObjMgrFl, "r", 'r', 0) \
     X(PSMTXCopy, "rr", '-', 0) \
     X(PSMTXConcat, "rrr", '-', 0) \
     X(PSMTXMultVec, "rrr", '-', 0) \
@@ -62,6 +65,9 @@
     X(FUN_8029e0a8, "rr", '-', 1) \
     X(FUN_801a77e8, "rffffr", '-', 1) \
     X(FUN_8000a260, "r", '-', 1) \
+    X(FUN_802b6bd4, "r", '-', 1) \
+    X(FUN_801908b4, "rrr", '-', 4) \
+    X(FUN_80190a88, "rrr", '-', 4) \
     X(PSVECNormalize, "rr", '-', 0) \
     X(J3DPSCalcInverseTranspose__FPA4_fPA3_f, "rr", 'r', 0) \
     X(J3DGetTranslateRotateMtx__FRC16J3DTransformInfoPA4_f, "rr", '-', 0) \
