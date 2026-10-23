@@ -547,10 +547,10 @@ static size_t tex_size(uint32_t fmt, uint32_t w, uint32_t h) {
 }
 size_t gx_tex_size(uint32_t fmt, uint32_t w, uint32_t h) { return tex_size(fmt, w, h); }
 
-static struct { uint32_t fmt, w, h; uint64_t hash; uint8_t id; } s_subst[16];
+static struct { uint32_t fmt, w, h; uint64_t hash; uint16_t id; } s_subst[GX_SUBST_MAX];
 static unsigned s_nsubst;
 void gx_subst_register(unsigned id, uint32_t fmt, uint32_t w, uint32_t h, uint64_t hash) {
-    if (s_nsubst < 16) s_subst[s_nsubst++] = (__typeof__(s_subst[0])){fmt, w, h, hash, (uint8_t)id};
+    if (s_nsubst < GX_SUBST_MAX) s_subst[s_nsubst++] = (__typeof__(s_subst[0])){fmt, w, h, hash, (uint16_t)id};
 }
 /* New textures only (cache misses): the full hash runs only when format and size match. */
 static volatile uint32_t s_movie[8][3]; /* recent movie plane sets (Y, U, V addresses) */
@@ -572,7 +572,7 @@ static uint8_t movie_plane(uint32_t addr) {
     return 0;
 }
 
-static uint8_t subst_id(uint32_t fmt, uint32_t w, uint32_t h, const uint8_t *data, size_t size) {
+static uint16_t subst_id(uint32_t fmt, uint32_t w, uint32_t h, const uint8_t *data, size_t size) {
     uint64_t hash = 0;
     for (unsigned i = 0; i < s_nsubst; i++) {
         if (s_subst[i].fmt != fmt || s_subst[i].w != w || s_subst[i].h != h) continue;
@@ -909,16 +909,17 @@ const HudMove g_hud_move[MG_COUNT] = {
     [MG_ORDER] = {19, 114, 10, 263, 0.55f, 5},  /* rows 62.3 apart from 114; a 5th ends at 440 */
     [MG_SPEED] = {601, 446, 612, 455, 0.8f, 6}, /* 484-601 x 328-446 (its lowest block 436) */
     /* two players, p2_race.blo: player 1 at the top of the top screen, player 2 at the bottom of the
-     * bottom one (place and items at the left, LAP and timer in the middle), the map and the race
-     * order between them at the edges */
-    [MG2_PLACE1] = {525, 48, 10, 8, 0.75f, 5},     /* 525-583 x 48-106 */
+     * bottom one (place and items at the left, the lap count by the place: under it at the top, above
+     * it at the bottom, the word LAP not drawn; the timer in the outer right corner), the map and the
+     * race order between them at the edges */
+    [MG2_PLACE1] = {525, 48, 10, 8, 0.75f, 5},     /* 525-583 x 48-106: 10-53.5 x 8-51.5 */
     [MG2_ITEMS1] = {81, 17, 58, 13, 0.75f, 5},     /* 78-196 x 1-84 */
-    [MG2_LAP1] = {27, 21, 202, 22.8f, 0.8f, 4},    /* 27-108.5 x 17-55, the count right of LAP (native.c LAP2_COUNT_DX): ends at 267 */
-    [MG2_TIME1] = {434, 22, 279, 22.4f, 0.8f, 4},  /* digits 434-593 x 22-44, level with the word LAP: the pair centred */
-    [MG2_PLACE2] = {525, 347, 10, 396.5f, 0.75f, 5},
+    [MG2_LAP1] = {27, 44, 12, 56, 0.8f, 5},        /* the count 27-68 x 44-82: 12-45 x 56-86, under the place */
+    [MG2_TIME1] = {593, 22, 600, 8, 0.8f, 6},      /* digits 434-593 x 22-44: 473-600 x 8-26 */
+    [MG2_PLACE2] = {525, 347, 10, 396.5f, 0.75f, 5}, /* 10-53.5 x 396.5-440 */
     [MG2_ITEMS2] = {81, 383, 58, 401.4f, 0.75f, 5},
-    [MG2_LAP2] = {28, 367, 202, 413.8f, 0.8f, 4},
-    [MG2_TIME2] = {434, 405, 279, 413.4f, 0.8f, 4},
+    [MG2_LAP2] = {28, 428, 12, 392.5f, 0.8f, 5},   /* the count 28-68 x 390-428: 12-44 x 362-392.5, above the place */
+    [MG2_TIME2] = {593, 427, 600, 440, 0.8f, 6},   /* digits 434-593 x 405-427: 473-600 x 422-440 */
     [MG2_MAP] = {587, 124, 602, 141, 0.8f, 6},     /* 483-587 x 124-331 */
     [MG2_ORDER] = {19, 97, 8, 152, 0.6f, 5},
     /* four players, p4_race.blo: items in each quarter's outer top corner, the place in its outer

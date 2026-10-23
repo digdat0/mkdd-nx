@@ -3,6 +3,7 @@
  * the player's disc at start-up (nothing from the game ships with the port) and packed into one
  * GL texture: R = intensity (the dark outline), G = alpha. The menu tints them with a
  * top-to-bottom gradient, like the game's yellow-to-orange titles. */
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -24,6 +25,7 @@ static const GlyphFile FILES[] = {
     {'9', "mariofont_number_9.bti"}, {'+', "mariofont_number_plus.bti"}, {'!', "mariofontexclamation.bti"},
     {'?', "mariofontquestion.bti"}, {'.', "mariofontperiod.bti"}, {':', "mariofontcolon.bti"},
     {'/', "mariofontslash.bti"},
+    {'(', NULL}, {')', NULL}, /* the disc has none: drawn in the same style (paren_glyph) */
 };
 
 static GLuint s_tex;
@@ -118,6 +120,27 @@ static bool load_glyph(const Rarc *r, const char *file, uint8_t *cell, int strid
     return ok;
 }
 
+/* A bracket in MarioFont's look (the slash's: a white stroke about 5 texels wide, a black edge 2
+ * wide, rounded ends, rows 3-28): an arc of a circle of radius 16, its middle at x 8 (')' mirrored). */
+static bool paren_glyph(uint8_t *cell, int pitch, bool close) {
+    const float R = 16, cx = 24, cy = 15.5f, half = asinf(10.0f / R), core = 2.6f, edge = 4.6f;
+    for (int y = 0; y < CELL; y++)
+        for (int x = 0; x < CELL; x++) {
+            float px = (close ? CELL - 1 - x : x) + 0.5f - cx, py = y + 0.5f - cy, d;
+            float a = atan2f(py, -px); /* 0 at the arc's middle (left of the centre) */
+            if (fabsf(a) <= half) d = fabsf(sqrtf(px * px + py * py) - R);
+            else {
+                float ea = a < 0 ? -half : half, ex = -R * cosf(ea) - px, ey = R * sinf(ea) - py;
+                d = sqrtf(ex * ex + ey * ey);
+            }
+            float al = edge + 0.5f - d, in = core + 0.5f - d;
+            uint8_t *o = cell + (size_t)y * pitch + (size_t)x * 2;
+            o[0] = (uint8_t)(255 * (in < 0 ? 0 : in > 1 ? 1 : in));
+            o[1] = (uint8_t)(255 * (al < 0 ? 0 : al > 1 ? 1 : al));
+        }
+    return true;
+}
+
 bool uifont_load(void) {
     uint64_t mram;
     uint32_t msize;
@@ -139,10 +162,10 @@ bool uifont_load(void) {
     for (int i = 0; i < 26 + (int)(sizeof FILES / sizeof FILES[0]) && slot < COLS * ROWS; i++) {
         char c;
         if (i < 26) { c = (char)('A' + i); snprintf(file, sizeof file, "mariofont_%c.bti", 'a' + i); }
-        else { c = FILES[i - 26].c; snprintf(file, sizeof file, "%s", FILES[i - 26].file); }
+        else { c = FILES[i - 26].c; snprintf(file, sizeof file, "%s", FILES[i - 26].file ? FILES[i - 26].file : ""); }
         int cx = slot % COLS * CELL, cy = slot / COLS * CELL;
         uint8_t *cell = atlas + ((size_t)cy * W + (size_t)cx) * 2;
-        if (!load_glyph(&r2d, file, cell, W * 2)) continue;
+        if (!(*file ? load_glyph(&r2d, file, cell, W * 2) : paren_glyph(cell, W * 2, c == ')'))) continue;
         /* the letter's horizontal extent (its alpha), for proportional spacing */
         int x0 = CELL, x1 = 0;
         for (int y = 0; y < CELL; y++)

@@ -81,7 +81,7 @@ static bool is_player(Ctx *c, uint8_t *M, uint32_t body) {
 }
 
 /* MINI-TURBO (the - menu's cheats), for players' karts (is_player; the
- * CPU drivers keep the game's). The body (KartGame / KartStrat +0, the same code in Plus and
+ * CPU drivers keep the game's unless g_mt_cpu). The body (KartGame / KartStrat +0, the same code in Plus and
  * RTGP): +0x570 flags (0x200 mini-turbo boosting), +0x574 flags (3: drifting left / right),
  * +0x59e frames of boost left, +0x5a0 the kart's mini-turbo length (from its parameters),
  * +0x5c7 the drift stage, 0-2 (the game's drift count, 1-3, is this + 1).
@@ -96,7 +96,7 @@ static bool is_player(Ctx *c, uint8_t *M, uint32_t body) {
  *   the velocity to that limit. Every reader of the two constants runs in a kart's update after
  *   its DoDash, so a players' boosting kart gets g_mt_speed for 1.3 and the cap raised by as much
  *   from its DoDash until the next kart's (mt_restore). */
-volatile uint32_t g_mt_sweeps = 3;
+volatile uint32_t g_mt_sweeps = 3, g_mt_cpu;
 volatile float g_mt_speed = 1.3f, g_mt_length = 1.0f;
 static uint32_t s_mt_saved[2]; /* r2 - 0x2d18, r2 - 0x2d0c while raised */
 static bool s_mt_raised;
@@ -111,7 +111,7 @@ static bool mini_turbo(Ctx *c, int id, uint32_t addr) {
     uint8_t *M = c->ram;
     if (id == H_MT_DASH) mt_restore(c, M);
     uint32_t body = (uint32_t)mld(c, M, ctx_gpr(c, 3), 4);
-    if (!body || !IS_RAM(body) || !is_player(c, M, body)) return false;
+    if (!body || !IS_RAM(body) || (!g_mt_cpu && !is_player(c, M, body))) return false;
     if (id == H_MT_CHECK) {
         if (g_mt_sweeps >= 3) return false;
         ctx_call_orig(c, addr);
@@ -290,10 +290,25 @@ static void format_guest(Ctx *c, uint32_t fmt_addr, unsigned arg, char *out, siz
 #define W_SEQAPP 0x803CBE20u     /* SequenceApp::mspSequenceApp: requested scenes +0x38, loaded +0x3c, state +0x44 */
 /* RaceDirector's phase (1: the course flyover before the countdown), 0 outside a race. */
 volatile uint32_t g_race_phase;
+/* The buttons PADRead gave the game last, per port (native.c SceneMenu::character). */
+volatile uint16_t g_pad_buttons[4];
+/* What the front end's BUTTON MAPPING applies to: 1 while players drive (RaceDirector in
+ * PHASE_RUNNING 0x11, frames advancing, not a replay, attract demo, award or staff roll), 2 while
+ * that race is paused, 0 anywhere else (menus, course flyover, the results after the finish). */
+volatile uint32_t g_race_drive;
 static void read_race_phase(void) {
     uint32_t mgr = (uint32_t)m_read_be(W_RACEMGR, 4);
     uint32_t dir = (mgr & 0xFE000000u) == 0x80000000u ? (uint32_t)m_read_be(mgr + 0x18, 4) : 0;
     g_race_phase = (dir & 0xFE000000u) == 0x80000000u ? (uint32_t)m_read_be(dir + 0xc, 4) : 0;
+    uint32_t drive = 0;
+    if (g_race_phase == 0x11) {
+        uint32_t info = (uint32_t)m_read_be(mgr + 0x38, 4); /* RaceInfo: race mode +8, demo type +0x28 */
+        bool replay = m_read_be(mgr + 0x2c, 2) & 1;
+        bool demo = (info & 0xFE000000u) != 0x80000000u || m_read_be(info + 0x28, 4) != 0 ||
+                    m_read_be(info + 8, 4) == 8 || m_read_be(info + 8, 4) == 9;
+        if (!replay && !demo) drive = m_read_be(dir + 0x28, 1) ? 1 : 2; /* mFrameRenewal: off while paused */
+    }
+    g_race_drive = drive;
 }
 
 static void watch_flow(uint16_t buttons) {
@@ -551,6 +566,7 @@ bool rt_hle(Ctx *c, uint32_t addr) {
         pad_get_all(p);
         for (uint32_t i = 0; i < 4; i++) {
             uint32_t o = dst + 12 * i;
+            g_pad_buttons[i] = p[i].button;
             m_write_be(o, 2, p[i].button);
             m_write_be(o + 2, 1, (uint8_t)p[i].stick_x);
             m_write_be(o + 3, 1, (uint8_t)p[i].stick_y);

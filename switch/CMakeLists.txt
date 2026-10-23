@@ -23,7 +23,7 @@ link_directories(${DEVKITPRO}/portlibs/switch/lib)
 
 file(GLOB RT_SOURCES CONFIGURE_DEPENDS "${ROOT}/runtime/*.c")
 file(GLOB GEN_SOURCES CONFIGURE_DEPENDS "${GEN_DIR}/part_*.c")
-set(SW_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/main_switch.c ${CMAKE_CURRENT_SOURCE_DIR}/render_gl.c ${CMAKE_CURRENT_SOURCE_DIR}/tev_gen.c ${CMAKE_CURRENT_SOURCE_DIR}/prof_switch.c ${CMAKE_CURRENT_SOURCE_DIR}/menu.c ${CMAKE_CURRENT_SOURCE_DIR}/ui_font.c ${CMAKE_CURRENT_SOURCE_DIR}/pause_art.c ${CMAKE_CURRENT_SOURCE_DIR}/hdtex.c ${CMAKE_CURRENT_SOURCE_DIR}/update.c)
+set(SW_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/main_switch.c ${CMAKE_CURRENT_SOURCE_DIR}/render_gl.c ${CMAKE_CURRENT_SOURCE_DIR}/tev_gen.c ${CMAKE_CURRENT_SOURCE_DIR}/prof_switch.c ${CMAKE_CURRENT_SOURCE_DIR}/menu.c ${CMAKE_CURRENT_SOURCE_DIR}/ui_font.c ${CMAKE_CURRENT_SOURCE_DIR}/pause_art.c ${CMAKE_CURRENT_SOURCE_DIR}/charpack_art.c ${CMAKE_CURRENT_SOURCE_DIR}/hdtex.c ${CMAKE_CURRENT_SOURCE_DIR}/update.c)
 
 # Generated code: -O2 (big functions; -O3 mostly costs compile time). Runtime hot paths -O3.
 set_source_files_properties(${GEN_SOURCES} ${GEN_DIR}/table.c PROPERTIES COMPILE_OPTIONS "-O2;-w")

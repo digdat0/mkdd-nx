@@ -13,11 +13,13 @@ typedef struct {
     int rumble;        /* 0 off, 1 low, 2 high */
     bool unlock_all;   /* every character, kart, cup and mode, this session only (never saved) */
     bool any_kart;     /* kart screen: no weight classes, every unlocked kart for any drivers */
+    int char_test;     /* DEBUG CHARACTER TEST: character pack variants, 0 off, 1 players, 2 everyone (never saved) */
     int special_mode;  /* SPECIAL ITEMS: 0 normal, 1 any (every character as Petey / King Boo), 2 custom */
     int special[20];   /* custom, by character ID - 1: SPECIAL_NAMES index (9 = any) */
     int mt_sweeps;     /* MINI-TURBO SWEEPS: drift stages to blue sparks, 3 (the game's), 2 or 1 */
     int mt_speed;      /* MINI-TURBO SPEED: MT_SPEEDS index, 0 the game's */
     int mt_length;     /* MINI-TURBO LENGTH: MT_LENGTHS index, 0 the game's */
+    bool mt_cpu;       /* MINI-TURBO FOR CPUS: the three above for the computer's karts too */
     int jump;          /* JUMP: 0 off, 1-3 low / mid / high hop on the JUMP button (map[MAP_JUMP]) */
     int laps;          /* LAPS: Grand Prix and Versus races, 0 the course's own, else 1-7 */
     int free_cam;      /* FREE CAMERA: 0 off, the right stick turns the race camera round the kart and
@@ -26,6 +28,7 @@ typedef struct {
     int cam_dist;      /* CAMERA DISTANCE: the chase camera's, 0-4 very close / close / regular (the game's) / far / very far */
     int logging;       /* 0 disabled, 1 game, 2 game + audio, 3 audio */
     bool hd_textures;  /* use the HD texture file (HD_FILE) when there is one */
+    bool characters;   /* EXTRA CHARACTERS: load mods/characters (character packs), from the next start */
     char mod[16];      /* the mod to play, from the next start: "auto" (the first found), "off" or a MODS key */
     int fov[2];        /* race camera field of view for 4:3 / 16:9: 0 normal (the game's), 1 wide, 2 wider, 3 widest, 4 wideee */
     int aniso;         /* texture filtering: 0 normal, 1-4 anisotropic 2x / 4x / 8x / 16x */
@@ -47,6 +50,8 @@ enum { DOCKED_NATIVE, DOCKED_2X, DOCKED_1_5X, DOCKED_AUTO };
 enum { HANDHELD_NATIVE, HANDHELD_1_25X, HANDHELD_1_5X, HANDHELD_AUTO };
 
 extern Settings g_set;
+/* The standard layout: what every screen outside driving uses, whatever BUTTON MAPPING says */
+extern const uint64_t g_map_default[MAP_COUNT];
 /* HD textures converted by tools/hdtex_pack.py, in the app folder's mods/hd/ */
 #define HD_FILE "hd-textures.bin"
 
@@ -86,9 +91,13 @@ void menu_choice(int w, int h, const char *title, const char *const *opts, int n
 void menu_loading(int w, int h, const char *line1, const char *line2, float progress);
 /* The 4:3 border art in the side bars beside a w x h screen's 4:3 picture (after render_present). */
 void menu_border(int w, int h);
+/* Character select with character packs: the page above the grid, each player's variant bottom right. */
+void menu_char_hint(int w, int h);
 /* What the start-up found: the mods usable in mods/ (bit n - 1 for MODS[n - 1]) and the one this
  * session plays (0: none). */
 void menu_set_mods(unsigned found, unsigned running);
+/* At start-up: whether mods/characters exists and whether its characters were loaded. */
+void menu_set_chars(bool found, bool running);
 /* The mod the MOD setting picks among the found ones (bit mask as above): 0 none, n = MODS[n - 1]. */
 unsigned mods_pick(unsigned found);
 /* Open the menu (game paused) on its main page, with notice as the hint until the cursor moves. */

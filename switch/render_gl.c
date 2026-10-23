@@ -421,7 +421,7 @@ typedef struct { Stream vb, ib, ub, xb; GLuint vao, xtex; GLsync fence; uint32_t
  * mipmaps, its own GL texture: deleted on eviction, not pooled) */
 /* movie: plane of a movie frame (GxTexture.movie); enh_set / enh_gen: its redrawn version in M.set
  * (valid while that set's gen still matches) */
-typedef struct { GLuint tex; uint8_t wrap_s, wrap_t, chans, subst, hd, movie, enh_set; bool linear; uint64_t used, key; uint32_t w, h, hd_bytes, enh_gen; } GlTexture;
+typedef struct { GLuint tex; uint16_t subst; uint8_t wrap_s, wrap_t, chans, hd, movie, enh_set; bool linear; uint64_t used, key; uint32_t w, h, hd_bytes, enh_gen; } GlTexture;
 /* Evicted GL textures kept for reuse by a new texture of the same size (glTexSubImage2D): movies
  * and render-to-texture effects make a new texture every frame, and deleting a nouveau texture
  * the GPU used recently waits for the GPU. */
@@ -446,6 +446,7 @@ static struct {
     GLint vs_squeeze, vs_shift;
     float squeeze;
     GLuint below_tex;   /* the companion (render_set_below) of a picture bound for this draw */
+    float shift;        /* this draw moved down (render_set_shift), of the 480-unit layout */
     unsigned below_unit;
     bool hud43;
     /* title screen in 16:9: the 4:3 picture with a blurred copy beside it (render_present) */
@@ -968,6 +969,8 @@ static void state_reset(void) {
 
 static unsigned (*s_subst)(unsigned id);
 void render_set_subst(unsigned (*texture)(unsigned id)) { s_subst = texture; }
+static float (*s_shift)(unsigned id);
+void render_set_shift(float (*shift)(unsigned id)) { s_shift = shift; }
 static unsigned (*s_below)(unsigned id);
 void render_set_below(unsigned (*texture)(unsigned id)) { s_below = texture; }
 
@@ -1074,7 +1077,7 @@ static void bind_slot(unsigned unit, uint64_t key) {
         gt->enh_gen = 0;
         gt->key = key;
         gt->hd = 0;
-        if (R.hd_on && !t->subst) {
+        if (R.hd_on && (!t->subst || t->subst >= GX_SUBST_CHARPACK)) {
             int hd = hdtex_find(t->fmt, t->width, t->height, t->raw, t->raw_len);
             if (hd >= 0 && hdtex_request(hd, key)) gt->hd = 1;
         }
@@ -1092,9 +1095,14 @@ static void bind_slot(unsigned unit, uint64_t key) {
      * sampled as nothing (RTGP's cup select drew its cups black after its title bar was made). */
     GLuint sub = gt->subst && s_subst ? s_subst(gt->subst) : 0;
     GLuint below = sub && s_below ? s_below(gt->subst) : 0;
+    if (gt->subst && s_shift) {
+        float f = s_shift(gt->subst);
+        if (f != 0) R.shift = f;
+    }
     if (gt->subst && R.cur_unit >= 0) R.cur_tex[R.cur_unit] = ~0u;
     if (sub) {
-        unit_bind(unit, sub, R.samplers[0][0][1]); /* clamped, linear */
+        /* clamped, linear; a character pack picture as the game samples it */
+        unit_bind(unit, sub, gt->subst >= GX_SUBST_CHARPACK ? R.samplers[gt->wrap_s][gt->wrap_t][gt->linear] : R.samplers[0][0][1]);
         if (below) { R.below_tex = below; R.below_unit = unit; }
         return;
     }
@@ -1609,9 +1617,18 @@ bool render_update(float scale_in) {
                     glBindBufferRange(GL_UNIFORM_BUFFER, 0, sl->ub.buf, (GLintptr)cur_ub, TEV_UNIFORM_SIZE);
                 }
                 R.below_tex = 0;
+                R.shift = 0;
                 for (unsigned m = 0; m < 8; m++) bind_slot(m, b->tev.textures[m]);
                 slot_layout(sl, b->layout);
+                bool shifted = R.shift != 0 && R.sso && R.vs_shift >= 0;
+                if (shifted) {
+                    /* moved down: unclipped (the game's scissor is for where it was) */
+                    glScissor(0, 0, (GLsizei)R.efb_w, (GLsizei)R.efb_h);
+                    sc[0] = ~0u;
+                    glProgramUniform1f(R.vs_prog, R.vs_shift, R.shift / 480.0f);
+                }
                 glDrawElements(GL_TRIANGLES, (GLsizei)b->index_count, GL_UNSIGNED_INT, (const void *)(uintptr_t)(b->index_first * 4u));
+                if (shifted) glProgramUniform1f(R.vs_prog, R.vs_shift, 0.0f);
                 if (R.below_tex && R.sso && R.vs_shift >= 0) {
                     /* the same draw again, one 32-unit line of the game's 640x480 2D layout lower,
                      * with the companion picture (unclipped: the game's scissor may end at the line) */

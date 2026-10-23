@@ -141,7 +141,7 @@ also opens by itself when a controller in use disconnects; reconnect it and clos
 
 | Option | |
 |---|---|
-| Camera view | Normal (the game's chase camera) or Driver low / mid / high: first person from the driver's seat, in 1 and 2 player races. The right stick click switches between Normal and Driver high. Y looks behind you in any view |
+| Camera view | Normal (the game's chase camera) or Driver low / mid / high: first person from the driver's seat, in 1 to 4 player races. Player 1's setting; each player's right stick click switches their own camera between Normal and Driver high. Y looks behind you in any view |
 | Camera height | Low / Medium / Regular (default, the game's) / High: the chase camera's height; it never goes below the kart |
 | Camera distance | Very close / Close / Regular (default, the game's) / Far / Very far: how far the chase camera sits behind the kart |
 | Field of view | Normal / Wide / Wider / Widest / Wideee race camera, kept separately for 4:3 (default Normal) and 16:9 (default Wider); the row changes the current display mode's |
@@ -153,7 +153,7 @@ also opens by itself when a controller in use disconnects; reconnect it and clos
 |---|---|
 | Race HUD | Classic (the game's) or Modern: smaller pieces in the screen corners, 1 to 4 players |
 | Speed | the speedometer in MPH or KM/H |
-| HUD assets | turn each part of the race HUD on or off (position, items, laps, map, speedometer, race order; left/right turns them all on or off) |
+| HUD assets | turn each part of the race HUD on or off (position, items, laps, map, speedometer, race order; left/right turns them all on or off), 1 to 4 players |
 | Jump | Off / Low / Mid (default) / High: a hop on the Jump button (ZL by default) that keeps your speed and follows the slope |
 | Rumble strength | Off / Low (default) / High; the game's own Rumble option must be on too |
 | Laps | Normal (the course's) or 1 to 7 laps, for Grand Prix and Versus races from the next race; Time Trial and Battle keep theirs |
@@ -168,6 +168,7 @@ also opens by itself when a controller in use disconnects; reconnect it and clos
 | Mini-turbo sweeps | how many steering sweeps charge a mini-turbo: 3 (the game's), 2 or 1 |
 | Mini-turbo speed | up to +100% boost speed (the speed cap rises with it while boosting) |
 | Mini-turbo length | up to 4x as long a boost |
+| Mini-turbo for CPUs | the computer's karts get the three mini-turbo settings above too (off: only the players') |
 
 **Debug**
 

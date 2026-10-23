@@ -251,12 +251,12 @@ bool machine_boot(const char *disc_path, Ctx *boot, char *err, size_t errlen) {
     static const struct { uint32_t addr, v; } low[] = {
         {0x80000020u, 0x0D15EA5Eu},   /* normal boot magic */
         {0x80000024u, 1},             /* boot version */
-        {0x80000028u, RAM_SIZE},      /* physical memory size */
+        {0x80000028u, GAME_RAM_SIZE}, /* physical memory size */
         {0x8000002Cu, 1},             /* console type: retail */
         {0x80000034u, 0},             /* ArenaHi (set below) */
         {0x800000CCu, 0},             /* video mode: NTSC */
         {0x800000D0u, ARAM_SIZE},
-        {0x800000F0u, RAM_SIZE},      /* simulated memory size */
+        {0x800000F0u, GAME_RAM_SIZE}, /* simulated memory size */
         {0x800000F8u, 162000000u},    /* bus clock */
         {0x800000FCu, 486000000u},    /* cpu clock */
     };

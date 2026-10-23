@@ -16,7 +16,10 @@
 #define GC_CORE_VIS_PUSHED
 #endif
 
-#define RAM_SIZE 0x01800000u /* 24 MiB of MEM1 */
+#define GAME_RAM_SIZE 0x01800000u /* 24 MiB of MEM1: what the game is told it has */
+/* MEM1 as the port reads it: the game's 24 MiB plus 8 MiB above (0x81800000..0x81FFFFFF) that the
+ * game never uses, where the port keeps data the game is pointed at (charpack.c: character packs) */
+#define RAM_SIZE 0x02000000u
 #define RAM_ALLOC 0x02000000u /* allocation behind it (see mld_s) */
 #define REG_BYTES 0x10010    /* Ghidra's Gekko register space, incl. PS1 */
 #define REG_R2 0x08

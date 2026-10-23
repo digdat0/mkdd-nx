@@ -23,6 +23,7 @@
 #include "prof_switch.h"
 #include "menu.h"
 #include "pause_art.h"
+#include "charpack_art.h"
 #include "hdtex.h"
 #include "update.h"
 const char g_build_stamp[] = __DATE__ " " __TIME__;
@@ -438,7 +439,7 @@ static int s_player_src[4] = {-1, -1, -1, -1}; /* source of each player, -1 = no
 static int s_pad_quiet; /* frames to ignore disconnects for (the controller screen reassigns players) */
 /* runtime/native.c: Race2D::draw calls (the race HUD, once per race frame). Declared here, not in
  * native.h, which every generated file includes. */
-extern volatile uint32_t g_race_frames, g_race_phase;
+extern volatile uint32_t g_race_frames, g_race_phase, g_race_drive;
 static u32 s_player_style[4];
 static bool s_quit;
 static float s_fps;
@@ -528,10 +529,11 @@ static void map_sideways(u64 b, bool left, bool p1, PadStatus *p) {
     if (b & (HidNpadButton_Plus | HidNpadButton_ZL | (p1 ? 0 : HidNpadButton_Minus))) p->button |= PAD_START;
 }
 
-static void map_full(PadState *pad, u64 b, PadStatus *p) {
+/* map: BUTTON MAPPING's layout while driving, the standard one everywhere else (update_pads) */
+static void map_full(PadState *pad, u64 b, const uint64_t *map, PadStatus *p) {
     static const uint16_t GC_BITS[GC_COUNT] = {PAD_A, PAD_B, PAD_X, PAD_Y, PAD_TRIGGER_Z, PAD_TRIGGER_L, PAD_TRIGGER_R, PAD_START};
     for (int i = 0; i < GC_COUNT; i++)
-        if (b & g_set.map[i]) p->button |= GC_BITS[i];
+        if (b & map[i]) p->button |= GC_BITS[i];
     HidAnalogStickState r = padGetStickPos(pad, 1);
     p->substick_x = stick(r.x);
     p->substick_y = stick(r.y);
@@ -595,6 +597,14 @@ static void update_pads(void) {
         down1 |= HidNpadButton_Minus;
     bool menu = menu_input(down1, held1, &s_quit);
     uint32_t jump = 0, cam_reset = 0; /* JUMP (menu.c ACTIONS, GAME > JUMP): the ports holding it, for the game thread */
+    /* BUTTON MAPPING is for driving only: menus, the pause screen, the flyover and the results
+     * keep the standard buttons (hle.c g_race_drive). Paused in a race, a PAUSE button the
+     * standard layout leaves free resumes too. */
+    uint32_t drive = g_race_drive;
+    const uint64_t *map = drive == 1 ? g_set.map : g_map_default;
+    uint64_t std = 0;
+    for (int i = 0; i < GC_COUNT; i++) std |= g_map_default[i];
+    uint64_t resume = drive == 2 ? g_set.map[GC_START] & ~std : 0;
     for (int p = 0; p < 4; p++) {
         PadStatus s = {0};
         int src = s_player_src[p];
@@ -603,8 +613,8 @@ static void update_pads(void) {
             PadState *pad = &s_src[src];
             u64 b = padGetButtons(pad);
             if (pad == p1) b &= ~menu_blocked();
-            if (b & g_set.map[MAP_JUMP]) jump |= 1u << p;
-            if (b & g_set.map[MAP_CAM_RESET]) cam_reset |= 1u << p;
+            if (drive == 1 && (b & map[MAP_JUMP])) jump |= 1u << p;
+            if (drive == 1 && (b & map[MAP_CAM_RESET])) cam_reset |= 1u << p;
             u32 st = s_player_style[p];
             bool single = (st & (HidNpadStyleTag_NpadJoyLeft | HidNpadStyleTag_NpadJoyRight)) &&
                           !(st & (HidNpadStyleTag_NpadJoyDual | HidNpadStyleTag_NpadFullKey | HidNpadStyleTag_NpadHandheld));
@@ -613,7 +623,10 @@ static void update_pads(void) {
             s.stick_y = stick(l.y);
             if (st & HidNpadStyleTag_NpadGc) map_gc(pad, b, &s);
             else if (single) map_sideways(b, (st & HidNpadStyleTag_NpadJoyLeft) != 0, p == 0, &s);
-            else map_full(pad, b, &s);
+            else {
+                map_full(pad, b, map, &s);
+                if (b & resume) s.button |= PAD_START;
+            }
             /* Start pressed: the pause screen shows this controller's buttons (pause_art.c) */
             static bool start_was[4];
             bool start = s.button & PAD_START;
@@ -624,22 +637,43 @@ static void update_pads(void) {
             /* FREE CAMERA: the right stick (a GameCube pad's C stick) sideways; races never read it */
             float pan = s.substick_x / 100.0f;
             g_cam_pan[p] = g_set.free_cam && !single && (pan > 0.3f || pan < -0.3f) ? (pan > 1 ? 1 : pan < -1 ? -1 : pan) : 0;
+            /* its RANDOM is GameCube L + R held, as the screen shows: L has no button of its own
+             * by default (ZL jumps, L / R are Z), so there Switch L and R are GameCube L and R
+             * too (Z only swaps drivers on the kart step); the same on the cup and course pages
+             * while their "L + R: RANDOM" shows */
+            if (charpack_select_active() || pause_art_random_shown()) {
+                if (b & HidNpadButton_L) s.button |= PAD_TRIGGER_L;
+                if (b & HidNpadButton_R) s.button |= PAD_TRIGGER_R;
+            }
+            /* and with character packs, X the next page of characters, Y the previous, as on the
+             * cup page (native.c SceneMenu::character takes them) */
+            static u64 page_was[4];
+            u64 page = b & (HidNpadButton_X | HidNpadButton_Y), down = page & ~page_was[p];
+            page_was[p] = page;
+            if (charpack_pages() > 1 && charpack_select_active()) {
+                if (down & HidNpadButton_X) __atomic_or_fetch(&g_char_cycle, 1u << p, __ATOMIC_RELEASE);
+                else if (down & HidNpadButton_Y) __atomic_or_fetch(&g_char_cycle, 1u << (4 + p), __ATOMIC_RELEASE);
+            }
             if ((s.button & PAD_TRIGGER_R) && !s.trigger_r) s.trigger_r = 255;
             if ((s.button & PAD_TRIGGER_L) && !s.trigger_l) s.trigger_l = 255;
         }
-        /* FIRST PERSON (menu.c ACTIONS, a full controller's button): the camera between NORMAL
-         * and first person, DRIVER HIGH (CAMERA VIEW 3); saved with the
-         * next settings change, not now (an SD card write mid-race can stall a frame) */
-        if (p == 0) {
-            static bool was;
-            int src = s_player_src[0];
-            u32 st = s_player_style[0];
+        /* FIRST PERSON (menu.c ACTIONS, a full controller's button): player 1's camera between
+         * NORMAL and first person, DRIVER HIGH (CAMERA VIEW 3), saved with the next settings
+         * change, not now (an SD card write mid-race can stall a frame); players 2-4 each their
+         * own (bit p of g_first_person, this session only), player 1's CAMERA VIEW untouched */
+        {
+            static bool was_fp[4];
+            bool was = was_fp[p];
+            int src = s_player_src[p];
+            u32 st = s_player_style[p];
             bool full = !(st & HidNpadStyleTag_NpadGc) &&
                         (!(st & (HidNpadStyleTag_NpadJoyLeft | HidNpadStyleTag_NpadJoyRight)) ||
                          (st & (HidNpadStyleTag_NpadJoyDual | HidNpadStyleTag_NpadFullKey | HidNpadStyleTag_NpadHandheld)));
-            bool on = src >= 0 && !menu && full && (padGetButtons(&s_src[src]) & g_set.map[MAP_FP] & ~menu_blocked());
-            if (on && !was) g_set.camera = g_set.camera ? 0 : 3;
-            was = on;
+            bool on = src >= 0 && !menu && full && drive == 1 &&
+                      (padGetButtons(&s_src[src]) & map[MAP_FP] & (&s_src[src] == p1 ? ~menu_blocked() : ~0ull));
+            if (on && !was && p == 0) g_set.camera = g_set.camera ? 0 : 3;
+            else if (on && !was) __atomic_xor_fetch(&g_first_person, 1u << p, __ATOMIC_RELAXED);
+            was_fp[p] = on;
         }
         /* REAR VIEW (GameCube Y, menu.c ACTIONS): while this player's race camera runs (its
          * view updated in the last few polls; view = player, any number of screens), their Y
@@ -820,6 +854,9 @@ static void hitch_log(u64 r0, u64 p0, u64 s0, u64 s1, bool got, bool paused) {
     h.max_r = h.max_p = h.max_s = 0;
 }
 
+/* The renderer's substituted pictures: the pause screen's, then the character packs' */
+static unsigned subst_texture(unsigned id) { return id >= GX_SUBST_CHARPACK ? charpack_art_texture(id) : pause_art_texture(id); }
+
 int main(int argc, char **argv) {
     update_init(argc > 0 ? argv[0] : NULL);
     mkdir("sdmc:/switch", 0777);
@@ -827,6 +864,8 @@ int main(int argc, char **argv) {
     mkdir(LOG_DIR, 0777);
     mkdir(CFG_DIR, 0777);
     mkdir(SAVE_DIR, 0777);
+    mkdir(MODS_DIR, 0777);
+    mkdir(MODS_DIR "/characters", 0777);
     chdir(APP_DIR);
     s_boot_tick = armGetSystemTick();
     /* Keep the previous session's logs (newlib's rename does not replace an existing file). */
@@ -909,8 +948,17 @@ int main(int argc, char **argv) {
         }
         menu_set_mods(found, pick);
         pause_art_init();  /* the pause screen's controller picture, drawn as a Pro Controller */
-        render_set_subst(pause_art_texture);
+        /* driver variants, unless EXTRA CHARACTERS is off (then nothing of them is read) */
+        {
+            struct stat st;
+            bool found = stat(MODS_DIR "/characters", &st) == 0 && S_ISDIR(st.st_mode);
+            if (found && g_set.characters) charpack_scan(MODS_DIR "/characters");
+            menu_set_chars(found, found && g_set.characters);
+        }
+        charpack_art_init();
+        render_set_subst(subst_texture);
         render_set_below(pause_art_below);
+        render_set_shift(pause_art_shift);
     } else {
         rt_log("disc: %s", err);
         fatal("COULD NOT READ THE DISC IMAGE", strstr(err, "compression") ? "RVZ: CONVERT IT AGAIN IN DOLPHIN WITH ZSTANDARD"
@@ -1024,6 +1072,7 @@ int main(int argc, char **argv) {
         g_hud_modern = g_set.hud_style == 1;
         g_speed_kmh = g_set.speed_kmh;
         g_any_kart = g_set.any_kart;
+        g_char_test = (uint32_t)g_set.char_test;
         g_laps = (uint32_t)g_set.laps;
         {
             static const float HEIGHTS[4] = {0.45f, 0.7f, 1.0f, 1.5f};
@@ -1034,7 +1083,8 @@ int main(int argc, char **argv) {
         cheats_apply();
         g_hud_log = g_set.logging ? 600 : 0; /* the race HUD in the log too (bug reports) */
         static const float FP_UP[4] = {0, 70.0f, 100.0f, 140.0f}; /* CAMERA: eye height above the kart's centre */
-        g_first_person = g_set.camera & 3;
+        if (g_set.camera & 3) __atomic_or_fetch(&g_first_person, 1u, __ATOMIC_RELAXED);
+        else __atomic_and_fetch(&g_first_person, ~1u, __ATOMIC_RELAXED);
         g_fp_up = FP_UP[g_set.camera & 3];
         g_fp_fwd = (float)g_set.fp_forward;
         render_set_hud43(wide);
@@ -1112,6 +1162,7 @@ int main(int argc, char **argv) {
             static bool racing;
             if (!menu_is_open()) racing = race_tick && armTicksToNs(armGetSystemTick() - race_tick) < 500000000ull;
             if (g_set.border && !wide && !title && racing) menu_border(w, h);
+            if (!menu_is_open() && charpack_select_active()) menu_char_hint(w, h);
             menu_draw(w, h, s_fps, perf);
         } else screen("BOOTING", NULL, 0.8f);
         render_gpu_timer_end();

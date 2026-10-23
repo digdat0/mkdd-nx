@@ -117,7 +117,7 @@ typedef struct GxTexture {
     uint8_t *tlut;         /* 512 bytes of TMEM palette, or NULL */
     uint8_t wrap_s, wrap_t; /* 0 clamp, 1 repeat, 2 mirror */
     bool linear;
-    uint8_t subst;         /* gx_subst_register id of a texture the front end draws its own way, or 0 */
+    uint16_t subst;        /* gx_subst_register id of a texture the front end draws its own way, or 0 */
     uint8_t movie;         /* plane of a decoded movie frame: 1 Y, 2 U, 3 V (gx_movie_planes), else 0 */
     volatile int refs;
 } GxTexture;
@@ -125,6 +125,10 @@ typedef struct GxTexture {
 /* Textures the front end replaces (the pause screen's controller picture and button icons),
  * recognised by format, size and an FNV-1a hash of their bytes. Register before the game runs. */
 void gx_subst_register(unsigned id, uint32_t fmt, uint32_t w, uint32_t h, uint64_t hash);
+/* Ids from here are character pack pictures (charpack_art.c): drawn with the game's wrap and filter,
+ * and as the game's own (HD textures included) while the front end has none for them. */
+#define GX_SUBST_CHARPACK 64
+#define GX_SUBST_MAX 1024
 /* The I8 textures a movie frame was just decoded into (Y, U, V), so the renderer can scale those
  * planes its own way (thp.c). The last few sets are remembered: players cycle a ring of buffers. */
 void gx_movie_planes(const uint32_t planes[3]);

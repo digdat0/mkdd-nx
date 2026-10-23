@@ -165,6 +165,39 @@ unsigned mod_identify(const char *path, char *err, size_t errlen);
 /* Install it to out_dir (written as out_dir.tmp, renamed when complete); returns its MODS number,
  * 0 with a message on failure (nothing left behind). */
 unsigned mod_install(const char *path, const char *out_dir, ModProgress cb, void *ud, char *err, size_t errlen);
+/* ---- charpack.c: character packs in mods/characters (character.ini folders, MKDD Patcher files/
+ * trees), variants of the 20 drivers. Characters ("bases") are numbered in the select screen's grid
+ * order (Mario 0 ... King Boo 19). ---- */
+#define CP_BASES 20
+#define CP_DIM (-2) /* charpack_show: the game's own picture, dimmed (a page with no variant there) */
+void charpack_scan(const char *dir); /* at start-up: the mods/characters folder */
+unsigned charpack_count(void);
+int charpack_base(const char *folder, size_t n); /* a driver folder name ("Mario") -> 0..19, -1 */
+int charpack_variant_base(int variant);
+const char *charpack_name(int variant);
+const char *charpack_author(int variant);
+const char *charpack_base_name(int base);
+/* where a variant's file is: kind 'd' a driver file (game = its name), 'f' face, 'm' map icon, 'n'
+ * name tag (game = the MKDD Patcher layout's name for that character's picture) */
+bool charpack_path(int variant, char kind, const char *game, char *out, size_t n);
+bool charpack_has(int base);              /* any variants */
+int charpack_show(int base);              /* the variant base is shown as now, -1 the game's own, CP_DIM */
+int charpack_pick(int kart, int drv, int base, bool human);
+int charpack_pages(void);                 /* the select screen's: 1 + the most variants of a character */
+int charpack_page(void);                  /* 0 the game's 20 */
+void charpack_page_step(int dir);
+void charpack_select_frame(const int cursor[4], const bool chosen[CP_BASES]);
+bool charpack_select_active(void);
+bool charpack_hint(int player, char *out, size_t n);
+void charpack_race_begin(void);
+void charpack_loaded(int base, int variant);
+uint32_t charpack_file(int variant, const char *file, uint32_t *size); /* MEM1 address, 0: none */
+uint8_t *charpack_orig(int base, const char *file, uint32_t *size); /* the game's own, malloc'd */
+/* CHARACTER TEST (the - menu's DEBUG page): 0 off, 1 the players' drivers, 2 every driver. */
+extern volatile uint32_t g_char_test;
+/* Select screen page buttons, set by the front end, taken by SceneMenu::character: bit p player p's
+ * next page (ZR / X), bit 4 + p previous (ZL / Y). */
+extern volatile uint32_t g_char_cycle;
 /* Log code words the game rewrote since boot (call once a frame; checks about once a second). */
 void machine_watch_code(void);
 void cheats_unlock_all(void);
@@ -193,8 +226,8 @@ void diag_flush(void);
  * Switch profiler; LOG_AUDIO = audio lines (DSP, AI timing, audio thread). 0 writes nothing. */
 enum { LOG_GAME = 1, LOG_AUDIO = 2 };
 extern volatile uint32_t g_log_mask;
-/* Race HUD elements not drawn, single player only (native.c drawK2D): HUD_* bits. HUD_TIME only
- * until the player finishes. */
+/* Race HUD elements not drawn, 1 to 4 players (native.c drawK2D): HUD_* bits. HUD_TIME only
+ * until that player finishes. */
 enum { HUD_PLACE = 1, HUD_ITEMS = 2, HUD_LAPS = 4, HUD_MAP = 8, HUD_SPEED = 16, HUD_ORDER = 32, HUD_TIME = 64, HUD_ALL = 127 };
 extern volatile uint32_t g_hud_hide;
 /* Race HUD style, 1-4 players while racing (native.c MODERN): 0 the game's, 1 smaller, in the
@@ -202,7 +235,8 @@ extern volatile uint32_t g_hud_hide;
 extern volatile uint32_t g_hud_modern, g_speed_kmh;
 /* Diagnostics: the race HUD's pictures logged every 300 race frames from this one (0: never). */
 extern volatile uint32_t g_hud_log;
-/* First-person race camera, single player and two player split screen (native.c FUN_802b6bd4): nonzero = on. */
+/* First-person race camera, 1 to 4 players (native.c FUN_802b6bd4):
+ * bit v = view v's (player v + 1's). g_fp_up is view 0's eye height, the others' FP_UP_OTHERS. */
 extern volatile uint32_t g_first_person;
 extern float g_fp_up, g_fp_fwd, g_fp_look;
 /* Look back (held by the front end): bit v turns view v's race camera around (view = player, any
@@ -228,7 +262,7 @@ extern volatile uint32_t g_any_kart;
 /* MINI-TURBO, players' karts (hle.c): drift stages to blue sparks (3 the game's: the drift and
  * 2 sweeps; 2: 1 sweep; 1: at once), boost speed (times top speed, the game's 1.3) and length
  * (times the kart's own). */
-extern volatile uint32_t g_mt_sweeps;
+extern volatile uint32_t g_mt_sweeps, g_mt_cpu; /* g_mt_cpu: the computer's karts get them too */
 extern volatile float g_mt_speed, g_mt_length;
 /* JUMP (hle.c): controller ports holding the JUMP button (bit = port, the front end's), and the
  * hop's upward speed (0: off). One hop per press, players' karts on the ground. */

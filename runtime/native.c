@@ -2,7 +2,10 @@
 #include "native.h"
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
+#include <strings.h>
 #include "rt.h"
+#include "charpack.h"
 #include "plat.h"
 #include "table.h"
 #include "gx.h"
@@ -2244,8 +2247,8 @@ static uint64_t i_FUN_8000a260(Ctx *c, uint8_t *M, ARGS) {
  * single player, after it, the camera sits at the driver's eye in the kart body's frame (body
  * = KartCam +0: KartBody +0x110, a 3x4 matrix: columns x, y up, z forward, w position) and looks
  * along its forward axis with its up, unsmoothed: every bump, tilt and spin of the kart shows.
- * The respawn, cannon, pipe and demo views are other modes and stay the game's. Two player split
- * screen too: each view's camera on its own kart. g_look_back (bit v: view v, any number of
+ * The respawn, cannon, pipe and demo views are other modes and stay the game's. Split screen (2 to 4
+ * players) too: each view's camera on its own kart. g_look_back (bit v: view v, any number of
  * screens) turns the view around: first person looks backwards from the same eye, the chase
  * camera is mirrored to the kart's front. FREE CAMERA: while g_cam_pan[v] is off centre, the
  * view turns round the kart's up axis (chase: the camera and its look point round the kart;
@@ -2282,6 +2285,7 @@ static void v3_turn(float v[3], const float k[3], float a) {
     float x[3] = {k[1] * v[2] - k[2] * v[1], k[2] * v[0] - k[0] * v[2], k[0] * v[1] - k[1] * v[0]};
     for (int i = 0; i < 3; i++) v[i] = v[i] * c + x[i] * s + k[i] * d * (1 - c);
 }
+#define FP_UP_OTHERS 140.0f /* players 2-4's eye height (their FIRST PERSON button: EYE HIGH, as player 1's) */
 static uint32_t s_fp_cam[4], s_fp_body[4]; /* per view (KartCam +0xe3): the camera last moved to first person, its kart body */
 float g_fp_up = 100.0f, g_fp_fwd = 30.0f, g_fp_look = 1000.0f; /* eye height, eye forward, look distance (the chase
                                                                  * view sits about 380 behind, 220 up) */
@@ -2289,7 +2293,7 @@ static int screens(Ctx *c, uint8_t *M) {
     uint32_t rm = ld32(c, M, ctx_gpr(c, 13) - 0x5c38), info = rm ? ld32(c, M, rm + 0x38) : 0;
     return info ? (int16_t)ld16(c, M, info + 0x20) : 0;
 }
-static bool fp_screens(Ctx *c, uint8_t *M) { int n = screens(c, M); return n == 1 || n == 2; }
+static bool fp_screens(Ctx *c, uint8_t *M) { int n = screens(c, M); return n >= 1 && n <= 4; }
 static void v3_norm(float v[3]) {
     float l = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
     if (l > 1e-6f) v[0] /= l, v[1] /= l, v[2] /= l;
@@ -2321,7 +2325,7 @@ static uint64_t i_FUN_802b6bd4(Ctx *c, uint8_t *M, ARGS) {
     int n = screens(c, M);
     if (mld(c, M, cam + 0xe1, 1) != 0 || !IS_RAM(body) || view > 3 || n < 1 || n > 4) return 0;
     g_cam_frames[view]++;
-    bool back = g_look_back >> view & 1, fp = g_first_person && fp_screens(c, M);
+    bool back = g_look_back >> view & 1, fp = (g_first_person >> view & 1) && fp_screens(c, M);
     if (pan_step(view, cam) == 0 && !fp && !back && g_cam_height == 1.0f && g_cam_dist == 1.0f) return 0;
     float b[12];
     ldfn(c, M, body + 0x110, b, 12);
@@ -2330,7 +2334,7 @@ static uint64_t i_FUN_802b6bd4(Ctx *c, uint8_t *M, ARGS) {
     v3_norm(fw);
     if (fp) {
         for (int i = 0; i < 3; i++) {
-            eye[i] = b[4 * i + 3] + up[i] * g_fp_up + fw[i] * g_fp_fwd;
+            eye[i] = b[4 * i + 3] + up[i] * (view ? FP_UP_OTHERS : g_fp_up) + fw[i] * g_fp_fwd;
             at[i] = eye[i] + fw[i] * (back ? -g_fp_look : g_fp_look);
         }
         s_fp_cam[view] = cam;
@@ -2385,7 +2389,7 @@ static uint64_t i_FUN_802b6bd4(Ctx *c, uint8_t *M, ARGS) {
  * number; KartCam +0xe0 = target kart number, +0xe3 = view. Other views (the other player's
  * screen) and the shadow keep it. */
 static bool fp_hidden(Ctx *c, uint8_t *M, uint32_t drawer, uint32_t view) {
-    if (!g_first_person || view > 3) return false;
+    if (view > 3 || !(g_first_person >> view & 1)) return false;
     uint32_t cam = s_fp_cam[view];
     return cam && ld32(c, M, cam) == s_fp_body[view] && mld(c, M, cam + 0xe1, 1) == 0 &&
            mld(c, M, cam + 0xe3, 1) == view && mld(c, M, cam + 0xe0, 1) == ld32(c, M, drawer) && fp_screens(c, M);
@@ -3444,11 +3448,14 @@ static void hud_zone(uint32_t on) {
     fifo32(&p, on);
     hw_gather_copy(b, 6);
 }
-/* HUD elements the player turned off (g_hud_hide, HUD_* bits), single player only: drawK2D skips
- * their pictures, found by pane tag (race2d.arc p1_race.blo; drawCourse's map kart icons have tag 0). */
+/* HUD elements the player turned off (g_hud_hide, HUD_* bits), 1 to 4 players: drawK2D skips
+ * their pictures, found by pane tag (race2d.arc p1_race.blo, p2_race.blo, p4_race.blo for 3 and 4:
+ * each player's pieces carry its number, "pos21", "slot3b", "m4_lap", "time2t1"; only one player
+ * has a speedometer; drawCourse's map kart icons have tag 0). */
 volatile uint32_t g_hud_hide;
 static uint32_t s_hud_hide, s_hud_zone; /* while Race2D::draw / drawCourse run: the bits, the marker */
 static uint32_t s_hud_call;             /* ... 1 Race2D::draw, 2 drawCourse */
+static uint32_t s_hud_racing;           /* ... bit v: view v's kart still racing (its timer hidden) */
 static int pane_tag(Ctx *c, uint8_t *M, uint32_t pane, char t[9]) {
     int n = 0;
     for (int i = 0; i < 8; i++) {
@@ -3463,13 +3470,18 @@ static bool hud_hidden(Ctx *c, uint8_t *M, uint32_t pane) {
     int n = pane_tag(c, M, pane, t);
     uint32_t h = s_hud_hide;
 #define PRE(p) (!strncmp(t, p, sizeof p - 1))
-    if (h & HUD_PLACE && PRE("pos1")) return true;                                     /* pos11-18, pos11g-18g */
-    if (h & HUD_ITEMS && (PRE("slot1") || PRE("itm1"))) return true;
-    if (h & HUD_LAPS && (PRE("m1_lap") || PRE("ml1_"))) return true;
+#define PL(i) (t[i] >= '1' && t[i] <= '4') /* a player's number there */
+    if (h & HUD_PLACE && PRE("pos") && PL(3)) return true;                             /* pos11-48, pos11g-28g */
+    if (h & HUD_ITEMS && ((PRE("slot") && PL(4)) || (PRE("itm") && PL(3)))) return true;
+    if (h & HUD_LAPS && ((t[0] == 'm' && PL(1) && !strncmp(t + 2, "_lap", 4)) || (PRE("ml") && PL(2) && t[3] == '_'))) return true;
     if (h & HUD_SPEED && (PRE("sp_mtr") || PRE("km_h") || ((PRE("sp1") || PRE("sp2") || PRE("sp3")) && n == 3))) return true;
     if (h & HUD_ORDER && (PRE("CI_") || PRE("cw1") || PRE("posc") || (PRE("c1") && n == 3))) return true; /* top-4 column */
     if (h & HUD_MAP && (PRE("course") || (!n && s_hud_call == 2))) return true;
-    if (h & HUD_TIME && (PRE("time1") || PRE("Tl1") || PRE("Tlapm1"))) return true; /* total time, lap times */
+    if (h & HUD_TIME) { /* total time, lap times: back once that player finishes */
+        int i = PRE("Tlapm") ? 5 : PRE("time") ? 4 : PRE("Tl") ? 2 : 0;
+        if (i && PL(i) && s_hud_racing >> (t[i] - '1') & 1) return true;
+    }
+#undef PL
 #undef PRE
     return false;
 }
@@ -3483,7 +3495,6 @@ static bool view_racing(Ctx *c, uint8_t *M, int view) {
     uint32_t chk = k >= 0 && k < 8 ? ld32(c, M, rm + 0x48 + 4 * k) : 0;
     return IS_RAM(chk) && !mld(c, M, chk + 0x29, 1);
 }
-static bool player_racing(Ctx *c, uint8_t *M) { return view_racing(c, M, 0); }
 static bool s_hud_logging;   /* PC harness: log this race frame's HUD (g_hud_log) */
 extern volatile uint32_t g_race_frames;
 #define HUDLOG(fmt, ...) rt_log("hudlog f%u " fmt, g_race_frames, __VA_ARGS__) /* the frame: rt_log drops repeated lines */
@@ -3509,11 +3520,12 @@ static int player_kart(Ctx *c, uint8_t *M);
 static bool kart_is_player(Ctx *c, uint8_t *M, int kart);
 static void race_hud_call(Ctx *c, uint8_t *M, uint32_t fn, uint32_t self, uint32_t zone) {
     int n = screens(c, M);
-    bool one = n == 1, racing = player_racing(c, M);
+    bool one = n == 1;
     s_hud_call = zone;
     s_hud_zone = s_zone_now = zone; /* any number of screens: each layout keeps its players' pieces at the edges */
-    s_hud_hide = one ? g_hud_hide : 0;
-    if (s_hud_hide & HUD_TIME && !racing) s_hud_hide &= ~HUD_TIME;
+    s_hud_hide = n >= 1 && n <= 4 ? g_hud_hide : 0;
+    s_hud_racing = 0;
+    for (int v = 0; v < n && v < 4 && (s_hud_hide & HUD_TIME); v++) s_hud_racing |= (uint32_t)view_racing(c, M, v) << v;
     s_modern = n >= 1 && n <= 4 && (s_modern_t[0] > 0 || s_modern_t[1] > 0 || s_modern_t[2] > 0 || s_modern_t[3] > 0);
     s_hud_one = one;
     s_hud_two = n == 2;
@@ -3535,7 +3547,7 @@ static void race_hud_call(Ctx *c, uint8_t *M, uint32_t fn, uint32_t self, uint32
     ctx_call_orig(c, fn); /* the recompiled function's entry would come back here */
     ctx_set_gpr(c, 1, old);
     hud_zone(0);
-    s_hud_zone = s_hud_hide = s_hud_call = s_zone_now = 0;
+    s_hud_zone = s_hud_hide = s_hud_call = s_zone_now = s_hud_racing = 0;
     s_modern = s_hud_one = s_hud_two = false;
     s_hud_n = 0;
 }
@@ -3568,6 +3580,604 @@ static uint64_t i_draw__11WipeManagerFv(Ctx *c, uint8_t *M, ARGS) {
     ctx_call_orig(c, 0x8012A358u);
     ctx_set_gpr(c, 1, old);
     hud_zone(0);
+    return 0;
+}
+
+/* ---- character packs (charpack.c): a driver's model and face animations from its variant ----
+ * DriverModel(KartLoader *, int driverNo, ...) builds one of a kart's two drivers (KartLoader +0
+ * the kart's number, +4 its KartInfo: +4 + 8 * driverNo that driver's pad, 0 for the computer, set on one driver of a player's kart). Its
+ * DriverLoader and face animations read "/Driver/<Base>/<file>" from MRAM.arc through
+ * ResMgr::getPtr(ArchiveId, const char *) while it runs, then "/Driver/<cmn folder>/<file>" for
+ * what that folder lacks (the shared animations: cmn_Hige is Mario's, Luigi's and King Boo's).
+ *
+ * A variant moving as another character (charpack_anim: Mario's skeleton on Bowser Jr.) gets that
+ * character's animations: from MRAM.arc its .bca files the variant has none of, and in the race the
+ * ones DriverAnimBufMgr::loadAnimation streams from ARAM.arc ("DriverAnm/<folder>/<file>", the
+ * folder its own or its cmn one by DriverManager +0x60 + 0x52 * driver + anim: 0 its own). Its .bas
+ * stay its own (their sound events are its voice). Driver numbers are the DriverLoader's data IDs
+ * (DriverLoader::mscpaDriverName, ECharID - 1). */
+/* each cell's (charpack.c BASES) ECharID */
+static const uint32_t CP_CHAR_ID[CP_BASES] = {7, 8, 5, 6, 11, 12, 1, 2, 17, 18, 4, 3, 13, 14, 15, 16, 9, 10, 20, 19};
+static int s_cp_kart = -1, s_cp_drv, s_cp_base = -1;
+static bool s_cp_human;
+#define CP_DRIVER_NAMES 0x803512C0u /* DriverLoader::mscpaDriverName: char *[20] */
+#define CP_DRIVER_CMN 0x80351310u   /* DriverLoader::mscpaDriverFolderName2 */
+static int s_race_anim[20] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+/* DriverManager +0x7e0 + driver: it has e_good_b2.bca of its own; the character it moves as's while
+ * it does (the game's back at the next race) */
+static uint32_t s_race_dm;
+static int s_race_good2[20];
+static void race_anim_reset(Ctx *c, uint8_t *M) {
+    for (int d = 0; d < 20; d++) {
+        if (s_race_anim[d] >= 0 && IS_RAM(s_race_dm)) mst(c, M, s_race_dm + 0x7e0 + d, 1, (uint32_t)s_race_good2[d]);
+        s_race_anim[d] = -1;
+    }
+}
+static void race_anim_set(Ctx *c, uint8_t *M, int d, int a) {
+    uint32_t dm = ld32(c, M, (uint32_t)RD(c, REG_R13, 4) - 0x5770); /* DriverManager::ptr()'s */
+    if (d < 0 || d >= 20 || a < 0 || a >= 20 || !IS_RAM(dm) || s_race_anim[d] >= 0) return;
+    s_race_dm = dm;
+    s_race_good2[d] = (int)mld(c, M, dm + 0x7e0 + d, 1);
+    mst(c, M, dm + 0x7e0 + d, 1, mld(c, M, dm + 0x7e0 + a, 1));
+    s_race_anim[d] = a;
+}
+/* a guest string, "" none */
+static void guest_str(Ctx *c, uint8_t *M, uint32_t a, char *out, size_t n) {
+    size_t k = 0;
+    for (; IS_RAM(a) && k < n - 1 && (out[k] = (char)mld(c, M, a + k, 1)); k++) {}
+    out[k] = 0;
+}
+static uint64_t i___ct__11DriverModelFP10KartLoaderiUsbi(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t loader = (uint32_t)a1, info = IS_RAM(loader) ? ld32(c, M, loader + 4) : 0;
+    int kart = s_cp_kart, drv = s_cp_drv;
+    bool human = s_cp_human;
+    s_cp_kart = IS_RAM(loader) ? (int)ld32(c, M, loader) : -1, s_cp_drv = (int)(a2 & 1);
+    /* a player's kart: either driver has the pad (the game keeps it on one of them only) */
+    s_cp_human = IS_RAM(info) && (ld32(c, M, info + 4) != 0 || ld32(c, M, info + 0xc) != 0);
+    if (s_cp_kart == 0 && s_cp_drv == 0) charpack_race_begin(), race_anim_reset(c, M); /* a race's first driver */
+    int base = s_cp_base;
+    s_cp_base = -1;
+    ctx_call_orig(c, s_addr[NAT___ct__11DriverModelFP10KartLoaderiUsbi]);
+    s_cp_kart = kart, s_cp_drv = drv, s_cp_human = human, s_cp_base = base;
+    return ctx_gpr(c, 3);
+}
+/* DriverManager, built inside the first DriverLoader, keeps Mario's model as every driver's
+ * reference: always the game's own */
+static uint64_t i___ct__13DriverManagerFv(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    int kart = s_cp_kart;
+    s_cp_kart = -1;
+    ctx_call_orig(c, s_addr[NAT___ct__13DriverManagerFv]);
+    s_cp_kart = kart;
+    return ctx_gpr(c, 3);
+}
+static uint64_t i_getPtr__6ResMgrFQ26ResMgr9ArchiveIdPCc(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    if (s_cp_kart >= 0 && a0 == 0 /* mcArcMRAM */ && IS_RAM((uint32_t)a1) && charpack_count()) {
+        char p[64];
+        unsigned n = 0;
+        for (; n < sizeof p - 1 && (p[n] = (char)mld(c, M, (uint32_t)a1 + n, 1)); n++) {}
+        p[n] = 0;
+        const char *s = p + (p[0] == '/'), *sl = strncasecmp(s, "Driver/", 7) ? NULL : strchr(s + 7, '/');
+        bool own = sl && charpack_base(s + 7, (size_t)(sl - s - 7)) >= 0;
+        if (own) s_cp_base = charpack_base(s + 7, (size_t)(sl - s - 7)); /* the driver being built (its cmn folder's come after) */
+        int b = sl ? s_cp_base : -1;
+        int v = b < 0 ? -1 : charpack_pick(s_cp_kart, s_cp_drv, b, s_cp_human);
+        char folder[24];
+        snprintf(folder, sizeof folder, "%.*s", sl ? (int)(sl - s - 7) : 0, s + 7);
+        uint32_t size, a = v < 0 ? 0 : own ? charpack_file(v, sl + 1, &size) : charpack_folder_file(v, folder, sl + 1, &size);
+        if (a) {
+            rt_log("charpack: kart %d driver %d (%s): %s from variant %d", s_cp_kart, s_cp_drv, s_cp_human ? "player" : "computer", s, v + 1);
+            if (own && !strcasecmp(sl + 1, "driver.bmd")) {
+                charpack_loaded(b, v);
+                if (charpack_anim(v) >= 0) race_anim_set(c, M, CP_CHAR_ID[b] - 1, CP_CHAR_ID[charpack_anim(v)] - 1);
+            }
+            return a;
+        }
+        /* a variant moving as another character: that one's .bca (its own folder's, else its cmn one's) */
+        size_t fl = sl ? strlen(sl + 1) : 0;
+        if (v >= 0 && charpack_anim(v) >= 0 && fl > 4 && !strcasecmp(sl + 1 + fl - 4, ".bca")) {
+            static uint32_t path_mem;
+            if (!path_mem) path_mem = charpack_reserve(64);
+            int d = CP_CHAR_ID[charpack_anim(v)] - 1;
+            uint32_t lr = (uint32_t)RD(c, 0x1020, 4);
+            for (int k = 0; k < 2 && path_mem; k++) {
+                char name[24], q[64];
+                guest_str(c, M, ld32(c, M, (k ? CP_DRIVER_CMN : CP_DRIVER_NAMES) + 4 * d), name, sizeof name);
+                int n = snprintf(q, sizeof q, "/Driver/%s/%s", name, sl + 1);
+                if (!name[0] || n <= 0 || n >= (int)sizeof q) break;
+                for (int i = 0; i <= n; i++) mst(c, M, path_mem + i, 1, (uint8_t)q[i]);
+                const uint32_t args[2] = {0 /* mcArcMRAM */, path_mem};
+                uint32_t r = ctx_call_guest(c, s_addr[NAT_getPtr__6ResMgrFQ26ResMgr9ArchiveIdPCc], args, 2);
+                if (r) {
+                    WR(c, 0x1020, 4, lr);
+                    rt_log("charpack: kart %d driver %d: %s as %s", s_cp_kart, s_cp_drv, s, q);
+                    return r;
+                }
+            }
+            WR(c, 0x1020, 4, lr);
+            ctx_set_gpr(c, 3, (uint32_t)a0), ctx_set_gpr(c, 4, (uint32_t)a1); /* the game's own path */
+        }
+    }
+    ctx_call_orig(c, s_addr[NAT_getPtr__6ResMgrFQ26ResMgr9ArchiveIdPCc]);
+    return ctx_gpr(c, 3);
+}
+/* DriverAnimBufMgr::loadAnimation(anim, driver): a race streams a driver's animation into a free
+ * buffer. A variant moving as another character asks for that one's: the folder entries and the
+ * own-or-cmn flag are that character's for the call (the request keeps the folder's string). */
+static uint64_t i_loadAnimation__16DriverAnimBufMgrFii(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    int anm = (int)a1, d = (int)a2, a = d >= 0 && d < 20 ? s_race_anim[d] : -1;
+    uint32_t dm = a >= 0 ? ld32(c, M, (uint32_t)RD(c, REG_R13, 4) - 0x5770) : 0;
+    if (a < 0 || !IS_RAM(dm) || anm < 0 || anm >= 0x52) {
+        ctx_call_orig(c, s_addr[NAT_loadAnimation__16DriverAnimBufMgrFii]);
+        return ctx_gpr(c, 3);
+    }
+    uint32_t name = ld32(c, M, CP_DRIVER_NAMES + 4 * d), cmn = ld32(c, M, CP_DRIVER_CMN + 4 * d);
+    uint32_t flag = dm + 0x60 + 0x52 * d + anm, own = mld(c, M, flag, 1);
+    mst(c, M, CP_DRIVER_NAMES + 4 * d, 4, ld32(c, M, CP_DRIVER_NAMES + 4 * a));
+    mst(c, M, CP_DRIVER_CMN + 4 * d, 4, ld32(c, M, CP_DRIVER_CMN + 4 * a));
+    mst(c, M, flag, 1, mld(c, M, dm + 0x60 + 0x52 * a + anm, 1));
+    ctx_call_orig(c, s_addr[NAT_loadAnimation__16DriverAnimBufMgrFii]);
+    mst(c, M, CP_DRIVER_NAMES + 4 * d, 4, name), mst(c, M, CP_DRIVER_CMN + 4 * d, 4, cmn), mst(c, M, flag, 1, own);
+    return ctx_gpr(c, 3);
+}
+/* SceneMenu::character, each frame of the character select screen. +0x20f4 the number of players
+ * - 1; player p's team (two drivers) is +0x211c + 4p. Blocks of 0x1c: player p's cursor cell
+ * +0x212c (-1 none); team t's drivers' players +0x2130 / +0x2134, chosen cells +0x2138 / +0x213c,
+ * kart +0x2140, state +0x2144 (0 choosing the drivers, 1 the kart). Cells number the grid column by
+ * column (charpack.c BASES). The front end's page buttons (g_char_cycle) turn charpack.c's pages.
+ *
+ * A variant shown in another character's cell (charpack.c layout) stands for its base. While a
+ * player choosing drivers is on it, the cell's character in the menu's table (+0xc + 12 * cell, the
+ * ECharID characterAnm previews) is the base's. On the frame their A goes down their cursor is the
+ * base's cell, so selectA chooses the base: its voice and animation, and after it setRaceData, the
+ * kart step and the computer players are the base's. A on a cell whose character is already chosen
+ * or another player shows does nothing (cursor -1: selectA skips it; setCharacterFlag keeps the
+ * game's own cells apart); that player previews it in the block of a character nobody shows
+ * (charpack_borrow), of the same select screen scale where there is one.
+ * Both are undone after the frame. Players are ports (the pads PADRead gave, hle.c).
+ *
+ * The random pick (L + R: rndSelect chooses each team's two cells at once) chooses the character
+ * of the cell it lands on (on such a cell the base's), then one of its versions from any page.
+ * A choice made in another character's cell shows there while the page shows it there
+ * (charpack_moved): its select animation (per cell: +0x21ec + 8 * cell set, +0x21f0 the player, the
+ * pane's frame +0x1374 + 12 * cell) and, while characterAnm runs, its highlight; cursors skip that
+ * cell and its own (the menu's flags +0x228c + cell, which setCharacterFlag makes). */
+extern volatile uint16_t g_pad_buttons[4];
+/* CharacterSelect3D::mCharacterDefScale, by ECharID - 1 */
+static const float SEL_SCALE[20] = {1, 1, 1.15f, 1.15f, 1, 1, 1, 1, 0.95f, 1, 1.05f, 1.05f, 1.45f, 1.05f, 1.18f, 1.3f, 1, 1, 1, 0.8f};
+#define SEL_SET_FLAGS 0x801639B4u /* SceneMenu::setCharacterFlag */
+static bool s_sel_moved;
+
+/* SceneMenu::characterAnm, from SceneMenu::character: the grid's highlights and the 3D models'
+ * characters (setCharacter, from the menu's table) of the chosen cells and the cursors */
+static uint64_t i_characterAnm__9SceneMenuFv(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t menu = (uint32_t)a0, at[8], tab[CP_BASES];
+    int was[8], n = 0;
+    bool tset[CP_BASES] = {false};
+    uint32_t teams = IS_RAM(menu) && charpack_count() ? ld32(c, M, menu + 0x20fc) + 1 : 0;
+    for (uint32_t t = 0; t < teams && t < 4; t++)
+        for (uint32_t k = 0; k < 2; k++) {
+            uint32_t a = menu + 0x1c * t + 0x2138 + 4 * k;
+            int cell = (int)ld32(c, M, a), vc = cell >= 0 && cell < CP_BASES ? charpack_moved(cell) : -1;
+            if (vc < 0) continue;
+            at[n] = a, was[n++] = cell;
+            mst(c, M, a, 4, (uint32_t)vc);
+            if (!tset[vc]) tset[vc] = true, tab[vc] = ld32(c, M, menu + 0xc + 12 * vc);
+            mst(c, M, menu + 0xc + 12 * vc, 4, CP_CHAR_ID[cell]);
+        }
+    ctx_call_orig(c, s_addr[NAT_characterAnm__9SceneMenuFv]);
+    for (int i = 0; i < n; i++) mst(c, M, at[i], 4, (uint32_t)was[i]);
+    for (int i = 0; i < CP_BASES; i++)
+        if (tset[i]) mst(c, M, menu + 0xc + 12 * i, 4, tab[i]);
+    return 0;
+}
+
+/* The select screen's 3D models of variants. CharacterSelect3D (SceneMenu +0x2014) builds one
+ * model per character when it is made: blocks of 0x30 from +0x28 by ECharID - 1, +0 the
+ * J3DModelData, +4 its ExModel, then the animations (+0x30.. bca and their J3DMtxCalcs, +0x54 the
+ * btp), which calcCharacter puts on the model data's root joint each frame and draw reads the
+ * ExModel from there. A variant previewed or chosen (charpack_model) gets a model built the same
+ * way from its driver.bmd, in a heap of our own (JKRExpHeap in the pool, a child of the root heap),
+ * and its block's model data and ExModel are its own while it is: the base's animations move it
+ * (same skeleton: the joint counts must match). A variant with another character's skeleton
+ * (charpack_anim: Mario's on Bowser Jr.) moves with that character's: its block's animations
+ * (+8..+0x2c, the bcas, their calcs and the btp) are that character's while it shows (calcCharacter
+ * sets their frames and calculates the model at once, so two blocks can share them). Its face follows
+ * the block's btp (gut.btp of selectAnm.arc, the chosen pose's face) as the constructor binds it to
+ * the base's: a J3DMaterialAnm on each material, then the btp searched against the model's materials
+ * and entered in its table. The btp is the screen's: bound again whenever it is another one.
+ * Toadette's hair is a model of its own (+0x3e8 its J3DModelData, +0x3ec its ExModel; calcCharacter
+ * puts the hair's animations on it the same way): a variant with a kinoko_hair.bmd gets that one.
+ * A block can show a variant of another character (charpack_borrow: a second player previewing a
+ * variant of the same character): its model and its character's animations. */
+#define SEL_HEAP_SIZE (3u << 20)
+#define SEL_MAX 64
+#define SEL_HAIR_CELL 9 /* Toadette (charpack.c BASES) */
+typedef struct {
+    int v;
+    bool hair;     /* her kinoko_hair.bmd, else its driver.bmd */
+    uint32_t md, ex, solid;
+    uint32_t btp;  /* the btp its materials follow now, 0 none */
+    int ntex;      /* its TEX1 count */
+    bool anm;      /* its materials have their J3DMaterialAnm */
+} SelModel;
+static SelModel s_sel[SEL_MAX];
+static int s_nsel;
+static uint32_t s_sel_heap, s_sel_base_md[CP_BASES], s_sel_base_ex[CP_BASES], s_sel_base_anm[CP_BASES][10];
+static uint32_t s_sel_hair_md, s_sel_hair_ex; /* the game's hair model */
+static bool s_sel_bad[2][128], s_sel_off;
+
+static uint32_t sel_call(Ctx *c, uint32_t fn, uint32_t a, uint32_t b, uint32_t c3, uint32_t d, uint32_t e) {
+    const uint32_t args[5] = {a, b, c3, d, e};
+    return ctx_call_guest(c, fn, args, 5);
+}
+/* the address of a .bmd's section (INF1, JNT1, TEX1), 0 none */
+static uint32_t bmd_section(Ctx *c, uint8_t *M, uint32_t bmd, uint32_t size, uint32_t want) {
+    if (!IS_RAM(bmd) || size < 0x28 || ld32(c, M, bmd) != 0x4A334432u /* J3D2 */) return 0;
+    for (uint32_t o = 0x20; o + 12 <= size;) {
+        uint32_t magic = ld32(c, M, bmd + o), n = ld32(c, M, bmd + o + 4);
+        if (magic == want) return bmd + o;
+        if (n < 8) break;
+        o += n;
+    }
+    return 0;
+}
+/* the count of a .bmd's section (JNT1 joints, TEX1 textures), -1 none */
+static int bmd_count(Ctx *c, uint8_t *M, uint32_t bmd, uint32_t size, uint32_t want) {
+    uint32_t s = bmd_section(c, M, bmd, size, want);
+    return s ? (int)mld(c, M, s + 8, 2) : -1;
+}
+static bool sel_ours(uint32_t md) {
+    for (int i = 0; i < s_nsel; i++)
+        if (s_sel[i].md == md) return true;
+    return false;
+}
+/* back to the game's own models, then everything built so far gone (the heap full) */
+static void sel_wipe(Ctx *c, uint8_t *M, uint32_t cs) {
+    for (int b = 0; b < CP_BASES && IS_RAM(cs); b++) {
+        uint32_t slot = cs + 0x28 + 0x30 * (CP_CHAR_ID[b] - 1);
+        if (!s_sel_base_md[b] || !sel_ours(ld32(c, M, slot))) continue;
+        mst(c, M, slot, 4, s_sel_base_md[b]), mst(c, M, slot + 4, 4, s_sel_base_ex[b]);
+        for (int k = 0; k < 10; k++) mst(c, M, slot + 8 + 4 * k, 4, s_sel_base_anm[b][k]);
+    }
+    if (IS_RAM(cs) && s_sel_hair_md && sel_ours(ld32(c, M, cs + 0x3e8)))
+        mst(c, M, cs + 0x3e8, 4, s_sel_hair_md), mst(c, M, cs + 0x3ec, 4, s_sel_hair_ex);
+    for (int i = 0; i < s_nsel; i++)
+        if (s_sel[i].solid) sel_call(c, 0x80014B38u, s_sel[i].solid, 0, 0, 0, 0); /* JKRHeap::destroy */
+    sel_call(c, 0x80014CB8u, s_sel_heap, 0, 0, 0, 0); /* JKRHeap::freeAll */
+    s_nsel = 0;
+}
+/* a .bmd in host memory: its joint count (-1 not one) and INF1 flags */
+static int host_bmd_info(const uint8_t *b, uint32_t n, uint32_t *inf) {
+    int joints = -1;
+    if (!b || n < 0x28 || memcmp(b, "J3D2", 4)) return -1;
+    for (uint32_t o = 0x20; o + 12 <= n;) {
+        uint32_t size = (uint32_t)b[o + 4] << 24 | (uint32_t)b[o + 5] << 16 | (uint32_t)b[o + 6] << 8 | b[o + 7];
+        if (!memcmp(b + o, "JNT1", 4)) joints = b[o + 8] << 8 | b[o + 9];
+        if (!memcmp(b + o, "INF1", 4)) *inf = (uint32_t)(b[o + 8] << 8 | b[o + 9]);
+        if (size < 8) break;
+        o += size;
+    }
+    return joints;
+}
+/* variant v's model (its driver.bmd, or with hair its kinoko_hair.bmd) for a block of the select
+ * screen (built now if need be), NULL when it can't have one */
+static SelModel *sel_model(Ctx *c, uint8_t *M, uint32_t cs, int v, bool hair) {
+    for (int i = 0; i < s_nsel; i++)
+        if (s_sel[i].v == v && s_sel[i].hair == hair) return &s_sel[i];
+    if (s_sel_off || v < 0 || v >= 128 || s_sel_bad[hair][v]) return NULL;
+    uint32_t r13 = (uint32_t)RD(c, REG_R13, 4);
+    if (!s_sel_heap) {
+        uint32_t mem = charpack_reserve(SEL_HEAP_SIZE), root = ld32(c, M, r13 - 0x67b0);
+        s_sel_heap = mem && IS_RAM(root) ? sel_call(c, 0x8001287Cu, mem, SEL_HEAP_SIZE, root, 0, 0) : 0; /* JKRExpHeap::create */
+        rt_log("charpack: select screen models' heap %#x (%u KiB at %#x)", s_sel_heap, SEL_HEAP_SIZE >> 10, mem);
+        if (!IS_RAM(s_sel_heap)) { s_sel_off = true; return NULL; }
+    }
+    uint32_t size, bmd = charpack_file(v, hair ? "kinoko_hair.bmd" : "driver.bmd", &size);
+    int vb = charpack_variant_base(v);
+    int sk = charpack_anim(v) >= 0 ? charpack_anim(v) : vb; /* the character whose animations move it */
+    /* the model it stands in for: the character's driver.bmd (in MRAM), or the game's hair (the disc's) */
+    uint32_t binf_flags = 0;
+    int bj = -1;
+    if (hair) {
+        static int hair_joints = -2;
+        static uint32_t hair_inf;
+        if (hair_joints == -2) {
+            uint32_t n = 0;
+            uint8_t *h = charpack_orig(SEL_HAIR_CELL, "kinoko_hair.bmd", &n);
+            hair_joints = host_bmd_info(h, n, &hair_inf);
+            free(h);
+        }
+        bj = hair_joints, binf_flags = hair_inf;
+    } else {
+        uint32_t base_bmd = sel_call(c, 0x801CF0ACu, 0, CP_CHAR_ID[sk] - 1, 0, 0, 0); /* ResMgr::getPtr(mcDriverDataBmd, driver) */
+        bj = bmd_count(c, M, base_bmd, 1u << 20, 0x4A4E5431u /* JNT1 */);
+        uint32_t binf = bmd_section(c, M, base_bmd, 1u << 20, 0x494E4631u /* INF1 */);
+        binf_flags = binf ? mld(c, M, binf + 8, 2) : 0;
+    }
+    int vj = bmd_count(c, M, bmd, size, 0x4A4E5431u);
+    if (!bmd || vj < 0 || vj != bj) {
+        s_sel_bad[hair][v] = true;
+        if (bmd || !hair)
+            rt_log("charpack: %s keeps %s's select screen %s (its joints %d, %s's %d)", charpack_name(v), charpack_base_name(vb),
+                   hair ? "hair" : "model", vj, charpack_base_name(hair ? SEL_HAIR_CELL : sk), bj);
+        return NULL;
+    }
+    /* room for it: a model takes about twice its file (the display lists, matrices); else start over */
+    uint32_t need = 2 * size + (128u << 10);
+    if (sel_call(c, 0x80014D3Cu, s_sel_heap, 0, 0, 0, 0) < need || s_nsel == SEL_MAX) sel_wipe(c, M, cs);
+    if (sel_call(c, 0x80014D3Cu, s_sel_heap, 0, 0, 0, 0) < need) { s_sel_bad[hair][v] = true; return NULL; }
+    /* as CharacterSelect3D's constructor builds each character's */
+    uint32_t prev = sel_call(c, 0x80014B28u, s_sel_heap, 0, 0, 0, 0); /* becomeCurrentHeap */
+    /* loaded as the base's joints calculate (INF1's low 4 bits: 1 Softimage, 2 Maya, the game's):
+     * the block's J3DMtxCalcs are made for the base's model, and with another kind the screen's
+     * scale is lost (a model exported as Softimage shows at about half size in the back place,
+     * scale 1.85). Only for this load: the race's model is the file's own. */
+    uint32_t inf = bmd_section(c, M, bmd, size, 0x494E4631u /* INF1 */);
+    uint32_t flags = inf ? mld(c, M, inf + 8, 2) : 0, want = binf_flags ? (flags & ~0xFu) | (binf_flags & 0xFu) : flags;
+    if (inf && want != flags) mst(c, M, inf + 8, 2, want);
+    uint32_t md = sel_call(c, 0x80060588u, bmd, 0x11020030u, 0, 0, 0); /* J3DModelLoaderDataBase::load */
+    if (inf && want != flags) {
+        mst(c, M, inf + 8, 2, flags);
+        rt_log("charpack: %s's select screen %s calculates its joints as %s's (INF1 %#x, the file's %#x)", charpack_name(v),
+               hair ? "hair" : "model", charpack_base_name(hair ? SEL_HAIR_CELL : sk), want, flags);
+    }
+    uint32_t ex = 0, solid = 0;
+    if (IS_RAM(md)) {
+        sel_call(c, 0x8018244Cu, md, 0, 0, 0, 0); /* ExModel::disableTexLOD */
+        uint32_t n = mld(c, M, md + 0x7c, 2), shapes = ld32(c, M, md + 0x80);
+        for (uint32_t i = 0; i < n && IS_RAM(shapes); i++) {
+            uint32_t sh = ld32(c, M, shapes + 4 * i);
+            if (IS_RAM(sh)) mst(c, M, sh + 0xc, 4, (ld32(c, M, sh + 0xc) & ~0xF000u) | 0x2000u);
+        }
+        sel_call(c, 0x80074A58u, md, 0x40000, 0, 0, 0); /* J3DModelData::newSharedDisplayList */
+        ex = sel_call(c, 0x8001563Cu, 0x8c, s_sel_heap, 0, 0, 0); /* operator new(size, heap, align) */
+    }
+    if (IS_RAM(ex)) {
+        sel_call(c, 0x80182164u, ex, 1, 0, 0, 0); /* ExModel::ExModel(1) */
+        sel_call(c, 0x80182298u, ex, md, 0, 0, 0); /* ExModel::setModelData */
+        solid = sel_call(c, 0x80015F40u, sel_call(c, 0x80014D3Cu, s_sel_heap, 0, 0, 0, 0), s_sel_heap, 0, 0, 0); /* JKRSolidHeap::create(free size) */
+    }
+    if (IS_RAM(solid)) {
+        uint32_t keep = sel_call(c, 0x80014B28u, solid, 0, 0, 0, 0);
+        sel_call(c, ld32(c, M, ld32(c, M, ex) + 0xc), ex, solid, 1, 0x01080202u, 1); /* ExModel::createModel */
+        sel_call(c, 0x80182A2Cu, ex, 0, 0, 0, 0); /* ExModel::makeSharedDL */
+        sel_call(c, 0x80182AB4u, ex, 0, 0, 0, 0); /* ExModel::lock */
+        sel_call(c, 0x80014B28u, keep, 0, 0, 0, 0);
+        sel_call(c, 0x80016108u, solid, 0, 0, 0, 0); /* JKRSolidHeap::adjustSize */
+    }
+    sel_call(c, 0x80014B28u, prev, 0, 0, 0, 0);
+    bool ok = IS_RAM(solid) && IS_RAM(ld32(c, M, ex + 0xc)) && IS_RAM(ld32(c, M, ld32(c, M, ex + 0xc)));
+    rt_log("charpack: %s's select screen %s %s (md %#x, heap %u KiB free)", charpack_name(v), hair ? "hair" : "model",
+           ok ? "built" : "failed", md, sel_call(c, 0x80014D3Cu, s_sel_heap, 0, 0, 0, 0) >> 10);
+    if (!ok) {
+        s_sel_bad[hair][v] = true;
+        if (IS_RAM(solid)) sel_call(c, 0x80014B38u, solid, 0, 0, 0, 0);
+        return NULL;
+    }
+    s_sel[s_nsel] = (SelModel){v, hair, md, ex, solid, 0, bmd_count(c, M, bmd, size, 0x54455831u /* TEX1 */), false};
+    return &s_sel[s_nsel++];
+}
+/* m's materials follow btp (the block's J3DAnmTexPattern), as the constructor does for the base's;
+ * not when the btp names a texture m doesn't have */
+static void sel_bind(Ctx *c, uint8_t *M, SelModel *m, uint32_t btp) {
+    if (!IS_RAM(btp) || m->btp == btp) return;
+    m->btp = btp;
+    uint32_t n = mld(c, M, btp + 0x14, 2), idx = ld32(c, M, btp + 0xc), top = 0;
+    for (uint32_t i = 0; i < n && i < 1024 && IS_RAM(idx); i++) {
+        uint32_t t = mld(c, M, idx + 2 * i, 2);
+        if (t > top) top = t;
+    }
+    if (!IS_RAM(idx) || n > 1024 || (int)top >= m->ntex) {
+        rt_log("charpack: %s's select screen face doesn't follow the btp (texture %u of %d)", charpack_name(m->v), top, m->ntex);
+        return;
+    }
+    uint32_t nmat = mld(c, M, m->md + 0x5c, 2), mats = ld32(c, M, m->md + 0x60);
+    if (!m->anm) {
+        for (uint32_t i = 0; i < nmat && i < 256 && IS_RAM(mats); i++) {
+            uint32_t mat = ld32(c, M, mats + 4 * i);
+            uint32_t a = IS_RAM(mat) ? sel_call(c, 0x8001563Cu, 0xf4, s_sel_heap, 0, 0, 0) : 0; /* operator new */
+            if (!IS_RAM(a)) return; /* m->anm stays false: nothing entered */
+            mst(c, M, a, 4, 0x8033FC30u); /* J3DMaterialAnm's vtable, then its arrays as its constructor makes them */
+            static const uint32_t arr[5][5] = {{0x4, 0x80074EC0u, 0x8005B164u, 8, 2}, {0x14, 0x80074EFCu, 0x8005B1A8u, 8, 8},
+                                               {0x54, 0x80074ED8u, 0x8005B1ECu, 0xc, 8}, {0xb4, 0x80074F2Cu, 0x8005B23Cu, 8, 4},
+                                               {0xd4, 0x80074F14u, 0x8005B280u, 8, 4}};
+            for (int k = 0; k < 5; k++) sel_call(c, 0x800FF1ECu, a + arr[k][0], arr[k][1], arr[k][2], arr[k][3], arr[k][4]); /* __construct_array */
+            sel_call(c, 0x8005AC84u, a, 0, 0, 0, 0); /* J3DMaterialAnm::initialize */
+            sel_call(c, ld32(c, M, ld32(c, M, mat) + 0x2c), mat, 0, 0, 0, 0); /* J3DMaterial::change */
+            mst(c, M, mat + 0x3c, 4, a);
+        }
+        m->anm = true;
+    }
+    sel_call(c, 0x80059990u, btp, m->md, 0, 0, 0); /* J3DAnmTexPattern::searchUpdateMaterialID */
+    /* (the IDs searched are only read here: the base's materials keep what they were entered with) */
+    sel_call(c, 0x80075360u, m->md + 0x58, btp, 0, 0, 0); /* J3DMaterialTable::entryTexNoAnimator */
+}
+/* each frame of the select screen, after the game's: each character's block shows the model of
+ * the variant standing in for it, else the game's own */
+static void sel_models(Ctx *c, uint8_t *M, uint32_t menu) {
+    uint32_t cs = IS_RAM(menu) ? ld32(c, M, menu + 0x2014) : 0;
+    if (!IS_RAM(cs) || !charpack_count()) return;
+    uint32_t lr = (uint32_t)RD(c, 0x1020, 4);
+    /* the game's own models and animations, kept when a screen is new (the variants' first) */
+    for (int b = 0; b < CP_BASES; b++) {
+        uint32_t slot = cs + 0x28 + 0x30 * (CP_CHAR_ID[b] - 1), cur = ld32(c, M, slot);
+        if (!IS_RAM(cur) || cur == s_sel_base_md[b] || sel_ours(cur)) continue;
+        s_sel_base_md[b] = cur, s_sel_base_ex[b] = ld32(c, M, slot + 4);
+        for (int k = 0; k < 10; k++) s_sel_base_anm[b][k] = ld32(c, M, slot + 8 + 4 * k);
+        for (int i = 0; i < s_nsel; i++) s_sel[i].btp = 0; /* its own btps */
+    }
+    uint32_t hmd = ld32(c, M, cs + 0x3e8);
+    if (IS_RAM(hmd) && hmd != s_sel_hair_md && !sel_ours(hmd)) s_sel_hair_md = hmd, s_sel_hair_ex = ld32(c, M, cs + 0x3ec);
+    SelModel *hair = NULL;
+    for (int b = 0; b < CP_BASES; b++) {
+        uint32_t slot = cs + 0x28 + 0x30 * (CP_CHAR_ID[b] - 1);
+        if (!IS_RAM(ld32(c, M, slot)) || !s_sel_base_md[b]) continue;
+        int v = charpack_model(b), vb = charpack_variant_base(v);
+        SelModel *m = v >= 0 && vb >= 0 && s_sel_base_md[vb] ? sel_model(c, M, cs, v, false) : NULL;
+        int a = !m ? b : charpack_anim(v) >= 0 && s_sel_base_md[charpack_anim(v)] ? charpack_anim(v) : vb;
+        uint32_t md = m ? m->md : s_sel_base_md[b], ex = m ? m->ex : s_sel_base_ex[b];
+        if (ld32(c, M, slot) != md) mst(c, M, slot, 4, md), mst(c, M, slot + 4, 4, ex);
+        for (int k = 0; k < 10; k++)
+            if (ld32(c, M, slot + 8 + 4 * k) != s_sel_base_anm[a][k]) mst(c, M, slot + 8 + 4 * k, 4, s_sel_base_anm[a][k]);
+        if (m) sel_bind(c, M, m, s_sel_base_anm[a][9]);
+        if (m && b == SEL_HAIR_CELL && vb == SEL_HAIR_CELL) hair = sel_model(c, M, cs, v, true);
+    }
+    if (s_sel_hair_md) {
+        uint32_t md = hair ? hair->md : s_sel_hair_md, ex = hair ? hair->ex : s_sel_hair_ex;
+        if (ld32(c, M, cs + 0x3e8) != md) mst(c, M, cs + 0x3e8, 4, md), mst(c, M, cs + 0x3ec, 4, ex);
+    }
+    WR(c, 0x1020, 4, lr);
+}
+static uint64_t i_character__9SceneMenuFv(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t menu = (uint32_t)a0, req = __atomic_exchange_n(&g_char_cycle, 0, __ATOMIC_ACQ_REL);
+    int cursor[4] = {-1, -1, -1, -1};
+    bool chosen[CP_BASES] = {false};
+    uint32_t last = IS_RAM(menu) ? ld32(c, M, menu + 0x20f4) : 0;
+    for (uint32_t p = 0; p <= last && p < 4 && IS_RAM(menu); p++) {
+        uint32_t t = ld32(c, M, menu + 0x211c + 4 * p);
+        if (t >= 4) continue;
+        for (uint32_t k = 0; k < 2; k++) {
+            int cell = (int)ld32(c, M, menu + 0x1c * t + 0x2138 + 4 * k);
+            if (cell >= 0 && cell < CP_BASES) chosen[cell] = true;
+        }
+        int cell = (int)ld32(c, M, menu + 0x1c * p + 0x212c);
+        if (ld32(c, M, menu + 0x1c * t + 0x2144) == 0 && cell >= 0 && cell < CP_BASES) cursor[p] = cell;
+    }
+    /* a select screen opened anew (from the title, a race, a cancel): its first page; then any
+     * player's X: the next page, Y: the previous one */
+    if (!charpack_select_active()) charpack_page_first();
+    if (req & 0x0f) charpack_page_step(1);
+    else if (req & 0xf0) charpack_page_step(-1);
+    charpack_select_frame(cursor, chosen);
+
+    /* the menu's character table as expected (else no stand-ins: those variants show as the cell) */
+    bool table_ok = IS_RAM(menu) && charpack_count();
+    for (int i = 0; i < CP_BASES && table_ok; i++) table_ok = ld32(c, M, menu + 0xc + 12 * i) == CP_CHAR_ID[i];
+    static bool warned;
+    if (!table_ok && IS_RAM(menu) && charpack_count() && !warned) {
+        warned = true;
+        rt_log("charpack: the select screen's character table is not the expected one: variants in other characters' cells show as the cell");
+    }
+    static uint16_t a_was[4];
+    bool a_down[4];
+    for (int p = 0; p < 4; p++) a_down[p] = (g_pad_buttons[p] & 0x0100) && !(a_was[p] & 0x0100), a_was[p] = g_pad_buttons[p];
+    int cur_set[4] = {-2, -2, -2, -2}, rbs[4];
+    bool tab_set[CP_BASES] = {false}, taken[4] = {false};
+    /* the characters the 3D models show: the chosen ones, the cursors' own cells', then the first
+     * player on each base's variant; a later one previews in a block nobody shows */
+    bool used[21] = {false};
+    for (int i = 0; i < CP_BASES; i++) used[CP_CHAR_ID[i]] = chosen[i];
+    for (int p = 0; p < 4; p++) {
+        rbs[p] = cursor[p] >= 0 ? charpack_real_base(cursor[p]) : -1;
+        if (rbs[p] < 0 || rbs[p] != cursor[p]) continue;
+        used[CP_CHAR_ID[rbs[p]]] = true;
+        if (table_ok) charpack_borrow(rbs[p], charpack_cell_variant(cursor[p])); /* the block shows what that player is on */
+    }
+    bool on_choice[4] = {false}; /* on a cell a choice shows in: that one (characterAnm), A does nothing */
+    for (int p = 0; p < 4; p++)
+        for (int b = 0; b < CP_BASES && cursor[p] >= 0; b++) on_choice[p] |= charpack_moved(b) == cursor[p];
+    for (int p = 0; p < 4 && table_ok; p++) {
+        int cell = cursor[p], rb = rbs[p];
+        if (rb < 0 || rb == cell) continue;
+        taken[p] = on_choice[p] || used[CP_CHAR_ID[rb]];
+        if (on_choice[p]) continue;
+        used[CP_CHAR_ID[rb]] = true;
+        if (!taken[p] && !tab_set[cell])
+            tab_set[cell] = true, mst(c, M, menu + 0xc + 12 * cell, 4, CP_CHAR_ID[rb]), charpack_borrow(rb, charpack_cell_variant(cell));
+    }
+    for (int p = 0; p < 4 && table_ok; p++) {
+        int cell = cursor[p], v = cell >= 0 ? charpack_cell_variant(cell) : -1, vb = charpack_variant_base(v);
+        if (!taken[p] || on_choice[p] || vb < 0 || tab_set[cell]) continue;
+        int best = 0, own = (int)CP_CHAR_ID[cell];
+        float want = SEL_SCALE[CP_CHAR_ID[vb] - 1], d = 1e9f;
+        for (int e = 1; e <= 16; e++) { /* 17-20 have models of their own (Toadette's hair, King Boo's) */
+            float de = fabsf(SEL_SCALE[e - 1] - want) - (e == own ? 1e-4f : 0);
+            if (!used[e] && de < d) best = e, d = de;
+        }
+        if (!best) continue;
+        used[best] = true;
+        tab_set[cell] = true, mst(c, M, menu + 0xc + 12 * cell, 4, (uint32_t)best);
+        for (int b = 0; b < CP_BASES; b++)
+            if ((int)CP_CHAR_ID[b] == best) charpack_borrow(b, v);
+    }
+    for (int p = 0; p < 4 && table_ok; p++) {
+        int cell = cursor[p], rb = rbs[p];
+        if (rb < 0 || rb == cell || !a_down[p]) continue;
+        cur_set[p] = taken[p] ? -1 : rb;
+        mst(c, M, menu + 0x1c * p + 0x212c, 4, (uint32_t)cur_set[p]);
+        if (!taken[p]) charpack_pending(rb, charpack_cell_variant(cell), cell);
+        rt_log("charpack: player %d %s %s in %s's cell", p + 1, taken[p] ? "can't pick (taken)" : "picks",
+               charpack_name(charpack_cell_variant(cell)), charpack_base_name(cell));
+    }
+    uint32_t teams = IS_RAM(menu) ? ld32(c, M, menu + 0x20fc) + 1 : 0;
+    if (teams > 4) teams = 4;
+    int before[4][2];
+    for (uint32_t t = 0; t < teams; t++)
+        for (uint32_t k = 0; k < 2; k++) before[t][k] = (int)ld32(c, M, menu + 0x1c * t + 0x2138 + 4 * k);
+    ctx_call_orig(c, s_addr[NAT_character__9SceneMenuFv]);
+    for (int p = 0; p < 4; p++)
+        if (cur_set[p] != -2 && (int)ld32(c, M, menu + 0x1c * p + 0x212c) == cur_set[p])
+            mst(c, M, menu + 0x1c * p + 0x212c, 4, (uint32_t)cursor[p]);
+    /* a pick in another character's cell: its select animation there (selectA started it on the base's) */
+    for (int p = 0; p < 4; p++) {
+        int rb = cur_set[p], vc = cursor[p];
+        if (rb < 0 || vc < 0) continue;
+        uint32_t fr = menu + 0x21ec + 8 * rb, fv = menu + 0x21ec + 8 * vc;
+        if (!mld(c, M, fr, 1) || ld32(c, M, fr + 4) != (uint32_t)p || mld(c, M, fv, 1)) continue;
+        mst(c, M, fv, 1, 1), mst(c, M, fv + 4, 4, (uint32_t)p), mst(c, M, fr, 1, 0);
+        uint32_t tr = ld32(c, M, menu + 0x1374 + 12 * rb), tv = ld32(c, M, menu + 0x1374 + 12 * vc);
+        mst(c, M, menu + 0x1374 + 12 * rb, 4, tv), mst(c, M, menu + 0x1374 + 12 * vc, 4, tr);
+    }
+    /* the random pick: the character of the cell it lands on (a variant's base, unless that is
+     * chosen already: then the cell's own, as the game chose), then one of its versions from any
+     * page (charpack_random); its select animation moves to the cell that choice shows in */
+    bool reflag = false;
+    for (uint32_t t = 0; t < teams && table_ok; t++)
+        for (uint32_t k = 0; k < 2; k++) {
+            uint32_t a = menu + 0x1c * t + 0x2138 + 4 * k, owner = ld32(c, M, menu + 0x1c * t + 0x2130 + 4 * k);
+            int x = (int)ld32(c, M, a);
+            if (before[t][k] != -1 || x < 0 || x >= CP_BASES || (owner < 4 && a_down[owner])) continue;
+            int rb = charpack_real_base(x);
+            bool chosen[CP_BASES] = {false};
+            for (uint32_t u = 0; u < teams; u++)
+                for (uint32_t j = 0; j < 2; j++) {
+                    int y = (int)ld32(c, M, menu + 0x1c * u + 0x2138 + 4 * j);
+                    if (y >= 0 && y < CP_BASES && (u != t || j != k)) chosen[y] = true;
+                }
+            if (chosen[rb]) rb = x;
+            int vc, v = charpack_random(rb, &vc);
+            int shown = v >= 0 && vc != rb && !chosen[vc] && charpack_cell_variant(vc) == v ? vc : rb;
+            rt_log("charpack: the random pick lands in %s's cell: %s as %s", charpack_base_name(x), charpack_base_name(rb),
+                   v < 0 ? "the game's own" : charpack_name(v));
+            mst(c, M, a, 4, (uint32_t)rb);
+            charpack_pending(rb, v, vc);
+            reflag |= rb != x;
+            uint32_t fx = menu + 0x21ec + 8 * x, fs = menu + 0x21ec + 8 * shown;
+            if (shown == x || !mld(c, M, fx, 1) || mld(c, M, fs, 1)) continue;
+            mst(c, M, fs, 1, 1), mst(c, M, fs + 4, 4, ld32(c, M, fx + 4)), mst(c, M, fx, 1, 0);
+            uint32_t tx = ld32(c, M, menu + 0x1374 + 12 * x), ts = ld32(c, M, menu + 0x1374 + 12 * shown);
+            mst(c, M, menu + 0x1374 + 12 * x, 4, ts), mst(c, M, menu + 0x1374 + 12 * shown, 4, tx);
+        }
+    for (int i = 0; i < CP_BASES; i++)
+        if (tab_set[i]) mst(c, M, menu + 0xc + 12 * i, 4, CP_CHAR_ID[i]);
+    /* cursors skip a cell a choice shows in (and, as the game has it, that character's own) */
+    bool moved = false;
+    for (int b = 0; b < CP_BASES; b++) moved |= charpack_moved(b) >= 0;
+    if ((moved || s_sel_moved || reflag) && IS_RAM(menu)) {
+        uint32_t lr = (uint32_t)RD(c, 0x1020, 4);
+        sel_call(c, SEL_SET_FLAGS, menu, 0, 0, 0, 0);
+        WR(c, 0x1020, 4, lr);
+        for (int b = 0; b < CP_BASES; b++)
+            if (charpack_moved(b) >= 0) mst(c, M, menu + 0x228c + charpack_moved(b), 1, 0);
+    }
+    s_sel_moved = moved;
+    sel_models(c, M, menu);
     return 0;
 }
 
@@ -4535,11 +5145,10 @@ volatile uint32_t g_hud_modern, g_speed_kmh;
 /* the player's race order row below the top 4: drawCourse puts ranks 5-8 below the screen (CI_05,
  * y 501); moved up to where a 5th row goes */
 #define ORDER_ROW5_DY -102.7f
-/* two players: the lap count (ml1_*, ml2_*) moved from under the word LAP to its right, placed as
- * the single player layout has it (the count starts 2 short of the word's end, 5 above its top;
- * scaled to p2_race.blo's word, 42 wide instead of 55) */
-#define LAP2_COUNT_DX 40.5f
-#define LAP2_COUNT_DY -26.8f
+/* two players: the place's room on its screen (layout units): versus moves the place pictures
+ * (no timer there), and they are kept inside it as moved */
+#define PLACE2_TOP 8.0f
+#define PLACE2_BOTTOM 440.0f
 /* four players (p4_race.blo): the same beside the place, scaled to its word (32 wide), and the pair
  * moved 8 down to sit level with the place. Left quarters: the count right of the word; right ones:
  * the word moved left of the count, so the count stays beside the place */
@@ -4573,7 +5182,8 @@ static int modern_group2(const char *t, int n, uint32_t call, int *view) {
         int g = -2;
         if (!strncmp(t, "pos", 3) && t[3] == d && n == 5) g = MG2_PLACE1;
         else if ((!strncmp(t, "slot", 4) && t[4] == d) || (!strncmp(t, "itm", 3) && t[3] == d)) g = MG2_ITEMS1;
-        else if ((t[0] == 'm' && t[1] == d && !strncmp(t + 2, "_lap", 4)) || (PRE("ml") && t[2] == d && t[3] == '_')) g = MG2_LAP1;
+        else if (t[0] == 'm' && t[1] == d && !strncmp(t + 2, "_lap", 4)) g = -1; /* the word LAP: the count alone */
+        else if (PRE("ml") && t[2] == d && t[3] == '_') g = MG2_LAP1;
         else if (!strncmp(t, "time", 4) && t[4] == d && t[5] == '7' && n == 6) g = -1; /* the word TIME */
         else if ((!strncmp(t, "time", 4) && t[4] == d) || (PRE("Tl") && t[2] == d) || (PRE("Tlapm") && t[5] == d)) g = MG2_TIME1;
         if (g == -2) continue;
@@ -4650,6 +5260,11 @@ static bool modern_place(Ctx *c, uint8_t *M, int g, int kart, float roll, float 
     for (int k = 0; k < 3; k++) m[k] *= s, m[4 + k] *= s;
     m[3] = g_hud_move[g].nx + s * (m[3] - g_hud_move[g].ox);
     m[7] = g_hud_move[g].ny + s * (m[7] - g_hud_move[g].oy);
+    if (g == MG2_PLACE1 || g == MG2_PLACE2) {
+        float top = g_hud_move[g].ny + s * (y0 + dy - g_hud_move[g].oy), bottom = top + s * (y1 - y0);
+        if (top < PLACE2_TOP) m[7] += PLACE2_TOP - top;
+        else if (bottom > PLACE2_BOTTOM) m[7] -= bottom - PLACE2_BOTTOM;
+    }
     return true;
 }
 /* KM/H: the US game shows mph (Race2D::setLayoutData, flag r13 -0x68dc: speed * 0.35); km/h is
@@ -4803,12 +5418,11 @@ static uint64_t i_drawK2D__10K2DPictureFffffb(Ctx *c, uint8_t *M, ARGS) {
     if (s_hud_hide && hud_hidden(c, M, self)) return 0;
     int mg = MG_NONE, kart = -1;
     float e = 0, roll = 0; /* MODERN: how far (1 fully, sliding back after the finish), the row's roll */
-    float ndx = 0, ndy = 0; /* ... a picture moved within its group first (two players' lap count) */
+    float ndx = 0, ndy = 0; /* ... a picture moved within its group first (four players' lap count) */
     if (s_modern) {
         char t[9];
         int n = pane_tag(c, M, self, t), view = 0;
         mg = s_hud_n >= 3 ? modern_group4(t, n, s_hud_call, &view) : s_hud_two ? modern_group2(t, n, s_hud_call, &view) : modern_group(t, n, s_hud_call);
-        if ((mg == MG2_LAP1 || mg == MG2_LAP2) && t[0] == 'm' && t[1] == 'l') ndx = LAP2_COUNT_DX, ndy = LAP2_COUNT_DY;
         if (mg >= MG4_PLACE1 && mg < MG4_MAP && (mg - MG4_PLACE1) % 3 == 2) {
             bool count = t[1] == 'l', right = view & 1;
             ndx = count ? (right ? 0 : LAP4_COUNT_DX) : (right ? LAP4_WORD_DX : 0);

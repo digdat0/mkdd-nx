@@ -73,6 +73,15 @@ static GLuint s_tex[S_COUNT];
 enum { BAR_FIRST = S_COUNT, BAR_COUNT = 3 };
 static const char *const BAR_FILES[BAR_COUNT] = {"selectcup.bti", "selectcourse.bti", "selectmap.bti"};
 static const char *const BAR_MORE[BAR_COUNT] = {"CUPS", "COURSES", "STAGES"};
+/* The cup and course pages' "L + R: RANDOM" (courseselect.arc: the word, and "+" between the L and
+ * R triggers, S_L / S_R) sits on the hint line's right half: while a cup or course bar's hint shows
+ * it is drawn RANDOM_DY lower, centred in the gap between the cups and the course box. */
+#define RND_ARC "SceneData/English/courseselect.arc"
+enum { RND_PLUS = BAR_FIRST + BAR_COUNT, RND_WORD, RND_END };
+static const char *const RND_FILES[2] = {"mariofont_number_plus.bti", "mozi_ramdomselect.bti"};
+#define RANDOM_DY 115.0f
+static u64 s_hint_tick; /* when a cup or course bar's hint line was last drawn */
+static volatile u64 s_random_tick; /* ... and the word RANDOM (any game: pause_art_random_shown) */
 static uint8_t *s_bar[BAR_COUNT];     /* RGBA, the slash and buttons erased */
 static int s_bar_l[BAR_COUNT], s_bar_r[BAR_COUNT]; /* the words left: their left and right edge */
 static GLuint s_bar_tex[BAR_COUNT], s_hint_tex[BAR_COUNT];
@@ -379,6 +388,17 @@ static void bars_init(void) {
         free(b);
     }
     if (n) rt_log("pause art: %u title bars with GameCube buttons (a mod's), shown with a Switch button hint", n);
+    for (int i = 0; i < 2; i++) {
+        uint64_t off;
+        uint32_t size;
+        uint8_t *b = NULL;
+        if (!arc_locate(RND_ARC, RND_FILES[i], &off, &size) || size > (1u << 20) || !(b = malloc(size))) continue;
+        disc_read(off, b, size);
+        uint32_t fmt = b[0], w = (uint32_t)(b[2] << 8 | b[3]), h = (uint32_t)(b[4] << 8 | b[5]), doff = be32(b + 0x1C);
+        size_t bytes = gx_tex_size(fmt, w, h);
+        if (bytes && doff + bytes <= size) gx_subst_register(RND_PLUS + i, fmt, w, h, fnv_bytes(FNV_INIT, b + doff, bytes));
+        free(b);
+    }
 }
 
 static void kf_init(void);
@@ -836,12 +856,12 @@ static unsigned bar_texture(int i) {
     return s_bar_tex[i];
 }
 
-/* "PRESS (Y) OR (X) FOR MORE CUPS", or its width; badges are the Switch buttons for GameCube Y, X. */
-static float hint_line(uint8_t *dst, int i, float x, int by, int bx, bool draw) {
+/* "PRESS (Y) OR (X) FOR MORE CUPS" (more: "CUPS"), or its width; badges by, bx: the buttons' icons. */
+static float hint_line(uint8_t *dst, const char *more, float x, int by, int bx, bool draw) {
     /* pad: moved down a little, clear of the bar above (the badge art has a margin) */
     const int size = 32, badge = 48, step = 40, pad = 6, y = (HINT_H - size) / 2 + pad;
-    char tail[32];
-    snprintf(tail, sizeof tail, " FOR MORE %s", BAR_MORE[i]);
+    char tail[48];
+    snprintf(tail, sizeof tail, " FOR MORE %s", more);
     const char *parts[5] = {"PRESS ", NULL, " OR ", NULL, tail};
     const int badges[5] = {0, by, 0, bx, 0};
     float x0 = x;
@@ -857,8 +877,8 @@ static float hint_line(uint8_t *dst, int i, float x, int by, int bx, bool draw) 
 }
 
 static unsigned hint_texture(int i) {
-    int y_b[2], x_b[2];
-    int by = badges_for(GC_Y, PAUSE_FULL, y_b, 2) ? y_b[0] : B_Y, bx = badges_for(GC_X, PAUSE_FULL, x_b, 2) ? x_b[0] : B_X;
+    /* a menu: always the standard buttons, never BUTTON MAPPING's (that is for driving only) */
+    const int by = B_Y, bx = B_X;
     uint64_t key = (uint64_t)by << 8 | (uint64_t)bx;
     if (s_hint_tex[i] && key == s_hint_key[i]) return s_hint_tex[i];
     int aw, ah;
@@ -866,18 +886,61 @@ static unsigned hint_texture(int i) {
     uint8_t *px = calloc((size_t)HINT_W * HINT_H, 4);
     if (!px) return s_hint_tex[i];
     /* centred under the bar's words */
-    float w = hint_line(px, i, 0, by, bx, false), x = (float)(s_bar_l[i] + s_bar_r[i]) - w / 2;
+    float w = hint_line(px, BAR_MORE[i], 0, by, bx, false), x = (float)(s_bar_l[i] + s_bar_r[i]) - w / 2;
     if (x < 0) x = 0;
     if (x + w > HINT_W) x = HINT_W - w;
-    hint_line(px, i, x, by, bx, true);
+    hint_line(px, BAR_MORE[i], x, by, bx, true);
     s_hint_tex[i] = upload_rgba(s_hint_tex[i], HINT_W, HINT_H, px);
     free(px);
     s_hint_key[i] = key;
     return s_hint_tex[i];
 }
 
+/* The character select screen's page hint (menu.c menu_char_hint): "PRESS (Y) OR (X) FOR MORE
+ * CHARACTERS (1/3)" (page of pages, from 1) as the cup page draws its line, centred in a HINT_W x
+ * HINT_H picture; redrawn when the page changes. */
+unsigned pause_art_char_hint(int page, int pages, int *w, int *h) {
+    static GLuint tex;
+    static int key = -1;
+    *w = HINT_W;
+    *h = HINT_H;
+    int aw, ah;
+    if ((tex && key == page * 1000 + pages) || !uifont_atlas(&aw, &ah)) return tex;
+    uint8_t *px = calloc((size_t)HINT_W * HINT_H, 4);
+    if (!px) return tex;
+    char more[32];
+    snprintf(more, sizeof more, "CHARACTERS (%d/%d)", page, pages);
+    float lw = hint_line(px, more, 0, B_Y, B_X, false), x = (HINT_W - lw) / 2;
+    hint_line(px, more, x < 0 ? 0 : x, B_Y, B_X, true);
+    tex = upload_rgba(tex, HINT_W, HINT_H, px);
+    key = page * 1000 + pages;
+    free(px);
+    /* drawn by the menu overlay without a sampler: no mipmaps, so a plain filter (the default
+     * mipmapped one makes it incomplete: black) */
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return tex;
+}
+
 unsigned pause_art_below(unsigned id) {
+    if (id == BAR_FIRST || id == BAR_FIRST + 1) s_hint_tick = armGetSystemTick();
     return id >= BAR_FIRST && id < BAR_FIRST + BAR_COUNT && s_bar[id - BAR_FIRST] ? hint_texture((int)(id - BAR_FIRST)) : 0;
+}
+
+float pause_art_shift(unsigned id) {
+    if (id == RND_WORD) s_random_tick = armGetSystemTick();
+    if (id != S_L && id != S_R && id != RND_PLUS && id != RND_WORD) return 0;
+    /* the bar is drawn first; the character select's L + R (no hint bar) stays */
+    return s_hint_tick && armTicksToNs(armGetSystemTick() - s_hint_tick) < 200000000ull ? RANDOM_DY : 0;
+}
+
+bool pause_art_random_shown(void) {
+    u64 t = s_random_tick;
+    return t && armTicksToNs(armGetSystemTick() - t) < 200000000ull;
 }
 
 unsigned pause_art_texture(unsigned id) {
@@ -897,6 +960,16 @@ unsigned pause_art_texture(unsigned id) {
     if (id == S_CONSOLE) {
         if (!s_tex[id]) upload(id, pause_console_rgba);
         return s_tex[id];
+    }
+    /* L and R are the JUMP box and DRIFT's row only on the pause screen: the character select's
+     * "L + R: RANDOM" uses the same two pictures. A race is on screen while Race2D::draw ran within
+     * the last half second (it keeps drawing under the pause screen). */
+    if (id == S_L || id == S_R) {
+        extern volatile uint32_t g_race_frames;
+        static uint32_t seen;
+        static u64 tick;
+        if (g_race_frames != seen) seen = g_race_frames, tick = armGetSystemTick();
+        if (!tick || armTicksToNs(armGetSystemTick() - tick) >= 500000000ull) return 0;
     }
     refresh_icons(kind);
     return s_tex[id];

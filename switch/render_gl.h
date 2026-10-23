@@ -13,6 +13,9 @@ void render_set_hud43(bool on);
 /* A second picture drawn right below a substituted one (same draw, one 32-unit line of the 2D
  * layout lower), by substitution id; 0 = none. */
 void render_set_below(unsigned (*texture)(unsigned id));
+/* A recognised picture (gx_subst_register id, substituted or not) drawn lower by this much of the
+ * 2D layout's 480-unit height; 0 = where the game puts it. */
+void render_set_shift(float (*shift)(unsigned id));
 /* 4:3 output with a blurred, dimmed copy of the picture filling the 16:9 sides (the title screen) */
 void render_set_backdrop(bool on);
 /* HD texture replacements (hdtex.h) on or off: takes effect next frame, every texture reloads. Stays

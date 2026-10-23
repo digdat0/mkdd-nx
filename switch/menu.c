@@ -15,6 +15,7 @@
 #include "render_gl.h"
 #include "hdtex.h"
 #include "ui_font.h"
+#include "pause_art.h"
 #include "update.h"
 #include "../runtime/rt.h"
 #include "../runtime/gx.h"
@@ -26,10 +27,11 @@
 Settings g_set;
 static char s_path[512];
 
-static const uint64_t DEFAULT_MAP[MAP_COUNT] = {
+const uint64_t g_map_default[MAP_COUNT] = {
     [GC_A] = HidNpadButton_A, [GC_B] = HidNpadButton_B, [GC_X] = HidNpadButton_X, [GC_Y] = HidNpadButton_Y,
     [GC_Z] = HidNpadButton_L | HidNpadButton_R, [GC_R] = HidNpadButton_ZR,
     [GC_START] = HidNpadButton_Plus, [MAP_FP] = HidNpadButton_StickR, [MAP_JUMP] = HidNpadButton_ZL,
+    [MAP_CAM_RESET] = HidNpadButton_StickL,
 };
 static const char *GC_KEYS[MAP_COUNT] = {"map_a", "map_b", "map_x", "map_y", "map_z", "map_l", "map_r", "map_start", "map_fp", "map_jump", "map_cam_reset"};
 
@@ -46,25 +48,25 @@ static uint64_t mappable(void) {
     for (int i = 0; i < N_SW; i++) m |= SW_BUTTONS[i].bit;
     return m;
 }
-/* What each Switch button does: an action is the GameCube button it presses (g_set.map[gc] holds
- * the Switch buttons pressing it), or MAP_FP, the port's first person switch. Every action needs a
- * button except L (it drifts like R; some menus use it on its own). Rear view is GameCube Y: in
- * races that player's camera turns around instead (main_switch.c). */
+/* What each Switch button does while driving: an action is the GameCube button it presses
+ * (g_set.map[gc] holds the Switch buttons pressing it), or one of the port's own (MAP_FP first
+ * person, JUMP, CAMERA RESET). Menus, the pause screen and everything outside driving always use
+ * g_map_default (main_switch.c map_full). GameCube L is no action: nothing needs it while driving.
+ * Rear view is GameCube Y: in races that player's camera turns around instead (main_switch.c). */
 static const struct { int gc; const char *name, *hint; } ACTIONS[] = {
-    {GC_A, "ACCELERATE", "GAMECUBE A: ACCELERATE, OK IN MENUS"},
-    {GC_B, "BRAKE / REVERSE", "GAMECUBE B: BRAKE AND REVERSE, BACK IN MENUS"},
+    {GC_A, "ACCELERATE", "GAMECUBE A: ACCELERATE"},
+    {GC_B, "BRAKE / REVERSE", "GAMECUBE B: BRAKE AND REVERSE"},
     {GC_R, "DRIFT", "GAMECUBE R: HOP AND DRIFT"},
     {GC_X, "USE ITEM", "GAMECUBE X: USE YOUR ITEM"},
     {GC_Z, "SWITCH", "GAMECUBE Z: SWAP DRIVER AND RIDER"},
     {GC_Y, "REAR VIEW", "GAMECUBE Y: LOOK BEHIND IN RACES"},
     {GC_START, "PAUSE", "GAMECUBE START: PAUSE"},
-    {MAP_FP, "FIRST PERSON", "FIRST PERSON CAMERA ON OR OFF. 1 AND 2 PLAYER RACES"},
-    {GC_L, "L TRIGGER", "GAMECUBE L: DRIFTS TOO, SOME MENUS USE IT"},
+    {MAP_FP, "FIRST PERSON", "FIRST PERSON CAMERA ON OR OFF, EACH PLAYER. 1 TO 4 PLAYER RACES"},
     {MAP_JUMP, "JUMP", "HOP IN RACES WHEN GAME > JUMP IS ON"},
     {MAP_CAM_RESET, "CAMERA RESET", "FREE CAMERA BACK TO THE NORMAL VIEW"},
 };
 #define N_ACT (int)(sizeof ACTIONS / sizeof ACTIONS[0]) /* also "NONE" */
-static bool action_required(int a) { return a < N_ACT && ACTIONS[a].gc != GC_L && ACTIONS[a].gc != MAP_JUMP && ACTIONS[a].gc != MAP_CAM_RESET; }
+static bool action_required(int a) { return a < N_ACT && ACTIONS[a].gc != MAP_JUMP && ACTIONS[a].gc != MAP_CAM_RESET; }
 static int button_action(int sw) {
     for (int a = 0; a < N_ACT; a++)
         if (g_set.map[ACTIONS[a].gc] & SW_BUTTONS[sw].bit) return a;
@@ -84,10 +86,12 @@ static void defaults(void) {
     g_set.rumble = 1; /* low: the game's own Rumble option then works as players expect */
     g_set.unlock_all = false;
     g_set.any_kart = false;
+    g_set.char_test = 0;
     g_set.special_mode = 0;
     g_set.mt_sweeps = 3;
     g_set.mt_speed = g_set.mt_length = 0;
-    g_set.jump = 2; /* MID, on ZL (DEFAULT_MAP) */
+    g_set.mt_cpu = false;
+    g_set.jump = 2; /* MID, on ZL (g_map_default) */
     g_set.laps = 0;
     g_set.free_cam = 1; /* SNAP BACK */
     g_set.cam_height = 2; /* REGULAR */
@@ -95,6 +99,7 @@ static void defaults(void) {
     for (int i = 0; i < 20; i++) g_set.special[i] = i / 2; /* each pair's own special; Petey and King Boo any */
     g_set.logging = 0;
     g_set.hd_textures = false;
+    g_set.characters = true;
     snprintf(g_set.mod, sizeof g_set.mod, "auto");
     g_set.fov[0] = 0; /* 4:3: the game's view */
     g_set.fov[1] = 2; /* 16:9: wider */
@@ -108,7 +113,7 @@ static void defaults(void) {
     g_set.docked_res = DOCKED_AUTO;
     g_set.handheld_res = HANDHELD_AUTO;
     g_set.profiler = false;
-    memcpy(g_set.map, DEFAULT_MAP, sizeof g_set.map);
+    memcpy(g_set.map, g_map_default, sizeof g_set.map);
 }
 
 static const uint32_t LOG_MASKS[4] = {0, LOG_GAME, LOG_GAME | LOG_AUDIO, LOG_AUDIO};
@@ -141,6 +146,7 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "any_kart")) g_set.any_kart = atoi(v) != 0;
         else if (!strcmp(k, "mt_sweeps")) g_set.mt_sweeps = atoi(v) < 1 || atoi(v) > 3 ? 3 : atoi(v);
         else if (!strcmp(k, "mt_speed")) g_set.mt_speed = atoi(v) < 0 ? 0 : atoi(v) >= MT_N_SPEEDS ? MT_N_SPEEDS - 1 : atoi(v);
+        else if (!strcmp(k, "mt_cpu")) g_set.mt_cpu = atoi(v) != 0;
         else if (!strcmp(k, "mt_length")) g_set.mt_length = atoi(v) < 0 ? 0 : atoi(v) >= MT_N_LENGTHS ? MT_N_LENGTHS - 1 : atoi(v);
         else if (!strcmp(k, "jump")) g_set.jump = atoi(v) < 0 || atoi(v) > 3 ? 0 : atoi(v);
         else if (!strcmp(k, "laps")) g_set.laps = atoi(v) < 0 || atoi(v) > 7 ? 0 : atoi(v);
@@ -152,6 +158,7 @@ void settings_load(const char *path) {
             for (int i = 0; i < 20 && v[i] >= '0' && v[i] <= '9'; i++) g_set.special[i] = v[i] - '0';
         else if (!strcmp(k, "logging")) g_set.logging = atoi(v) & 3;
         else if (!strcmp(k, "hd_textures")) g_set.hd_textures = atoi(v) != 0;
+        else if (!strcmp(k, "characters")) g_set.characters = atoi(v) != 0;
         else if (!strcmp(k, "mod")) snprintf(g_set.mod, sizeof g_set.mod, "%s", v);
         else if (!strcmp(k, "plus")) snprintf(g_set.mod, sizeof g_set.mod, atoi(v) ? "auto" : "off"); /* before 1.4.0 */
         else if (!strcmp(k, "fov_4_3")) g_set.fov[0] = atoi(v) < 0 ? 0 : atoi(v) > 4 ? 4 : atoi(v);
@@ -183,7 +190,7 @@ void settings_load(const char *path) {
         if (button_action(sw) == N_ACT) g_set.map[MAP_FP] |= SW_BUTTONS[sw].bit;
     if (!map_valid()) {
         rt_log("settings: button mapping without every action, back to the defaults");
-        memcpy(g_set.map, DEFAULT_MAP, sizeof g_set.map);
+        memcpy(g_set.map, g_map_default, sizeof g_set.map);
     }
     apply_logging();
     rt_log("settings: 16:9 %d, fov %d / %d, fps %d, logging %d, rumble %d, unlock all %d", g_set.wide, g_set.fov[0], g_set.fov[1], g_set.show_fps,
@@ -197,8 +204,10 @@ void settings_save(void) {
             "docked_res=%d\nprofiler=%d\nmod=%s\nhandheld_res=%d\nhud_hide=%u\nhud_style=%d\nspeed_kmh=%d\ncamera=%d\nfp_forward=%d\nany_kart=%d\n", g_set.wide, g_set.show_fps,
             g_set.logging, g_set.rumble, g_set.unlock_all, g_set.hd_textures, g_set.fov[0], g_set.fov[1], g_set.aniso, g_set.border, g_set.docked_res,
             g_set.profiler, g_set.mod, g_set.handheld_res, g_set.hud_hide, g_set.hud_style, g_set.speed_kmh, g_set.camera, g_set.fp_forward, g_set.any_kart);
+    fprintf(f, "mt_cpu=%d\n", g_set.mt_cpu);
     fprintf(f, "mt_sweeps=%d\nmt_speed=%d\nmt_length=%d\njump=%d\nlaps=%d\nfree_camera=%d\ncamera_height=%d\ncamera_distance=%d\n", g_set.mt_sweeps, g_set.mt_speed,
             g_set.mt_length, g_set.jump, g_set.laps, g_set.free_cam, g_set.cam_height, g_set.cam_dist);
+    fprintf(f, "characters=%d\n", g_set.characters);
     fprintf(f, "special_items=%d\nspecial=", g_set.special_mode);
     for (int i = 0; i < 20; i++) fputc('0' + g_set.special[i] % 10, f);
     fputc('\n', f);
@@ -265,7 +274,7 @@ void color_adjust(float adj[3]) {
 enum { PAGE_MAIN, PAGE_MAP, PAGE_EXIT, PAGE_COLOR, PAGE_DEBUG, PAGE_GFX, PAGE_UPDATE, PAGE_CTRL, PAGE_GAME, PAGE_MODS, PAGE_HUD, PAGE_CHEATS, PAGE_SPECIAL, PAGE_CAM, PAGE_COUNT };
 /* the main page's rows; UPDATE and DEBUG sit on EXIT GAME's row, at its right (LEFT/RIGHT there) */
 enum { M_GFX, M_CTRL, M_CAM, M_GAME, M_CHEATS, M_MODS, M_EXIT, M_UPDATE, M_DEBUG, M_COUNT };
-enum { MD_MOD, MD_HD, MD_RESTART, MD_BACK, MD_COUNT };
+enum { MD_MOD, MD_HD, MD_CHARS, MD_RESTART, MD_BACK, MD_COUNT };
 static unsigned s_mods_found, s_mod_running;
 void menu_set_mods(unsigned found, unsigned running) { s_mods_found = found; s_mod_running = running; }
 unsigned mods_pick(unsigned found) {
@@ -275,7 +284,11 @@ unsigned mods_pick(unsigned found) {
     return 0;
 }
 /* The MOD setting picks another mod than this session plays: a restart applies it. */
-static bool mod_pending(void) { return mods_pick(s_mods_found) != s_mod_running; }
+/* mods/characters: there at start-up, and loaded then (EXTRA CHARACTERS was on) */
+static bool s_chars_found, s_chars_running;
+void menu_set_chars(bool found, bool running) { s_chars_found = found, s_chars_running = running; }
+static bool chars_pending(void) { return s_chars_found && g_set.characters != s_chars_running; }
+static bool mod_pending(void) { return mods_pick(s_mods_found) != s_mod_running || chars_pending(); }
 /* LEFT/RIGHT on MOD: OFF, then each mod found, in MODS order. */
 static void mod_step(int dir) {
     unsigned cur = mods_pick(s_mods_found), n = cur;
@@ -291,7 +304,7 @@ static void upper(char *dst, size_t size, const char *s) {
 enum { C_SYNC, C_MAP, C_BACK, C_COUNT };
 enum { GM_STYLE, GM_UNITS, GM_HUD, GM_JUMP, GM_RUMBLE, GM_LAPS, GM_BACK, GM_COUNT };
 enum { CA_VIEW, CA_HEIGHT, CA_DIST, CA_FOV, CA_FREE, CA_BACK, CA_COUNT };
-enum { CH_UNLOCK, CH_KARTS, CH_SPECIAL, CH_MT_SWEEPS, CH_MT_SPEED, CH_MT_LENGTH, CH_BACK, CH_COUNT };
+enum { CH_UNLOCK, CH_KARTS, CH_SPECIAL, CH_MT_SWEEPS, CH_MT_SPEED, CH_MT_LENGTH, CH_MT_CPU, CH_BACK, CH_COUNT };
 static const char *SPECIAL_MODES[3] = {"NORMAL", "ANY", "CUSTOM"};
 /* MINI-TURBO SPEED (times the kart's top speed) and LENGTH (times the kart's own), the game's first */
 static const struct { const char *name; float v; } MT_SPEEDS[] = {
@@ -316,6 +329,7 @@ void cheats_apply(void) {
     g_mt_sweeps = (uint32_t)g_set.mt_sweeps;
     g_mt_speed = MT_SPEEDS[g_set.mt_speed % MT_N_SPEEDS].v;
     g_mt_length = MT_LENGTHS[g_set.mt_length % MT_N_LENGTHS].v;
+    g_mt_cpu = g_set.mt_cpu;
     g_jump_power = JUMP_POWER[g_set.jump & 3];
     special_apply();
 }
@@ -336,7 +350,7 @@ static const char *HUD_STYLES[2] = {"CLASSIC", "MODERN"};
 static const char *hud_value(void) { return !g_set.hud_hide ? "ON" : g_set.hud_hide == HUD_ALL ? "OFF" : "CUSTOM"; }
 static const char *FOV_NAMES[5] = {"NORMAL", "WIDE", "WIDER", "WIDEST", "WIDEEE"};
 static const char *ANISO_NAMES[5] = {"NORMAL", "2X", "4X", "8X", "16X"};
-enum { D_FPS, D_LOG, D_PROF, D_BACK, D_COUNT };
+enum { D_FPS, D_LOG, D_PROF, D_CHARS, D_BACK, D_COUNT };
 static const char *FPS_NAMES[3] = {"OFF", "FPS", "FPS + TIMES"};
 static const char *RUMBLE_NAMES[3] = {"OFF", "LOW", "HIGH"};
 static bool s_want_controllers;
@@ -456,6 +470,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
             settings_save();
             break;
         case D_PROF: g_set.profiler = !g_set.profiler; settings_save(); break;
+        case D_CHARS: g_set.char_test = (g_set.char_test + (left ? 2 : 1)) % 3; break;
         case D_BACK: if (ok) s_page = PAGE_MAIN; break;
         }
         return true;
@@ -500,6 +515,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         switch (*sel) {
         case MD_MOD: if (s_mods_found) { mod_step(left ? -1 : 1); settings_save(); } break;
         case MD_HD: g_set.hd_textures = !g_set.hd_textures; settings_save(); break;
+        case MD_CHARS: if (s_chars_found) { g_set.characters = !g_set.characters; settings_save(); } break;
         case MD_RESTART:
             /* the loader starts this .nro again as soon as it exits */
             if (ok && mod_pending()) {
@@ -526,6 +542,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         case CH_MT_SWEEPS: g_set.mt_sweeps = (g_set.mt_sweeps - 1 + (left ? 2 : 1)) % 3 + 1; cheats_apply(); settings_save(); break;
         case CH_MT_SPEED: g_set.mt_speed = (g_set.mt_speed + (left ? MT_N_SPEEDS - 1 : 1)) % MT_N_SPEEDS; cheats_apply(); settings_save(); break;
         case CH_MT_LENGTH: g_set.mt_length = (g_set.mt_length + (left ? MT_N_LENGTHS - 1 : 1)) % MT_N_LENGTHS; cheats_apply(); settings_save(); break;
+        case CH_MT_CPU: g_set.mt_cpu = !g_set.mt_cpu; cheats_apply(); settings_save(); break;
         case CH_BACK: if (ok) s_page = PAGE_MAIN; break;
         }
         return true;
@@ -583,7 +600,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         }
     } else if (s_page == PAGE_MAP && ok) {
         if (*sel < N_SW) set_action(*sel, (button_action(*sel) + 1) % (N_ACT + 1));
-        else if (*sel == P_RESET) { memcpy(g_set.map, DEFAULT_MAP, sizeof g_set.map); settings_save(); }
+        else if (*sel == P_RESET) { memcpy(g_set.map, g_map_default, sizeof g_set.map); settings_save(); }
         else s_page = PAGE_CTRL;
     } else if (s_page == PAGE_UPDATE && ok) {
         if (*sel == U_BACK) s_page = PAGE_MAIN;
@@ -1065,14 +1082,15 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s_sel[PAGE_GFX] == G_COLOR  ? "A: ADJUST   LEFT/RIGHT: ACCURATE, VIVID, CUSTOM"
                                                  : "B: BACK";
         } else if (s_page == PAGE_MODS) {
-            static const char *labels[MD_COUNT] = {"MOD", "HD TEXTURES", "RESTART NOW", "BACK"};
+            static const char *labels[MD_COUNT] = {"MOD", "HD TEXTURES", "EXTRA CHARACTERS", "RESTART NOW", "BACK"};
             unsigned pick = mods_pick(s_mods_found);
             char mod_value[16], mod_hint[96];
             upper(mod_value, sizeof mod_value, pick ? MODS[pick - 1].key : s_mods_found ? "off" : "none found");
             upper(mod_hint, sizeof mod_hint, pick ? MODS[pick - 1].name : "the standard game");
             snprintf(mod_hint + strlen(mod_hint), sizeof mod_hint - strlen(mod_hint), pick ? ": ITS OWN SAVE" : "");
             const char *values[MD_COUNT] = {mod_value,
-                                            !hdtex_available() ? "NO PACK" : g_set.hd_textures ? "ON" : "OFF", NULL, NULL};
+                                            !hdtex_available() ? "NO PACK" : g_set.hd_textures ? "ON" : "OFF",
+                                            !s_chars_found ? "NONE FOUND" : g_set.characters ? "ON" : "OFF", NULL, NULL};
             for (int i = 0; i < MD_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, MD_COUNT), pw, rh, k, s_sel[PAGE_MODS] == i, labels[i], values[i], false);
             char hd_hint[64];
             if (!hdtex_available()) snprintf(hd_hint, sizeof hd_hint, "PUT HD-TEXTURES.BIN IN THE MKDD-NX FOLDER");
@@ -1083,6 +1101,9 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s == MD_MOD && mod_pending()    ? "CHANGES AFTER A RESTART: SEE RESTART NOW"
                    : s == MD_MOD                     ? mod_hint
                    : s == MD_HD                      ? hd_hint
+                   : s == MD_CHARS && !s_chars_found ? "PUT CHARACTERS IN MODS/CHARACTERS (SEE README)"
+                   : s == MD_CHARS && chars_pending() ? "CHANGES AFTER A RESTART: SEE RESTART NOW"
+                   : s == MD_CHARS                   ? "MORE CHARACTERS ON THE CHARACTER SELECT SCREEN"
                    : s == MD_RESTART && !mod_pending() ? "NOTHING TO APPLY"
                    : s == MD_RESTART && s_restart_manual ? "CLOSE THE GAME AND START IT AGAIN"
                    : s == MD_RESTART                 ? "A: RESTART THE GAME (UNSAVED RACE PROGRESS IS LOST)"
@@ -1096,7 +1117,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
             for (int i = 0; i < GM_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, GM_COUNT), pw, rh, k, s_sel[PAGE_GAME] == i, labels[i], values[i], more[i]);
             hint = s_sel[PAGE_GAME] == GM_STYLE ? "MODERN: SMALLER, IN THE CORNERS. 1 TO 4 PLAYERS"
                    : s_sel[PAGE_GAME] == GM_UNITS ? "SPEEDOMETER IN MILES OR KILOMETRES PER HOUR"
-                   : s_sel[PAGE_GAME] == GM_HUD  ? "A: CHOOSE   LEFT/RIGHT: ALL ON, ALL OFF. SINGLE PLAYER RACES"
+                   : s_sel[PAGE_GAME] == GM_HUD  ? "A: CHOOSE   LEFT/RIGHT: ALL ON, ALL OFF. 1 TO 4 PLAYER RACES"
                    : s_sel[PAGE_GAME] == GM_LAPS ? "GRAND PRIX AND VERSUS, FROM THE NEXT RACE. NORMAL: THE COURSE'S"
                    : s_sel[PAGE_GAME] == GM_RUMBLE ? "VIBRATION STRENGTH. THE GAME'S OWN RUMBLE OPTION MUST BE ON TOO"
                    : s_sel[PAGE_GAME] == GM_JUMP ? (g_set.map[MAP_JUMP] ? "ONE HOP PER PRESS OF THE JUMP BUTTON"
@@ -1110,7 +1131,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
             const char *values[CA_COUNT] = {CAMERA_NAMES[g_set.camera & 3], HEIGHT_NAMES[g_set.cam_height & 3], DIST_NAMES[g_set.cam_dist % 5],
                                             FOV_NAMES[g_set.fov[g_set.wide] % 5], FREECAM_NAMES[g_set.free_cam & 3], NULL};
             for (int i = 0; i < CA_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, CA_COUNT), pw, rh, k, s_sel[PAGE_CAM] == i, labels[i], values[i], false);
-            hint = s_sel[PAGE_CAM] == CA_VIEW     ? "FIRST PERSON, EYE LOW / MID / HIGH. 1 AND 2 PLAYER RACES"
+            hint = s_sel[PAGE_CAM] == CA_VIEW     ? "FIRST PERSON, EYE LOW / MID / HIGH. 1 TO 4 PLAYER RACES"
                    : s_sel[PAGE_CAM] == CA_HEIGHT ? "THE CAMERA BEHIND THE KART. REGULAR: THE GAME'S"
                    : s_sel[PAGE_CAM] == CA_DIST   ? "HOW FAR BEHIND THE KART. REGULAR: THE GAME'S"
                    : s_sel[PAGE_CAM] == CA_FOV    ? (g_set.wide ? "RACE CAMERA IN 16:9, DEFAULT WIDER" : "RACE CAMERA IN 4:3, DEFAULT NORMAL")
@@ -1122,10 +1143,10 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                                                   : "B: BACK";
         } else if (s_page == PAGE_CHEATS) {
             static const char *labels[CH_COUNT] = {"UNLOCK ALL", "NO WEIGHT CLASSES", "SPECIAL ITEMS", "MINI-TURBO SWEEPS", "MINI-TURBO SPEED",
-                                                   "MINI-TURBO LENGTH", "BACK"};
+                                                   "MINI-TURBO LENGTH", "MINI-TURBO FOR CPUS", "BACK"};
             const char *values[CH_COUNT] = {g_set.unlock_all ? "ON" : "OFF", g_set.any_kart ? "ON" : "OFF", SPECIAL_MODES[g_set.special_mode % 3],
                                             MT_SWEEP_NAMES[(g_set.mt_sweeps + 2) % 3], MT_SPEEDS[g_set.mt_speed % MT_N_SPEEDS].name,
-                                            MT_LENGTHS[g_set.mt_length % MT_N_LENGTHS].name, NULL};
+                                            MT_LENGTHS[g_set.mt_length % MT_N_LENGTHS].name, g_set.mt_cpu ? "ON" : "OFF", NULL};
             for (int i = 0; i < CH_COUNT; i++, ry += rh)
                 mrow(x, ROW_Y(i, CH_COUNT), pw, rh, k, s_sel[PAGE_CHEATS] == i, labels[i], values[i], i == CH_SPECIAL && g_set.special_mode == 2);
             hint = s_sel[PAGE_CHEATS] == CH_UNLOCK  ? "ALL CHARACTERS, KARTS, CUPS: NEVER WRITTEN TO YOUR SAVE"
@@ -1135,6 +1156,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s_sel[PAGE_CHEATS] == CH_MT_SWEEPS ? "DRIFT STAGES TO BLUE SPARKS. 3: DRIFT + 2 SWEEPS, 1: AT ONCE"
                    : s_sel[PAGE_CHEATS] == CH_MT_SPEED ? "BOOST SPEED. NORMAL: 1.3X THE KART'S TOP SPEED"
                    : s_sel[PAGE_CHEATS] == CH_MT_LENGTH ? "BOOST TIME, TIMES THE KART'S OWN"
+                   : s_sel[PAGE_CHEATS] == CH_MT_CPU ? "THE COMPUTER'S KARTS GET THE MINI-TURBO SETTINGS ABOVE TOO"
                                                     : "B: BACK";
         } else if (s_page == PAGE_SPECIAL) {
             /* 20 characters and BACK: rows made narrower to fit, as button mapping */
@@ -1175,14 +1197,19 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                      i == HU_BACK ? NULL : g_set.hud_hide >> i & 1 ? "OFF" : "ON", false);
             hint = s_sel[PAGE_HUD] == HU_BACK    ? "B: BACK"
                    : s_sel[PAGE_HUD] == HU_TIME  ? "HIDDEN WHILE YOU RACE, SHOWN AGAIN AT THE FINISH"
-                                                 : "SHOWN IN SINGLE PLAYER RACES. SPLIT SCREEN KEEPS THE FULL HUD";
+                                                 : "ON OR OFF IN 1 TO 4 PLAYER RACES";
         } else if (s_page == PAGE_DEBUG) {
-            static const char *labels[D_COUNT] = {"SHOW FPS", "LOGGING", "PROFILER", "BACK"};
-            const char *values[D_COUNT] = {FPS_NAMES[g_set.show_fps % 3], LOG_NAMES[g_set.logging & 3], g_set.profiler ? "ON" : "OFF", NULL};
+            static const char *labels[D_COUNT] = {"SHOW FPS", "LOGGING", "PROFILER", "CHARACTER TEST", "BACK"};
+            static const char *CHAR_TESTS[3] = {"OFF", "PLAYERS", "EVERYONE"};
+            const char *values[D_COUNT] = {FPS_NAMES[g_set.show_fps % 3], LOG_NAMES[g_set.logging & 3], g_set.profiler ? "ON" : "OFF",
+                                           CHAR_TESTS[g_set.char_test % 3], NULL};
             for (int i = 0; i < D_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, D_COUNT), pw, rh, k, s_sel[PAGE_DEBUG] == i, labels[i], values[i], false);
+            static char chars_hint[96];
+            snprintf(chars_hint, sizeof chars_hint, "%u CHARACTER PACK VARIANTS. RACES LOADED FROM NOW ON USE THEM", charpack_count());
             hint = s_sel[PAGE_DEBUG] == D_FPS      ? "TIMES: MS PER FRAME OF GAME, GRAPHICS AND RENDER THREADS"
                    : s_sel[PAGE_DEBUG] == D_LOG    ? "DEBUG LOGS ON THE SD CARD, FOR BUG REPORTS"
                    : s_sel[PAGE_DEBUG] == D_PROF   ? "PERFORMANCE PROFILE FOR BUG REPORTS, FROM THE NEXT START"
+                   : s_sel[PAGE_DEBUG] == D_CHARS  ? chars_hint
                                                    : "B: BACK";
         } else if (s_page == PAGE_COLOR) {
             int v[3];
@@ -1228,6 +1255,39 @@ void menu_draw(int w, int h, float fps, const char *perf) {
             float px = 2.4f * k;
             text(x + (pw - text_w(hint, px)) / 2, y + ph - foot + 14 * k, px, 0xFFFFFFFFu, hint);
         }
+    }
+    end();
+}
+
+/* Character select with character packs: the page above the grid (centred under the title), and a
+ * line per player whose cursor is on a variant, right aligned at the bottom of the 4:3 picture
+ * (beside the game's RANDOM). */
+void menu_char_hint(int w, int h) {
+    char lines[4][80];
+    int n = 0, pages = charpack_pages();
+    for (int p = 0; p < 4; p++) n += charpack_hint(p, lines[n], sizeof lines[0]);
+    if ((!n && pages < 2) || !init_gl()) return;
+    begin(w, h);
+    float k = (float)h / 720.0f, px = 1.6f * k, lh = 7 * px + 10 * k;
+    int tw, th;
+    unsigned t = pages > 1 ? pause_art_char_hint(charpack_page() + 1, pages, &tw, &th) : 0;
+    if (t) {
+        /* between the rows of faces and the P1 box (a gap below the faces; the box's P1 tab is
+         * to the left of the words), the cup page's size (the picture is twice the game's 640x480
+         * units); its letters' middle 38/64 down the picture */
+        const float par[4] = {0, 0, 1, 1};
+        float s = (float)h / 960.0f, iw = (float)tw * s, ih = (float)th * s;
+        flush();
+        glBindTexture(GL_TEXTURE_2D, t);
+        quad(((float)w - iw) / 2, 325 * k - ih * 38 / 64, iw, ih, 0xFFFFFFFFu, 0xFFFFFFFFu, SH_IMAGE, 0, 0, par);
+        flush();
+        glBindTexture(GL_TEXTURE_2D, s_font ? uifont_texture() : 0);
+    }
+    float right = ((float)w + (float)h * 4.0f / 3.0f) / 2 - 28 * k, y = (float)h - 30 * k - lh * (float)n;
+    for (int i = 0; i < n; i++, y += lh) {
+        float tw = text_w(lines[i], px);
+        round_box(right - tw - 16 * k, y, tw + 16 * k, lh - 2 * k, 6 * k, 0x000000B8u);
+        text(right - tw - 8 * k, y + 4 * k, px, 0xFFFFFFFFu, lines[i]);
     }
     end();
 }
