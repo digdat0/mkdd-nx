@@ -18,6 +18,9 @@
 #include "../runtime/plat.h"
 #include "../runtime/rt.h"
 
+#if __has_include("mkdd_version.h")
+#include "mkdd_version.h" /* MKDD_VERSION, written by CMakeLists.txt */
+#endif
 #ifndef MKDD_VERSION
 #define MKDD_VERSION "0.0.0"
 #endif

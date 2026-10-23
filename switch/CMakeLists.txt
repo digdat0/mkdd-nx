@@ -33,7 +33,18 @@ set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/pause_art_data.S PROPERT
     OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/pause_console.rgba;${CMAKE_CURRENT_SOURCE_DIR}/pause_badges.rgba")
 
 add_executable(MKDD-NX ${SW_SOURCES} ${RT_SOURCES} ${GEN_SOURCES} ${GEN_DIR}/table.c ${CMAKE_CURRENT_SOURCE_DIR}/pause_art_data.S)
-set_property(SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/update.c APPEND PROPERTY COMPILE_DEFINITIONS MKDD_VERSION="${MKDD_VERSION}")
+# The version reaches update.c in a header, rewritten only when it changes: a compile definition
+# would go into the flags file every object depends on, and a bump would rebuild everything.
+set(VERSION_H "${CMAKE_BINARY_DIR}/version/mkdd_version.h")
+set(VERSION_LINE "#define MKDD_VERSION \"${MKDD_VERSION}\"\n")
+set(VERSION_OLD "")
+if(EXISTS "${VERSION_H}")
+    file(READ "${VERSION_H}" VERSION_OLD)
+endif()
+if(NOT VERSION_OLD STREQUAL VERSION_LINE)
+    file(WRITE "${VERSION_H}" "${VERSION_LINE}")
+endif()
+set_property(SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/update.c APPEND PROPERTY INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}/version")
 target_link_libraries(MKDD-NX SDL2 EGL GLESv2 glapi drm_nouveau curl z zstd lzma nx m)
 # Mesa is C++: link with the C++ driver so libstdc++ / libsupc++ come in
 set_target_properties(MKDD-NX PROPERTIES LINKER_LANGUAGE CXX)
