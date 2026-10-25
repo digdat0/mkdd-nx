@@ -35,6 +35,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include "charpack.h"
+#include "gx.h"
 
 #define CP_DRIVERS "MRAM.arc/mram/driver"
 #define CP_ANIMS "ARAM.arc/aram/driveranm"
@@ -97,10 +98,10 @@ static uint32_t s_rnd = 0x9E3779B9u;
 static bool s_chosen[CP_BASES];
 static int s_cursor[4] = {-1, -1, -1, -1};
 static int s_page, s_pages = 1;
-static uint32_t s_select_vi; /* the retrace of the select screen's last frame */
+static uint64_t s_select_gx; /* the game frame (gx_frame_count) of the select screen's last frame */
 static bool s_select_seen;
 
-volatile uint32_t g_char_test, g_char_cycle;
+volatile uint32_t g_char_cycle;
 
 static bool is_dir(const char *p) {
     struct stat st;
@@ -434,12 +435,6 @@ static int variant_at(int c, int k) {
         if (s_var[i].cell == c && --k == 0) return (int)i;
     return -1;
 }
-/* character b's first variant, or -1 */
-static int first_of(int b) {
-    for (unsigned i = 0; i < s_nvar; i++)
-        if (s_var[i].base == b) return (int)i;
-    return -1;
-}
 int charpack_cell_variant(int c) { return c >= 0 && c < CP_BASES && s_page ? variant_at(c, s_page) : -1; }
 int charpack_real_base(int c) {
     int v = charpack_cell_variant(c);
@@ -464,14 +459,11 @@ void charpack_borrow(int b, int v) {
 }
 
 /* The variant kart k's driver d (0 or 1) drives in place of base character b, or -1: the select
- * screen's choice for a player's driver. CHARACTER TEST (the - menu's DEBUG page): 1 the players'
- * drivers, 2 everyone's, each character's first variant. */
+ * screen's choice for a player's driver. */
 int charpack_pick(int kart, int drv, int b, bool human) {
     (void)kart, (void)drv;
     if (b < 0 || b >= CP_BASES) return -1;
-    if (g_char_test == 0) return human ? s_pick[b] : -1;
-    if (g_char_test == 1 && !human) return -1;
-    return first_of(b);
+    return human ? s_pick[b] : -1;
 }
 
 int charpack_pages(void) { return s_pages; }
@@ -528,10 +520,16 @@ void charpack_select_frame(const int cursor[4], const bool chosen[CP_BASES]) {
         }
         s_model[b] = m;
     }
-    s_select_vi = g_vi_count;
+    s_select_gx = gx_frame_count();
     s_select_seen = true;
 }
-bool charpack_select_active(void) { return s_select_seen && g_vi_count - s_select_vi < 10; }
+/* counted in game frames, not time: one slow frame is still the same screen */
+bool charpack_select_active(void) { return s_select_seen && gx_frame_count() - s_select_gx <= 3; }
+/* the end of a select screen frame: a slow one (a page's first models, read from the SD card)
+ * must not look like the screen opened anew next frame (which turns back to the first page) */
+void charpack_select_keep(void) {
+    if (s_select_seen) s_select_gx = gx_frame_count();
+}
 
 /* Player p's line for the select screen while the cell under the cursor shows a variant
  * ("P1  METAL MARIO", "P1  ROBO MARIO  (AS MARIO)"). */

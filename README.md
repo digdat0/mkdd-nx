@@ -12,8 +12,17 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 - Plays the USA release (GM4E01) from an `.iso`, `.gcm`, `.ciso` or `.rvz` disc image.
 - 4:3 or 16:9. In 16:9 the game camera is genuinely wider rather than stretched.
 - Field of view options: Normal, Wide, Wider, Widest, Wideee.
-- Camera options: first person from the driver's seat (three eye heights), rear view on Y, camera
-  height and distance, and a free camera on the right stick that turns 360° around your kart.
+- **Single player battle mode:** Balloon Battle, Shine Thief and Bob-omb Blast against three computer
+  karts, on the game's six arenas and all 24 of MKDD Plus's. The CPUs drive routes built into the app,
+  chase karts and item boxes, aim their items and run when down to their last balloon. See
+  [Battle mode](#battle-mode).
+- **Kart FPV and Driver FPV:** first person with the kart's front in view, or from the driver's eyes.
+  The eye follows the driver's head, so every kart and character sits right; height, forward and
+  tilt are adjustable. Per player, on the right stick click.
+- **Character packs:** extra characters from GameBanana and the MKDD wiki on more select screen
+  pages. See [Character packs](#character-packs).
+- Camera options: rear view on Y, camera height and distance, and a free camera on the right stick
+  that turns 360° around your kart.
 - Texture filtering: 2x, 4x, 8x or 16x anisotropic.
 - Higher  resolution: up to 2x docked (1080p output) and 1.5x handheld, with an Auto mode
   that lowers it only when the frame rate would drop.
@@ -23,8 +32,8 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 - Race HUD options: a MODERN style for 1 to 4 players, MPH or KM/H, and hiding the position, items,
   laps, map, speedometer or race order one by one.
 - Jump button, and 1 to 7 laps per Grand Prix or Versus race.
-- Cheats: no weight classes, any special item for any character, and stronger mini-turbos (fewer
-  sweeps, more speed, longer boosts).
+- Cheats: no weight classes, any special item for any character, stronger mini-turbos (fewer
+  sweeps, more speed, longer boosts, for CPUs too if you like) and perfect starts.
 - In-game updater that installs the latest GitHub release.
 - On-screen FPS counter, and debug logging for bug reports (both under Debug).
 
@@ -43,6 +52,8 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 - The [Mario Kart: Double Dash!! Plus](https://mkdd.org/wiki/Mario_Kart:_Double_Dash!!_Plus) mod (v3.3 NTSC):
   see [MKDD Plus](#mkdd-plus).
 - The [Retro Track Grand Prix 2.1](https://gamebanana.com/mods/594415) mod: see [Retro Track Grand Prix](#retro-track-grand-prix).
+- Custom characters from [GameBanana](https://gamebanana.com/games/6555) and the
+  [MKDD wiki](https://mkdd.org/wiki/List_of_Custom_Characters/): see [Character packs](#character-packs).
 
 ## Getting started
 
@@ -63,8 +74,9 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
    `.gcm` first, then `.ciso`, then `.rvz`. Swapping an `.iso` for an `.rvz` (or back) is fine: saves,
    settings and HD textures carry over.
 4. Optional: HD textures in `mods/hd/`, the MKDD Plus mod in `mods/plus/`, the Retro Track Grand Prix
-   patch in `mods/` (see [HD textures](#hd-textures), [MKDD Plus](#mkdd-plus) and
-   [Retro Track Grand Prix](#retro-track-grand-prix)).
+   patch in `mods/`, extra characters in `mods/characters/` (see [HD textures](#hd-textures),
+   [MKDD Plus](#mkdd-plus), [Retro Track Grand Prix](#retro-track-grand-prix) and
+   [Character packs](#character-packs)).
 5. Start it from the homebrew menu with **title takeover**: hold **R** while starting any game
    from the HOME menu, then pick MKDD-NX. (The album / applet mode has too little memory.)
 
@@ -75,6 +87,7 @@ sdmc:/switch/MKDD-NX/
     mods/hd/hd-textures.bin  (optional)
     mods/plus/files, sys     (optional: MKDD Plus)
     mods/MKDD RTGP 2.1 Update.xdelta   (optional: Retro Track Grand Prix, installed on the next start)
+    mods/characters/         (optional: character packs)
 ```
 
 The first start takes longer while shaders are compiled; later starts reuse them. Press **-** at
@@ -98,9 +111,10 @@ then wireless controllers as the system numbers them (so handheld + one Pro Cont
 order and single Joy-Cons. Connects and disconnects are logged (`pad:` lines in `mkdd.log`).
 
 - **Handheld, Pro Controller, Joy-Con pair:** A/B/X/Y as on the GameCube, + = Start,
-  ZR = R (drift), L/R = Z, left stick (or the D-pad) = control stick. ZL = jump (when Game >
-  Jump is on), Y = rear view in races, right stick click = first person on and off, right stick
-  sideways = free camera. Remappable in the menu (applies to all of these).
+  ZR = R (drift), R = Z, left stick (or the D-pad) = control stick. ZL = jump (when Game >
+  Jump is on), L or Y = rear view in races, right stick click = Kart FPV on and off, right stick
+  sideways = free camera. Remappable in the menu (applies to all of these; **Reset** on the Button
+  mapping page gives these defaults again). In menus L and R are both Z, as before.
 - **Single Joy-Con, held sideways:** the four face buttons sit where a GameCube pad's A (right),
   B (bottom), X (top) and Y (left) are; SL = L, SR = R, the top shoulder or stick click = Z,
   + (right Joy-Con) or ZL / - (left Joy-Con) = Start. Player 1 on a single right Joy-Con opens
@@ -116,12 +130,12 @@ also opens by itself when a controller in use disconnects; reconnect it and clos
 
 | Option | |
 |---|---|
-| Graphics | the page below |
-| Controls | **Sync controllers** (the system screen for pairing, the player order and single Joy-Cons) and **Button mapping** (each Switch button's GameCube button or action: first person, jump, camera reset) |
-| Camera | the page below |
 | Game | the page below |
+| Graphics | the page below |
+| Camera | the page below |
+| Controls | **Button mapping** (each Switch button's GameCube button or action: Driver FPV, Kart FPV, jump, camera reset; A, B, R, X and Start always keep a button, the rest may have none) and **Sync controllers** (the system screen for pairing, the player order and single Joy-Cons) |
+| Mods | **Level pack**: which installed mod to play, PLUS or RTGP, or OFF for the standard game (NONE FOUND when no mod is installed; see [MKDD Plus](#mkdd-plus) and [Retro Track Grand Prix](#retro-track-grand-prix)). **HD textures** (Off (default) / On when `mods/hd/hd-textures.bin` is in the app folder (see [HD textures](#hd-textures)), else NO PACK), **Single player battle mode** (On (default) / Off: computer karts fill battles up to 4 karts; with one player, Battle is on the mode page) and **Restart now**, which starts the game again to apply a Level pack change (unsaved race progress is lost) |
 | Cheats | the page below |
-| Mods | **Mod**: which installed mod to play, PLUS or RTGP, or OFF for the standard game (NONE FOUND when no mod is installed; see [MKDD Plus](#mkdd-plus) and [Retro Track Grand Prix](#retro-track-grand-prix)). **HD textures** (Off (default) / On when `mods/hd/hd-textures.bin` is in the app folder (see [HD textures](#hd-textures)), else NO PACK) and **Restart now**, which starts the game again to apply a Mod change (unsaved race progress is lost) |
 | Exit game | back to the homebrew menu. **Update** and **Debug** sit on the same row: press right |
 | Update | shows this version and the latest release; **Check for updates** downloads and installs the newest `MKDD-NX.nro`, then **Restart now** starts it (save your progress first). The button reads UPDATE: NEW when there is one |
 | Debug | the page below |
@@ -141,7 +155,7 @@ also opens by itself when a controller in use disconnects; reconnect it and clos
 
 | Option | |
 |---|---|
-| Camera view | Normal (the game's chase camera) or Driver low / mid / high: first person from the driver's seat, in 1 to 4 player races. Player 1's setting; each player's right stick click switches their own camera between Normal and Driver high. Y looks behind you in any view |
+| Camera view | Normal (the game's chase camera), Driver FPV (first person from the driver's eyes) or Kart FPV (first person with the kart's front in view), in 1 to 4 player races. Both follow the driver's head, so every kart and character gets its own eye. With either chosen, A opens its page: eye height and eye forward (steps of 5, from the head), tilt (degrees down) and defaults, also in settings.ini (`driver_eye_up`, `driver_eye_forward`, `driver_tilt`, `kart_eye_up`, `kart_eye_forward`, `kart_tilt`). Player 1's setting; each player's right stick click switches their own camera between Normal and Kart FPV (Driver FPV can get a button too, in Button mapping). Y looks behind you in any view |
 | Camera height | Low / Medium / Regular (default, the game's) / High: the chase camera's height; it never goes below the kart |
 | Camera distance | Very close / Close / Regular (default, the game's) / Far / Very far: how far the chase camera sits behind the kart |
 | Field of view | Normal / Wide / Wider / Widest / Wideee race camera, kept separately for 4:3 (default Normal) and 16:9 (default Wider); the row changes the current display mode's |
@@ -154,9 +168,8 @@ also opens by itself when a controller in use disconnects; reconnect it and clos
 | Race HUD | Classic (the game's) or Modern: smaller pieces in the screen corners, 1 to 4 players |
 | Speed | the speedometer in MPH or KM/H |
 | HUD assets | turn each part of the race HUD on or off (position, items, laps, map, speedometer, race order; left/right turns them all on or off), 1 to 4 players |
-| Jump | Off / Low / Mid (default) / High: a hop on the Jump button (ZL by default) that keeps your speed and follows the slope |
+| Jump height | Off / Low / Mid (default) / High: a hop on the Jump button (ZL by default) that keeps your speed and follows the slope |
 | Rumble strength | Off / Low (default) / High; the game's own Rumble option must be on too |
-| Laps | Normal (the course's) or 1 to 7 laps, for Grand Prix and Versus races from the next race; Time Trial and Battle keep theirs |
 
 **Cheats**
 
@@ -169,6 +182,8 @@ also opens by itself when a controller in use disconnects; reconnect it and clos
 | Mini-turbo speed | up to +100% boost speed (the speed cap rises with it while boosting) |
 | Mini-turbo length | up to 4x as long a boost |
 | Mini-turbo for CPUs | the computer's karts get the three mini-turbo settings above too (off: only the players') |
+| Perfect starts | every player gets the start boost at GO, without timing the button (holding it through the countdown no longer burns out) |
+| Laps | Normal (the course's) or 1 to 7 laps, for Grand Prix and Versus races from the next race; Time Trial and Battle keep theirs |
 
 **Debug**
 
@@ -179,6 +194,65 @@ also opens by itself when a controller in use disconnects; reconnect it and clos
 | Profiler | Off / On: a sampling profile (`logs/mkdd_prof.bin`) for performance reports, from the next start |
 
 Settings are saved to `config/settings.ini`.
+
+## Battle mode
+
+The GameCube game only has battles for 2 to 4 players. MKDD-NX adds **single player battles** against
+three computer karts (on by default: **Mods > Single player battle mode**). With one player, the mode
+page shows **Battle**; pick Balloon Battle, Shine Thief or Bob-omb Blast and an arena as usual. In 2
+and 3 player battles, computer karts fill the empty places up to 4.
+
+- **Arenas:** the game's six and all 24 of MKDD Plus's.
+- **The CPUs** drive routes made for each arena (the game has none for battles), built into the
+  `.nro`: nothing to install. Each battle they take different routes. They go for item boxes, chase
+  and aim at the nearest karts (shells forward or backward, bananas behind them), steal the Shine,
+  and run when they're down to their last balloon. Smaller arenas are fiercer, bigger ones calmer.
+- **Your own routes:** `tools/route_editor.py` edits them on a PC, and a `routes/<key>.txt` in the
+  app folder is used instead of the built-in route for that arena. See
+  [docs/BATTLE_ROUTES.md](docs/BATTLE_ROUTES.md).
+
+## Character packs
+
+Extra characters made by the community play in MKDD-NX on more pages of the character select screen.
+Each one replaces a character's model, face and name, and plays with that character's weight, stats,
+voice and special item. Your disc image and saves are not changed.
+
+**Where to get them:** [Mario Kart: Double Dash!! on GameBanana](https://gamebanana.com/games/6555)
+(Skins and Characters) and the MKDD wiki's
+[List of Custom Characters](https://mkdd.org/wiki/List_of_Custom_Characters/). Download and unzip
+them on a PC. Most come as a folder for the MKDD Patcher, with `modinfo.ini` and a `files` folder.
+
+**The easy way: the MKDD-NX Characters app** (`MKDD-NX-Characters.exe` from the releases, Windows,
+nothing to install):
+
+1. Start it. **Add mod or folder of mods…** (or drop folders on the window) adds the characters you
+   downloaded: one mod, or a folder holding many. Mods the game can't use are rejected, with the reason.
+2. Optional: **Disc image** (your own `.iso`): each model is checked against the character it replaces.
+   The disc image is only read.
+3. For each character, check or change **Name**, **On** (the character it plays as) and **Cell** (where
+   it shows on the select screen); **Author** and **Source link** are kept with it.
+4. **Output folder:** `sdmc:/switch/MKDD-NX/mods/characters/` on the SD card (or a folder on the PC to
+   copy there), then **Export**. Each character becomes its own folder with a `character.ini`.
+
+**By hand:** copy a pack's `files` folder (the one the MKDD Patcher uses) into
+`mods/characters/<pack name>/`. Every driver model in it becomes a character. A `names.txt` next to
+`files` names them, one line each, for example `nokonoko=SHY GUY`.
+
+```
+sdmc:/switch/MKDD-NX/mods/characters/
+    shyguy/            (made by the app)
+        character.ini
+        driver.bmd
+        face.bti, map.bti, name.bti   (optional)
+    Some Pack/         (copied by hand)
+        files/MRAM.arc/mram/driver/nokonoko/driver.bmd ...
+        names.txt      (optional)
+```
+
+**In the game:** on the character select screen, **X** and **Y** turn the pages; page 1 is the game's
+20. A cell with no character on that page is dimmed. Random picks from every page. Up to 128
+characters. A missing map icon or name tag is made from the face and the name. A race never has the
+same character twice, so a character and the one it plays as can't race together.
 
 ## HD textures
 
@@ -260,7 +334,7 @@ as it is, and the standard game stays playable.
    Copy it as it is: don't delete `Course`, `CourseName`, `Movie` or `StaffGhosts` (the mod's
    folders don't have them; the steps for building a modded ISO on a PC don't apply here).
 3. Start the game: with the mod in `mods/plus/`, MKDD-NX plays Plus. To play the standard game
-   again, set **Mod** to OFF on the menu's **Mods** page and choose **Restart now** (or move or
+   again, set **Level pack** to OFF on the menu's **Mods** page and choose **Restart now** (or move or
    rename the `plus` folder). If a mod file is missing, the standard game starts
    instead and `logs/mkdd.log` names the file.
 
@@ -301,7 +375,7 @@ your disc image, and the standard game stays playable.
 4. When it's done, the game offers to delete the `.xdelta` file: it is no longer needed, and deleting it
    frees about 2 GB. Then the game starts in RTGP.
 
-To switch between RTGP, Plus and the standard game, change **Mod** on the menu's **Mods** page and
+To switch between RTGP, Plus and the standard game, change **Level pack** on the menu's **Mods** page and
 choose **Restart now**. RTGP keeps its own saves in `save/rtgp/`, apart from the standard game's and
 Plus's (the first time, the game offers to start from a copy of your standard save). In a cup, X and Y
 switch between the mod's course sets. Only version 2.1 works; a patch for another version or another
@@ -340,7 +414,12 @@ come from the [doldecomp/mkdd](https://github.com/doldecomp/mkdd) decompilation 
   `tools/hdtex_pack.py` converts (not included here).
 - **That1loser4**, creator of [Mario Kart: Double Dash!! Plus](https://mkdd.org/wiki/Mario_Kart:_Double_Dash!!_Plus),
   and everyone who contributed courses to it. The mod is not included here: get it from its own release.
-- The creators of [Retro Track Grand Prix](https://gamebanana.com/mods/594415). The mod is not included here: get it from its own page.
+- **Portable Productions**, creators of [Mario Kart: Double Dash!! Retro Track Grand Prix](https://gamebanana.com/mods/594415),
+  with additional credits to **ShaneMGD**, **LMFinish**, **AdolescentSeagull**, **Tarsa**, **Yoshi2** and
+  **Cristian64**. The mod is not included here: get it from its own page.
+- The creators of the custom characters on [GameBanana](https://gamebanana.com/games/6555) and the
+  [MKDD wiki](https://mkdd.org/wiki/List_of_Custom_Characters/). None are included here: each
+  character's author is kept in its `character.ini` (or its pack's `modinfo.ini`).
 - **realneonplayz** on [SteamGridDB](https://www.steamgriddb.com/), for the app icon.
 
 The code in this repository is released under the MIT licence (`LICENSE`). Mario Kart:

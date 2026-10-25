@@ -14,3 +14,6 @@ __pycache__/
 *.gci
 mkdd_prof*.bin
 dist/
+# battle routes: the networks pictured (tools/battle_routes.py) and the editor's backups
+routes/net/
+routes/*.bak

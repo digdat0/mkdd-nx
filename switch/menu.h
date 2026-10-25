@@ -4,8 +4,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* The GameCube buttons, then the port's own button actions (MAP_FP: first person on / off) */
-enum { GC_A, GC_B, GC_X, GC_Y, GC_Z, GC_L, GC_R, GC_START, GC_COUNT, MAP_FP = GC_COUNT, MAP_JUMP, MAP_CAM_RESET, MAP_COUNT };
+/* The GameCube buttons, then the port's own button actions (MAP_FP: DRIVER HIGH first person on /
+ * off, MAP_KFP: KART FPV on / off) */
+enum { GC_A, GC_B, GC_X, GC_Y, GC_Z, GC_L, GC_R, GC_START, GC_COUNT, MAP_FP = GC_COUNT, MAP_JUMP, MAP_CAM_RESET, MAP_KFP, MAP_COUNT };
 typedef struct {
     bool wide;         /* 16:9: wider game camera, race HUD at the screen edges, menus 4:3 in the middle
                           (else 4:3 pillarboxed) */
@@ -13,13 +14,14 @@ typedef struct {
     int rumble;        /* 0 off, 1 low, 2 high */
     bool unlock_all;   /* every character, kart, cup and mode, this session only (never saved) */
     bool any_kart;     /* kart screen: no weight classes, every unlocked kart for any drivers */
-    int char_test;     /* DEBUG CHARACTER TEST: character pack variants, 0 off, 1 players, 2 everyone (never saved) */
     int special_mode;  /* SPECIAL ITEMS: 0 normal, 1 any (every character as Petey / King Boo), 2 custom */
     int special[20];   /* custom, by character ID - 1: SPECIAL_NAMES index (9 = any) */
     int mt_sweeps;     /* MINI-TURBO SWEEPS: drift stages to blue sparks, 3 (the game's), 2 or 1 */
     int mt_speed;      /* MINI-TURBO SPEED: MT_SPEEDS index, 0 the game's */
     int mt_length;     /* MINI-TURBO LENGTH: MT_LENGTHS index, 0 the game's */
     bool mt_cpu;       /* MINI-TURBO FOR CPUS: the three above for the computer's karts too */
+    bool perfect_start; /* PERFECT STARTS: every player's kart gets the start boost */
+    bool battle_cpus;  /* MODS > SINGLE PLAYER BATTLE MODE (default on): battles filled up to 4 karts with computer karts */
     int jump;          /* JUMP: 0 off, 1-3 low / mid / high hop on the JUMP button (map[MAP_JUMP]) */
     int laps;          /* LAPS: Grand Prix and Versus races, 0 the course's own, else 1-7 */
     int free_cam;      /* FREE CAMERA: 0 off, the right stick turns the race camera round the kart and
@@ -36,8 +38,9 @@ typedef struct {
     unsigned hud_hide; /* race HUD elements turned off, single player: HUD_* bits (runtime/rt.h) */
     int hud_style;     /* race HUD, single player: 0 classic (the game's), 1 modern (runtime native.c MODERN, the default) */
     bool speed_kmh;    /* speedometer in km/h; mph (the US game's) when false */
-    int camera;        /* race camera, 1 and 2 player: 0 the game's, 1-3 first person, eye low / mid / high */
-    int fp_forward;    /* first person: eye this far ahead of the kart's centre (settings.ini only) */
+    int camera;        /* race camera (CAMERA VIEW): 0 the game's, 1 DRIVER FPV, 2 KART FPV (first person, the kart's front in view) */
+    int drv_up, drv_forward, drv_tilt; /* DRIVER FPV: eye above and ahead of the driver's head, degrees down */
+    int kart_up, kart_forward, kart_tilt; /* KART view: eye above and ahead of the driver's head, degrees down (settings.ini only) */
     bool profiler;     /* sampling profiler (logs/mkdd_prof.bin), from the next start */
     int docked_res;    /* docked (TV), 1080p output: DOCKED_NATIVE (the game's 640x480-ish frame), _2X, _1_5X or
                         * _AUTO (2x, stepping down while the GPU can't keep up). Values kept from when it was on/off. */

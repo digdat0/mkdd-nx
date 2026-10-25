@@ -9,6 +9,10 @@
 #include "../runtime/gx.h"
 #include "../runtime/rt.h"
 #include "../switch/tev_gen.h"
+#include "../runtime/route.h"
+
+/* no built-in battle routes here (the Switch build embeds them): routes/<key>.txt only */
+const struct route_file route_builtin[] = {{0}};
 
 extern float g_aspect_scale;
 static Ctx s_boot;

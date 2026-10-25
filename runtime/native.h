@@ -26,6 +26,25 @@
 
 #define NATIVE_LIST(X) \
     X(changeKart__9SceneMenuFiiii, "rrrrr", 'r', 1) \
+    X(FUN_8018c878, "rrrrrr", '-', 1) \
+    X(loadCrsData__6CourseFb, "rr", '-', 1) \
+    X(FUN_802b1f60, "", 'r', 1) \
+    X(FUN_80226f1c, "rrr", 'r', 1) \
+    X(FUN_802b2174, "rr", 'r', 0) \
+    X(FUN_802be4cc, "r", '-', 1) \
+    X(FUN_802be8d4, "rr", '-', 1) \
+    X(comebackRescure__13RivalBodyCtrlFP7CLPointb, "rrr", '-', 1) \
+    X(calc__10GeoItemBoxFv, "r", '-', 1) \
+    X(doItemCtrl__13RivalItemCtrlFv, "r", '-', 1) \
+    X(FUN_802d5e28, "r", '-', 1) \
+    X(__ct__11BombStart2DFP7JKRHeap, "rr", 'r', 1) \
+    X(doSterrCtrl__13RivalBodyCtrlFv, "r", '-', 1) \
+    X(mode_init__9SceneMenuFv, "r", '-', 1) \
+    X(mode__9SceneMenuFv, "r", '-', 1) \
+    X(mode_end__9SceneMenuFv, "r", '-', 1) \
+    X(setRaceData__9SceneMenuFv, "r", '-', 1) \
+    X(getCharSel__9SceneMenuFRiRi, "rrr", '-', 1) \
+    X(FUN_801f1cf4, "r", '-', 1) \
     X(getSpecialKind__7ItemObjFRCiRCUc, "rr", 'r', 0) \
     X(IsSpecialCharacter__10ItemObjMgrFl, "r", 'r', 0) \
     X(PSMTXCopy, "rr", '-', 0) \

@@ -24,6 +24,7 @@ static void lock(void) {
     pmutex_lock(&s_lock);
 }
 
+#define LOG_LINES 50000u /* mkdd.log's lines per run (about 6 MB) */
 void diag_set_log_file(const char *path) {
     lock();
     plat_mkdirs_for(path);
@@ -58,7 +59,12 @@ void rt_log(const char *fmt, ...) {
     for (unsigned i = 0; i < s_nseen; i++)
         if (s_seen_hash[i] == h) { s_seen_count[i]++; pmutex_unlock(&s_lock); return; }
     if (s_nseen < MAX_SEEN) { s_seen_hash[s_nseen] = h; s_seen_count[s_nseen++] = 1; }
-    if (s_lines++ < 20000) {
+    if (s_lines == LOG_LINES) {
+        s_lines++;
+        if (s_log) fprintf(s_log, "[%.3f] log: %u lines, the rest of this run not logged\n", (double)plat_now_ns() / 1e9, LOG_LINES);
+    }
+    if (s_lines < LOG_LINES) {
+        s_lines++;
         double t = (double)plat_now_ns() / 1e9;
         fprintf(stderr, "[mkdd %.3f] %s\n", t, msg);
         if (s_log) fprintf(s_log, "[%.3f] %s\n", t, msg);

@@ -31,7 +31,9 @@ enum { MG_NONE, MG_PLACE, MG_ITEMS, MG_LAP, MG_TIME, MG_MAP, MG_ORDER, MG_SPEED,
        /* two players (p2_race.blo, top / bottom screens): each player's pieces, the shared map and order */
        MG2_PLACE1, MG2_ITEMS1, MG2_LAP1, MG2_TIME1, MG2_PLACE2, MG2_ITEMS2, MG2_LAP2, MG2_TIME2, MG2_MAP, MG2_ORDER,
        /* three and four players (p4_race.blo, quarters): each player's pieces (player p: + 3p), the map */
-       MG4_PLACE1, MG4_ITEMS1, MG4_LAP1, MG4_MAP = MG4_PLACE1 + 12, MG_COUNT };
+       MG4_PLACE1, MG4_ITEMS1, MG4_LAP1, MG4_MAP = MG4_PLACE1 + 12,
+       MG_MAP_BATTLE, /* one player's battle: the map lower, below the Shine Thief's shine */
+       MG_COUNT };
 typedef struct { float ox, oy, nx, ny, s; uint32_t zone; } HudMove;
 extern const HudMove g_hud_move[MG_COUNT];
 #define XV_REC_MASK 0x0FFFFFFFu

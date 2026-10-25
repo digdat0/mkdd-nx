@@ -188,13 +188,12 @@ int charpack_page(void);                  /* 0 the game's 20 */
 void charpack_page_step(int dir);
 void charpack_select_frame(const int cursor[4], const bool chosen[CP_BASES]);
 bool charpack_select_active(void);
+void charpack_select_keep(void); /* the end of a select screen frame */
 bool charpack_hint(int player, char *out, size_t n);
 void charpack_race_begin(void);
 void charpack_loaded(int base, int variant);
 uint32_t charpack_file(int variant, const char *file, uint32_t *size); /* MEM1 address, 0: none */
 uint8_t *charpack_orig(int base, const char *file, uint32_t *size); /* the game's own, malloc'd */
-/* CHARACTER TEST (the - menu's DEBUG page): 0 off, 1 the players' drivers, 2 every driver. */
-extern volatile uint32_t g_char_test;
 /* Select screen page buttons, set by the front end, taken by SceneMenu::character: bit p player p's
  * next page (ZR / X), bit 4 + p previous (ZL / Y). */
 extern volatile uint32_t g_char_cycle;
@@ -236,9 +235,15 @@ extern volatile uint32_t g_hud_modern, g_speed_kmh;
 /* Diagnostics: the race HUD's pictures logged every 300 race frames from this one (0: never). */
 extern volatile uint32_t g_hud_log;
 /* First-person race camera, 1 to 4 players (native.c FUN_802b6bd4):
- * bit v = view v's (player v + 1's). g_fp_up is view 0's eye height, the others' FP_UP_OTHERS. */
+ * bit v = view v's (player v + 1's). DRIVER FPV: the eye g_fp_up above and g_fp_fwd ahead of the
+ * driver's head, g_fp_tilt radians down (player 1's settings, every view). */
 extern volatile uint32_t g_first_person;
-extern float g_fp_up, g_fp_fwd, g_fp_look;
+extern float g_fp_up, g_fp_fwd, g_fp_tilt, g_fp_look;
+/* KART view (CAMERA VIEW, player 1's): bit v = view v's first person keeps its kart (not the
+ * characters) drawn, from g_kart_up above and g_kart_fwd ahead of the driver's head, looking g_kart_tilt
+ * radians down so the kart's front shows at the bottom of the screen */
+extern volatile uint32_t g_fp_kart;
+extern float g_kart_up, g_kart_fwd, g_kart_tilt;
 /* Look back (held by the front end): bit v turns view v's race camera around (view = player, any
  * number of screens). g_cam_frames[v] counts view v's race camera updates, so the front end knows
  * when that player's Y is a look-back button. */
@@ -256,6 +261,8 @@ extern volatile float g_cam_height;
 extern volatile float g_cam_dist;
 /* Kart screen: every unlocked kart for any pair of drivers, whatever their weight class (nonzero = on). */
 extern volatile uint32_t g_any_kart;
+extern volatile uint32_t g_battle_cpus; /* SINGLE PLAYER BATTLE MODE: battles get computer karts up to 4 */
+extern volatile uint32_t g_perfect_start; /* PERFECT STARTS (cheats): every player's kart gets the start boost */
 /* SPECIAL ITEMS, by character ID (1-20): 0 the character's own special, an item kind (fireballs 7,
  * heart 0x11, egg 0xe, chain chomp 0x15, golden mushroom 8, triple shells 0xb, giant banana 4,
  * Bowser shell 1, bob-omb 0xc) or SPECIAL_ANY (all of them, as Petey and King Boo), from the next race. */

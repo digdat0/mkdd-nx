@@ -906,6 +906,7 @@ const HudMove g_hud_move[MG_COUNT] = {
     [MG_LAP] = {27, 384, 204.5f, 6, 0.6f, 4},   /* 27-132 x 384-428: ends at 267.5 */
     [MG_TIME] = {422, 23, 283.5f, 7.5f, 0.75f, 4}, /* digits 422-582 x 25-49 ("TIME" not drawn): 283.5-403.5, top with the word LAP */
     [MG_MAP] = {602, 40.8f, 610, -12, 0.7f, 6},    /* drawn 457-602 x 41-331, the course's picture starts lower */
+    [MG_MAP_BATTLE] = {602, 40.8f, 610, 128, 0.7f, 6}, /* 128-331: between the shine (to 124) and the speed (from 360) */
     [MG_ORDER] = {19, 114, 10, 263, 0.55f, 5},  /* rows 62.3 apart from 114; a 5th ends at 440 */
     [MG_SPEED] = {601, 446, 612, 455, 0.8f, 6}, /* 484-601 x 328-446 (its lowest block 436) */
     /* two players, p2_race.blo: player 1 at the top of the top screen, player 2 at the bottom of the

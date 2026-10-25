@@ -657,23 +657,34 @@ static void update_pads(void) {
             if ((s.button & PAD_TRIGGER_R) && !s.trigger_r) s.trigger_r = 255;
             if ((s.button & PAD_TRIGGER_L) && !s.trigger_l) s.trigger_l = 255;
         }
-        /* FIRST PERSON (menu.c ACTIONS, a full controller's button): player 1's camera between
-         * NORMAL and first person, DRIVER HIGH (CAMERA VIEW 3), saved with the next settings
+        /* DRIVER FPV and KART FPV (menu.c ACTIONS, a full controller's button): player 1's
+         * camera between NORMAL and that view (CAMERA VIEW 1 / 2), saved with the next settings
          * change, not now (an SD card write mid-race can stall a frame); players 2-4 each their
-         * own (bit p of g_first_person, this session only), player 1's CAMERA VIEW untouched */
+         * own (bit p of g_first_person and g_fp_kart, this session only), player 1's CAMERA VIEW
+         * untouched */
         {
-            static bool was_fp[4];
-            bool was = was_fp[p];
+            static bool was_fp[4], was_kfp[4];
+            bool was = was_fp[p], kwas = was_kfp[p];
             int src = s_player_src[p];
             u32 st = s_player_style[p];
             bool full = !(st & HidNpadStyleTag_NpadGc) &&
                         (!(st & (HidNpadStyleTag_NpadJoyLeft | HidNpadStyleTag_NpadJoyRight)) ||
                          (st & (HidNpadStyleTag_NpadJoyDual | HidNpadStyleTag_NpadFullKey | HidNpadStyleTag_NpadHandheld)));
-            bool on = src >= 0 && !menu && full && drive == 1 &&
-                      (padGetButtons(&s_src[src]) & map[MAP_FP] & (&s_src[src] == p1 ? ~menu_blocked() : ~0ull));
-            if (on && !was && p == 0) g_set.camera = g_set.camera ? 0 : 3;
-            else if (on && !was) __atomic_xor_fetch(&g_first_person, 1u << p, __ATOMIC_RELAXED);
-            was_fp[p] = on;
+            u64 pb = src >= 0 && !menu && full && drive == 1
+                         ? padGetButtons(&s_src[src]) & (&s_src[src] == p1 ? ~menu_blocked() : ~0ull) : 0;
+            bool on = pb & map[MAP_FP], kon = pb & map[MAP_KFP];
+            u32 bit = 1u << p;
+            bool fp = g_first_person & bit, kart = g_fp_kart & bit;
+            if (on && !was) {
+                if (p == 0) g_set.camera = g_set.camera == 1 ? 0 : 1;
+                else if (fp && !kart) __atomic_and_fetch(&g_first_person, ~bit, __ATOMIC_RELAXED);
+                else __atomic_or_fetch(&g_first_person, bit, __ATOMIC_RELAXED), __atomic_and_fetch(&g_fp_kart, ~bit, __ATOMIC_RELAXED);
+            } else if (kon && !kwas) {
+                if (p == 0) g_set.camera = g_set.camera == 2 ? 0 : 2;
+                else if (fp && kart) __atomic_and_fetch(&g_first_person, ~bit, __ATOMIC_RELAXED), __atomic_and_fetch(&g_fp_kart, ~bit, __ATOMIC_RELAXED);
+                else __atomic_or_fetch(&g_first_person, bit, __ATOMIC_RELAXED), __atomic_or_fetch(&g_fp_kart, bit, __ATOMIC_RELAXED);
+            }
+            was_fp[p] = on, was_kfp[p] = kon;
         }
         /* REAR VIEW (GameCube Y, menu.c ACTIONS): while this player's race camera runs (its
          * view updated in the last few polls; view = player, any number of screens), their Y
@@ -1072,7 +1083,6 @@ int main(int argc, char **argv) {
         g_hud_modern = g_set.hud_style == 1;
         g_speed_kmh = g_set.speed_kmh;
         g_any_kart = g_set.any_kart;
-        g_char_test = (uint32_t)g_set.char_test;
         g_laps = (uint32_t)g_set.laps;
         {
             static const float HEIGHTS[4] = {0.45f, 0.7f, 1.0f, 1.5f};
@@ -1082,11 +1092,15 @@ int main(int argc, char **argv) {
         }
         cheats_apply();
         g_hud_log = g_set.logging ? 600 : 0; /* the race HUD in the log too (bug reports) */
-        static const float FP_UP[4] = {0, 70.0f, 100.0f, 140.0f}; /* CAMERA: eye height above the kart's centre */
-        if (g_set.camera & 3) __atomic_or_fetch(&g_first_person, 1u, __ATOMIC_RELAXED);
+        int cv = g_set.camera % 3; /* CAMERA VIEW: NORMAL, DRIVER FPV, KART FPV */
+        if (cv) __atomic_or_fetch(&g_first_person, 1u, __ATOMIC_RELAXED);
         else __atomic_and_fetch(&g_first_person, ~1u, __ATOMIC_RELAXED);
-        g_fp_up = FP_UP[g_set.camera & 3];
-        g_fp_fwd = (float)g_set.fp_forward;
+        if (cv == 2) __atomic_or_fetch(&g_fp_kart, 1u, __ATOMIC_RELAXED);
+        else __atomic_and_fetch(&g_fp_kart, ~1u, __ATOMIC_RELAXED);
+        g_fp_up = (float)g_set.drv_up, g_fp_fwd = (float)g_set.drv_forward;
+        g_fp_tilt = (float)(g_set.drv_tilt < -45 ? -45 : g_set.drv_tilt > 45 ? 45 : g_set.drv_tilt) * 0.017453293f;
+        g_kart_up = (float)g_set.kart_up, g_kart_fwd = (float)g_set.kart_forward;
+        g_kart_tilt = (float)(g_set.kart_tilt < -45 ? -45 : g_set.kart_tilt > 45 ? 45 : g_set.kart_tilt) * 0.017453293f;
         render_set_hud43(wide);
         render_set_hd(g_set.hd_textures);
         static const float ANISO[5] = {1, 2, 4, 8, 16};

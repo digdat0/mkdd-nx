@@ -78,6 +78,18 @@ static const char *const BAR_MORE[BAR_COUNT] = {"CUPS", "COURSES", "STAGES"};
  * it is drawn RANDOM_DY lower, centred in the gap between the cups and the course box. */
 #define RND_ARC "SceneData/English/courseselect.arc"
 enum { RND_PLUS = BAR_FIRST + BAR_COUNT, RND_WORD, RND_END };
+/* MKDD Plus's stage page: each arena set's first picture (mapselect.arc b<set>ttlemapsnap1.bti, a
+ * small CMPR) has the set painted on it, "1/5" in white over the top right corner. It is shown with
+ * the number filled in from around it, and the stage bar's hint line ends in "(1/5)" instead,
+ * the set of the picture drawn last. */
+#define SNAP_ARC "SceneData/English/mapselect.arc"
+#define SNAP_SETS 8
+enum { SNAP_FIRST = RND_END, SNAP_END = SNAP_FIRST + SNAP_SETS };
+static uint8_t *s_snap[SNAP_SETS];
+static int s_snap_w[SNAP_SETS], s_snap_h[SNAP_SETS], s_snaps;
+static GLuint s_snap_tex[SNAP_SETS];
+static volatile int s_snap_set = -1;
+static volatile u64 s_snap_tick;
 static const char *const RND_FILES[2] = {"mariofont_number_plus.bti", "mozi_ramdomselect.bti"};
 #define RANDOM_DY 115.0f
 static u64 s_hint_tick; /* when a cup or course bar's hint line was last drawn */
@@ -401,6 +413,88 @@ static void bars_init(void) {
     }
 }
 
+/* the white number (and its dark rim) in the top right of a w x h picture filled in from the pixels
+ * round it; false when there is none */
+static bool snap_unnumber(uint8_t *px, int w, int h) {
+    int x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (int y = 0; y < h / 2; y++)
+        for (int x = w / 3; x < w; x++) {
+            const uint8_t *p = px + ((size_t)y * w + x) * 4;
+            if (p[0] > 215 && p[1] > 215 && p[2] > 215) {
+                if (x < x0) x0 = x;
+                if (x > x1) x1 = x;
+                if (y < y0) y0 = y;
+                if (y > y1) y1 = y;
+            }
+        }
+    if (x1 < 0 || x1 - x0 < 6 || y1 - y0 < 4) return false;
+    x0 = x0 > 3 ? x0 - 3 : 0, y0 = y0 > 3 ? y0 - 3 : 0, x1 = x1 + 3 < w - 1 ? x1 + 3 : w - 1, y1 = y1 + 3 < h - 1 ? y1 + 3 : h - 1;
+    /* the box's pixels first from the pixels round it (each side's nearest, weighted by nearness),
+     * then relaxed to the average of their neighbours, the pixels round the box held */
+    for (int y = y0; y <= y1; y++)
+        for (int x = x0; x <= x1; x++) {
+            float sum[3] = {0, 0, 0}, wt = 0;
+            const int side[4][3] = {{x0 > 0, x0 - 1, y}, {y1 < h - 1, x, y1 + 1}, {y0 > 0, x, y0 - 1}, {x1 < w - 1, x1 + 1, y}};
+            const int far_[4] = {x - x0 + 1, y1 - y + 1, y - y0 + 1, x1 - x + 1};
+            for (int d = 0; d < 4; d++) {
+                if (!side[d][0]) continue;
+                const uint8_t *q = px + ((size_t)side[d][2] * w + side[d][1]) * 4;
+                float f = 1.0f / (float)far_[d];
+                for (int k = 0; k < 3; k++) sum[k] += f * q[k];
+                wt += f;
+            }
+            uint8_t *p = px + ((size_t)y * w + x) * 4;
+            for (int k = 0; wt > 0 && k < 3; k++) p[k] = (uint8_t)(sum[k] / wt);
+        }
+    for (int it = 0; it < 60; it++)
+        for (int y = y0; y <= y1; y++)
+            for (int x = x0; x <= x1; x++) {
+                int n = 0, sum[3] = {0, 0, 0};
+                static const int D[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+                for (int d = 0; d < 4; d++) {
+                    int nx = x + D[d][0], ny = y + D[d][1];
+                    if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                    const uint8_t *q = px + ((size_t)ny * w + nx) * 4;
+                    for (int k = 0; k < 3; k++) sum[k] += q[k];
+                    n++;
+                }
+                uint8_t *p = px + ((size_t)y * w + x) * 4;
+                for (int k = 0; k < 3; k++) p[k] = (uint8_t)((sum[k] + n / 2) / n);
+                p[3] = 255;
+            }
+    return true;
+}
+static void snaps_init(void) {
+    s_snaps = 0;
+    for (int s = 0; s < SNAP_SETS; s++) {
+        char name[32];
+        snprintf(name, sizeof name, "b%dttlemapsnap1.bti", s);
+        uint64_t off;
+        uint32_t size;
+        uint8_t *b = NULL;
+        if (!arc_locate(SNAP_ARC, name, &off, &size) || size > (1u << 20) || !(b = malloc(size))) break;
+        disc_read(off, b, size);
+        uint32_t fmt = b[0], w = (uint32_t)(b[2] << 8 | b[3]), h = (uint32_t)(b[4] << 8 | b[5]), doff = be32(b + 0x1C);
+        size_t bytes = gx_tex_size(fmt, w, h);
+        uint8_t *rgba = bytes && w && h && w <= 256 && h <= 256 && doff + bytes <= size ? malloc((size_t)w * h * 4) : NULL;
+        if (rgba) {
+            GxTexture tx = {0};
+            tx.width = w; tx.height = h; tx.fmt = fmt; tx.raw = b + doff; tx.raw_len = bytes;
+            gx_texture_decode(&tx, rgba);
+            if (snap_unnumber(rgba, (int)w, (int)h)) {
+                s_snap[s] = rgba, s_snap_w[s] = (int)w, s_snap_h[s] = (int)h;
+                gx_subst_register(SNAP_FIRST + s, fmt, w, h, fnv_bytes(FNV_INIT, b + doff, bytes));
+                rgba = NULL;
+            }
+            free(rgba);
+        }
+        free(b);
+        s_snaps = s + 1;
+    }
+    if (s_snaps > 1) rt_log("pause art: %d stage sets (a mod's), their number on the hint line", s_snaps);
+    else s_snaps = 0;
+}
+
 static void kf_init(void);
 void pause_art_init(void) {
     static const char *const LANGS[] = {"English", "French", "German", "Italian", "Spanish", "Japanese"};
@@ -439,6 +533,7 @@ void pause_art_init(void) {
     }
     rt_log("pause art: %u of %d pictures recognised", n, S_COUNT - 1);
     bars_init();
+    snaps_init();
     kf_init();
 }
 
@@ -879,17 +974,21 @@ static float hint_line(uint8_t *dst, const char *more, float x, int by, int bx, 
 static unsigned hint_texture(int i) {
     /* a menu: always the standard buttons, never BUTTON MAPPING's (that is for driving only) */
     const int by = B_Y, bx = B_X;
-    uint64_t key = (uint64_t)by << 8 | (uint64_t)bx;
+    int set = i == 2 && s_snaps && s_snap_set >= 0 ? s_snap_set : -1; /* the stage bar: which set */
+    uint64_t key = (uint64_t)by << 8 | (uint64_t)bx | (uint64_t)(set + 1) << 16;
     if (s_hint_tex[i] && key == s_hint_key[i]) return s_hint_tex[i];
     int aw, ah;
     if (!uifont_atlas(&aw, &ah)) return 0; /* no MarioFont on the disc: no hint */
     uint8_t *px = calloc((size_t)HINT_W * HINT_H, 4);
     if (!px) return s_hint_tex[i];
+    char more[32];
+    if (set >= 0) snprintf(more, sizeof more, "%s (%d/%d)", BAR_MORE[i], set + 1, s_snaps);
+    else snprintf(more, sizeof more, "%s", BAR_MORE[i]);
     /* centred under the bar's words */
-    float w = hint_line(px, BAR_MORE[i], 0, by, bx, false), x = (float)(s_bar_l[i] + s_bar_r[i]) - w / 2;
+    float w = hint_line(px, more, 0, by, bx, false), x = (float)(s_bar_l[i] + s_bar_r[i]) - w / 2;
     if (x < 0) x = 0;
     if (x + w > HINT_W) x = HINT_W - w;
-    hint_line(px, BAR_MORE[i], x, by, bx, true);
+    hint_line(px, more, x, by, bx, true);
     s_hint_tex[i] = upload_rgba(s_hint_tex[i], HINT_W, HINT_H, px);
     free(px);
     s_hint_key[i] = key;
@@ -944,6 +1043,13 @@ bool pause_art_random_shown(void) {
 }
 
 unsigned pause_art_texture(unsigned id) {
+    if (id >= SNAP_FIRST && id < SNAP_END) {
+        int s = (int)(id - SNAP_FIRST);
+        if (!s_snap[s]) return 0;
+        s_snap_set = s, s_snap_tick = armGetSystemTick();
+        if (!s_snap_tex[s]) s_snap_tex[s] = upload_rgba(0, s_snap_w[s], s_snap_h[s], s_snap[s]);
+        return s_snap_tex[s];
+    }
     if (id >= BAR_FIRST && id < BAR_FIRST + BAR_COUNT) return s_bar[id - BAR_FIRST] ? bar_texture((int)(id - BAR_FIRST)) : 0;
     int kind = g_pause_kind;
     if (id == S_MENUPAD) {
