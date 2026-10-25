@@ -20,7 +20,7 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
   The eye follows the driver's head, so every kart and character sits right; height, forward and
   tilt are adjustable. Per player, on the right stick click.
 - **Character packs:** extra characters from GameBanana and the MKDD wiki on more select screen
-  pages. See [Character packs](#character-packs).
+  pages. See [Mods](#mods).
 - Camera options: rear view on Y, camera height and distance, and a free camera on the right stick
   that turns 360° around your kart.
 - Texture filtering: 2x, 4x, 8x or 16x anisotropic.
@@ -48,12 +48,12 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 
 **Mods**
 
-- The [MKDD HD texture pack](https://sites.google.com/view/mkddhd/home-page): see [HD textures](#hd-textures).
+- The [MKDD HD texture pack](https://sites.google.com/view/mkddhd/home-page): see [HD Textures](https://github.com/digdat0/mkdd-nx/wiki/HD-Textures-App).
 - The [Mario Kart: Double Dash!! Plus](https://mkdd.org/wiki/Mario_Kart:_Double_Dash!!_Plus) mod (v3.3 NTSC):
-  see [MKDD Plus](#mkdd-plus).
-- The [Retro Track Grand Prix 2.1](https://gamebanana.com/mods/594415) mod: see [Retro Track Grand Prix](#retro-track-grand-prix).
+  see [MKDD Plus](https://github.com/digdat0/mkdd-nx/wiki/MKDD-Plus).
+- The [Retro Track Grand Prix 2.1](https://gamebanana.com/mods/594415) mod: see [Retro Track Grand Prix](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix).
 - Custom characters from [GameBanana](https://gamebanana.com/games/6555) and the
-  [MKDD wiki](https://mkdd.org/wiki/List_of_Custom_Characters/): see [Character packs](#character-packs).
+  [MKDD wiki](https://mkdd.org/wiki/List_of_Custom_Characters/): see [Characters App](https://github.com/digdat0/mkdd-nx/wiki/Characters-App).
 
 ## Getting started
 
@@ -74,9 +74,7 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
    `.gcm` first, then `.ciso`, then `.rvz`. Swapping an `.iso` for an `.rvz` (or back) is fine: saves,
    settings and HD textures carry over.
 4. Optional: HD textures in `mods/hd/`, the MKDD Plus mod in `mods/plus/`, the Retro Track Grand Prix
-   patch in `mods/`, extra characters in `mods/characters/` (see [HD textures](#hd-textures),
-   [MKDD Plus](#mkdd-plus), [Retro Track Grand Prix](#retro-track-grand-prix) and
-   [Character packs](#character-packs)).
+   patch in `mods/`, extra characters in `mods/characters/` (see [Mods](#mods)).
 5. Start it from the homebrew menu with **title takeover**: hold **R** while starting any game
    from the HOME menu, then pick MKDD-NX. (The album / applet mode has too little memory.)
 
@@ -134,7 +132,7 @@ also opens by itself when a controller in use disconnects; reconnect it and clos
 | Graphics | the page below |
 | Camera | the page below |
 | Controls | **Button mapping** (each Switch button's GameCube button or action: Driver FPV, Kart FPV, jump, camera reset; A, B, R, X and Start always keep a button, the rest may have none) and **Sync controllers** (the system screen for pairing, the player order and single Joy-Cons) |
-| Mods | **Level pack**: which installed mod to play, PLUS or RTGP, or OFF for the standard game (NONE FOUND when no mod is installed; see [MKDD Plus](#mkdd-plus) and [Retro Track Grand Prix](#retro-track-grand-prix)). **HD textures** (Off (default) / On when `mods/hd/hd-textures.bin` is in the app folder (see [HD textures](#hd-textures)), else NO PACK), **Single player battle mode** (On (default) / Off: computer karts fill battles up to 4 karts; with one player, Battle is on the mode page) and **Restart now**, which starts the game again to apply a Level pack change (unsaved race progress is lost) |
+| Mods | **Level pack**: which installed mod to play, PLUS or RTGP, or OFF for the standard game (NONE FOUND when no mod is installed; see [Mods](#mods)). **HD textures** (Off (default) / On when `mods/hd/hd-textures.bin` is in the app folder (see [Mods](#mods)), else NO PACK), **Single player battle mode** (On (default) / Off: computer karts fill battles up to 4 karts; with one player, Battle is on the mode page) and **Restart now**, which starts the game again to apply a Level pack change (unsaved race progress is lost) |
 | Cheats | the page below |
 | Exit game | back to the homebrew menu. **Update** and **Debug** sit on the same row: press right |
 | Update | shows this version and the latest release; **Check for updates** downloads and installs the newest `MKDD-NX.nro`, then **Restart now** starts it (save your progress first). The button reads UPDATE: NEW when there is one |
@@ -207,184 +205,28 @@ and 3 player battles, computer karts fill the empty places up to 4.
   `.nro`: nothing to install. Each battle they take different routes. They go for item boxes, chase
   and aim at the nearest karts (shells forward or backward, bananas behind them), steal the Shine,
   and run when they're down to their last balloon. Smaller arenas are fiercer, bigger ones calmer.
-- **Your own routes:** the MKDD-NX Route Editor from the releases (Windows `.exe` or Mac `.dmg`, nothing to
-  install; or `tools/route_editor.py`) edits them on a computer; see the [Route Editor wiki page](https://github.com/digdat0/mkdd-nx/wiki/Route-Editor). Start it, pick `switch/MKDD-NX/routes` on the SD card
-  (create the folder if there is none), your disc image and MKDD Plus's folder (both optional: they draw
-  the arenas' maps). Each arena opens with its built-in route; **Save** writes `routes/<key>.txt`, which
-  the game then uses instead of the built-in one (delete it to go back). The built-in routes are also in
-  this repository's [routes](routes) folder. See [docs/BATTLE_ROUTES.md](docs/BATTLE_ROUTES.md).
+- **Your own routes:** the MKDD-NX Route Editor (Windows and Mac, from the releases) edits them; a
+  `routes/<key>.txt` in the app folder is used instead of the built-in route for that arena. See the
+  [Route Editor wiki page](https://github.com/digdat0/mkdd-nx/wiki/Route-Editor), and [docs/BATTLE_ROUTES.md](docs/BATTLE_ROUTES.md) for the
+  automatic route maker and the file format. The built-in routes are in the [routes](routes) folder.
 
-## Character packs
+## Mods
 
-Extra characters made by the community play in MKDD-NX on more pages of the character select screen.
-Each one replaces a character's model, face and name, and plays with that character's weight, stats,
-voice and special item. Your disc image and saves are not changed.
+None of these are included: get each one from its own page. They live in `mods/` next to the `.nro`,
+and your disc image is never changed. Step-by-step instructions are on the wiki.
 
-**Where to get them:** [Mario Kart: Double Dash!! on GameBanana](https://gamebanana.com/games/6555)
-(Skins and Characters) and the MKDD wiki's
-[List of Custom Characters](https://mkdd.org/wiki/List_of_Custom_Characters/). Download and unzip
-them on a PC. Most come as a folder for the MKDD Patcher, with `modinfo.ini` and a `files` folder.
+| Mod | What you get | On the SD card | Instructions |
+|---|---|---|---|
+| [MKDD Plus](https://mkdd.org/wiki/Mario_Kart:_Double_Dash!!_Plus) 3.3 NTSC | extra cups, courses and 24 battle arenas | `mods/plus/files`, `sys` | [wiki: MKDD Plus](https://github.com/digdat0/mkdd-nx/wiki/MKDD-Plus) |
+| [Retro Track Grand Prix](https://gamebanana.com/mods/594415) 2.1 | retro cups and courses | `mods/<patch>.xdelta`, installed on the Switch at the next start | [wiki: Retro Track Grand Prix](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix) |
+| [MKDD HD texture pack](https://sites.google.com/view/mkddhd/home-page) (English) | the game's textures in HD | `mods/hd/hd-textures.bin`, converted once on a computer | [wiki: HD Textures](https://github.com/digdat0/mkdd-nx/wiki/HD-Textures-App) |
+| Custom characters from [GameBanana](https://gamebanana.com/games/6555) and the [MKDD wiki](https://mkdd.org/wiki/List_of_Custom_Characters/) | up to 128 extra characters on more select screen pages | `mods/characters/` | [wiki: Characters App](https://github.com/digdat0/mkdd-nx/wiki/Characters-App) |
 
-**The easy way: the MKDD-NX Characters app** (from the releases: `MKDD-NX-Characters.exe` for Windows,
-`MKDD-NX-Characters-arm64.dmg` / `-x86_64.dmg` for a Mac with Apple Silicon / Intel; nothing to install).
-The [Characters App wiki page](https://github.com/digdat0/mkdd-nx/wiki/Characters-App) has the details:
-
-1. Start it. **Add mod or folder of mods…** (or, on Windows, drop folders on the window) adds the characters you
-   downloaded: one mod, or a folder holding many. Mods the game can't use are rejected, with the reason.
-2. Optional: **Disc image** (your own `.iso`): each model is checked against the character it replaces.
-   The disc image is only read.
-3. For each character, check or change **Name**, **On** (the character it plays as) and **Cell** (where
-   it shows on the select screen); **Author** and **Source link** are kept with it.
-4. **Output folder:** `sdmc:/switch/MKDD-NX/mods/characters/` on the SD card (or a folder on the PC to
-   copy there), then **Export**. Each character becomes its own folder with a `character.ini`.
-
-**By hand:** copy a pack's `files` folder (the one the MKDD Patcher uses) into
-`mods/characters/<pack name>/`. Every driver model in it becomes a character. A `names.txt` next to
-`files` names them, one line each, for example `nokonoko=SHY GUY`.
-
-```
-sdmc:/switch/MKDD-NX/mods/characters/
-    shyguy/            (made by the app)
-        character.ini
-        driver.bmd
-        face.bti, map.bti, name.bti   (optional)
-    Some Pack/         (copied by hand)
-        files/MRAM.arc/mram/driver/nokonoko/driver.bmd ...
-        names.txt      (optional)
-```
-
-**In the game:** on the character select screen, **X** and **Y** turn the pages; page 1 is the game's
-20. A cell with no character on that page is dimmed. Random picks from every page. Up to 128
-characters. A missing map icon or name tag is made from the face and the name. A race never has the
-same character twice, so a character and the one it plays as can't race together.
-
-## HD textures
-
-MKDD-NX can use the community **MKDD HD texture pack** made for Dolphin
-([mkddhd](https://sites.google.com/view/mkddhd/home-page); use the **English** version, downloaded from the
-Mega link on that site). The pack is not included: download it yourself and convert it once on a PC.
-The Switch can't use the pack's PNGs directly (about 1 GB, and decoding them would stall the game), so
-`tools/hdtex_pack.py` turns them into one file of GPU-ready BC7 textures, at the pack's full
-resolution with mipmaps.
-
-### The easy way: MKDD-NX HD Textures app
-
-Download the app for your computer from the [latest release](https://github.com/digdat0/mkdd-nx/releases/latest)
-(step by step: the [HD Textures App wiki page](https://github.com/digdat0/mkdd-nx/wiki/HD-Textures-App)):
-`MKDD-NX-HD-Textures.exe` (Windows) or `MKDD-NX-HD-Textures-arm64.dmg` / `-x86_64.dmg` (Mac with Apple
-Silicon / Intel). Nothing else needs installing.
-
-1. Download and extract the English pack (link above, also in the app).
-2. Open the app. Windows may say "Windows protected your PC": click **More info**, then **Run anyway**.
-   On a Mac, open the `.dmg`, drag the app to Applications, then right-click it and choose **Open** the
-   first time (it isn't signed by Apple).
-3. **Texture pack:** choose the pack's `GM4E01` folder (or the folder you extracted it into: the app finds
-   `GM4E01` inside).
-4. **Output folder:** choose where to save `hd-textures.bin` (about 800 MB).
-5. **Convert.** It takes about 5-15 minutes depending on the computer, and keeps the computer awake, so you
-   can walk away. When it's done, the window says so and where the file is.
-6. Copy `hd-textures.bin` to `sdmc:/switch/MKDD-NX/mods/hd/` (create the folders; the name must be
-   exactly `hd-textures.bin`).
-7. Start the game: **HD TEXTURES** in the - menu now shows ON (switch it off to compare during a race). The
-   hint on that row counts the textures currently shown in HD.
-
-### From the command line
-
-**Needs:** Python 3 with Pillow (`py -3 -m pip install pillow`) and a C compiler for the bundled BC7
-encoder (`tools/bc7enc.c`, built automatically on first run). On Windows that is MSYS2's UCRT64 gcc
-(`pacman -S mingw-w64-ucrt-x86_64-gcc` in an MSYS2 shell, found at `C:\msys64\ucrt64\bin`); elsewhere
-any gcc or clang. Set `CC` to use another compiler.
-
-1. Download and extract the English pack. Find its `GM4E01` folder (the one Dolphin would load from
-   `Load/Textures/GM4E01`, full of `tex1_..._.png` files).
-2. Convert it (about 6 minutes on a 12-thread PC; the result is about 790 MB).
-
-   ```bash
-   py -3 tools/hdtex_pack.py "D:/Downloads/MKDD HD/GM4E01" "D:/Downloads/hd-textures.bin"
-   ```
-
-3. Copy it to the SD card and turn it on, as in steps 6 and 7 above.
-
-The app is built from `tools/hdtex_app/` (`build_app.py`; GitHub Actions builds the Windows and Mac
-versions for each release).
-
-Textures are matched the way Dolphin matches them (format, size and the XXH64 hash of the
-original texture), so other packs in Dolphin's `tex1_` format work the same way. HD textures load
-in the background from the SD card: a texture shows in its original form for a moment, then
-switches to HD. Up to about 80 MB of GPU memory is used at a time; races run at 60 fps as with
-the original textures.
-
-## MKDD Plus
-
-MKDD-NX can also play the **Mario Kart: Double Dash!! Plus** mod (version **3.3, NTSC**), with its
-extra cups and courses, from the files the mod comes as. Nothing is patched: your disc image stays
-as it is, and the standard game stays playable.
-
-1. Get MKDD Plus 3.3 [NTSC] (see the [MKDD Plus wiki page](https://mkdd.org/wiki/Mario_Kart:_Double_Dash!!_Plus)) and extract it. You get a folder with `files` and `sys` in it.
-2. On the SD card, create `sdmc:/switch/MKDD-NX/mods/plus/` and copy the mod's `files` and `sys`
-   folders into it:
-
-   ```
-   sdmc:/switch/MKDD-NX/
-       MKDD-NX.nro
-       Mario Kart - Double Dash!! (USA).iso
-       mods/
-           hd/
-               hd-textures.bin   (optional)
-           plus/
-               files/
-               sys/
-   ```
-
-   Copy it as it is: don't delete `Course`, `CourseName`, `Movie` or `StaffGhosts` (the mod's
-   folders don't have them; the steps for building a modded ISO on a PC don't apply here).
-3. Start the game: with the mod in `mods/plus/`, MKDD-NX plays Plus. To play the standard game
-   again, set **Level pack** to OFF on the menu's **Mods** page and choose **Restart now** (or move or
-   rename the `plus` folder). If a mod file is missing, the standard game starts
-   instead and `logs/mkdd.log` names the file.
-
-Plus keeps its own saves in `save/plus/`, apart from the standard game's. The first time you play
-Plus, if you have a standard save, the game offers to start Plus from a copy of it (unlocks and
-records; ghosts aren't copied, and your standard save stays as it is). On the select-mode screen
-the classes are listed 50cc, 150cc, 200cc, Mirror (the mod itself puts 200cc second). In a cup,
-X and Y switch between the mod's course sets. Its intro movie doesn't
-play (the mod removes it). HD textures still apply where the mod uses the game's own textures
-(characters, karts, menus it didn't change); its new courses show their original textures. Only
-version 3.3 NTSC works: the game's code is built for that exact version, and another one is
-refused with a message.
-
-## Retro Track Grand Prix
-
-MKDD-NX can also play **Retro Track Grand Prix 2.1** (RTGP), with its retro cups and courses. It comes
-as a patch of the game's disc; MKDD-NX installs it on the Switch, so you don't need a PC tool to patch
-your disc image, and the standard game stays playable.
-
-1. Download `mario_kart_double_dash_rtgp_2_1.zip` from the mod's [GameBanana page](https://gamebanana.com/mods/594415) and
-   unzip it. The mod is too big for GameBanana: the zip only holds `OPEN ME.txt` with the link to the
-   patch. Download the patch from that link: `MKDD RTGP 2.1 Update.xdelta` (about 2 GB).
-2. On the SD card, create `sdmc:/switch/MKDD-NX/mods/` and copy the `.xdelta` file into it, as it is
-   (any name ending in `.xdelta` works):
-
-   ```
-   sdmc:/switch/MKDD-NX/
-       MKDD-NX.nro
-       Mario Kart - Double Dash!! (USA).iso     (or .rvz)
-       mods/
-           MKDD RTGP 2.1 Update.xdelta
-   ```
-
-3. Start the game. It finds the patch and asks **INSTALL RETRO TRACK GRAND PRIX 2.1?**: choose
-   **INSTALL NOW**. It takes a few minutes (B cancels) and writes the mod's files to `mods/rtgp/`
-   (about 2 GB more on the SD card; the patch is applied to your own disc image, which stays as it is,
-   and an `.rvz` works as well as an `.iso`).
-4. When it's done, the game offers to delete the `.xdelta` file: it is no longer needed, and deleting it
-   frees about 2 GB. Then the game starts in RTGP.
-
-To switch between RTGP, Plus and the standard game, change **Level pack** on the menu's **Mods** page and
-choose **Restart now**. RTGP keeps its own saves in `save/rtgp/`, apart from the standard game's and
-Plus's (the first time, the game offers to start from a copy of your standard save). In a cup, X and Y
-switch between the mod's course sets. Only version 2.1 works; a patch for another version or another
-game is reported on screen and left alone.
+- **Level packs:** Plus and RTGP each keep their own saves (`save/plus/`, `save/rtgp/`). Pick one with
+  **Level pack** on the − menu's **Mods** page (OFF: the standard game), then **Restart now**.
+- **Companion apps** for Windows and Mac, from the [latest release](https://github.com/digdat0/mkdd-nx/releases/latest):
+  MKDD-NX HD Textures converts the texture pack, MKDD-NX Characters prepares character mods, and the
+  MKDD-NX Route Editor edits the battle CPUs' routes.
 
 ## Reporting bugs
 
