@@ -338,6 +338,11 @@ static float s_kpos[8][3], s_kfw[8][3], s_focus[8];
 static bool s_alive[8];
 static int s_balloons[8];
 static int s_karts_now, s_players_now, s_shine_holder = -1;
+static uint32_t s_mode_now; /* gRaceInfo +8 this frame: 4 balloons, 6 Bob-omb, 7 Shine Thief */
+/* Shine Thief, kart k without the Shine: after it (the Shine or its holder) all out. At junctions
+ * it always takes the best way, it leaves the route for it from further and at wider angles
+ * (BAI_HUNT, BAI_HUNT_KEEP), keeps its shells for the holder and boosts to catch either. */
+static bool bai_hunt(int k) { return s_mode_now == 7 && s_goal[k].kind == GOAL_CHASE; }
 static uint32_t s_box_gone[BAI_BOXES];
 static uint64_t s_bai_rnd = 0x9e3779b97f4a7c15ull;
 static float bai_rand(void) { /* 0 to 1 */
@@ -402,7 +407,7 @@ static int bai_branch(Ctx *c, uint8_t *M, int kart, uint32_t pt, int game) {
     if (kart < 0 || kart > 7 || s_kart_net[kart] < 0 || s_goal[kart].kind == GOAL_NONE) return game;
     int k = s_kart_net[kart];
     snprintf(s_why, sizeof s_why, "%s", k < ROUTE_NETS && s_net_graph[k] ? "random" : "no map");
-    if (k >= ROUTE_NETS || !s_net_graph[k] || bai_rand() > s_focus[kart]) return game;
+    if (k >= ROUTE_NETS || !s_net_graph[k] || (!bai_hunt(kart) && bai_rand() > s_focus[kart])) return game;
     int gi = s_goal[kart].kind == GOAL_CHASE ? bai_nearest(k, s_goal[kart].p) : -1;
     snprintf(s_why, sizeof s_why, "goal off");
     if (s_goal[kart].kind == GOAL_CHASE && (gi < 0 || s_pt_part[gi] < 0)) return game;
@@ -543,14 +548,21 @@ static void bai_item(Ctx *c, uint8_t *M, uint32_t ctrl, int k) {
     const char *use = NULL;
     int at = -1;
     float ad = 0;
+    int holder = bai_hunt(k) ? s_goal[k].target : -1; /* the Shine's holder: shells for it only */
+    if (holder >= 0 && !boost && !drop) {
+        if (front != holder) front = -1;
+        if (back != holder) back = -1;
+    }
     if (boost) {
         int t = s_goal[k].target, near = bai_in_cone(k, -0.7f, 1500, &bd);
         float d[3], l = 0;
-        if (t >= 0 && s_alive[t]) {
-            for (int i = 0; i < 3; i++) d[i] = s_kpos[t][i] - s_kpos[k][i], l += d[i] * d[i];
+        bool free_shine = bai_hunt(k) && t < 0 && isfinite(s_goal[k].p[0]); /* the Shine on the ground */
+        if ((t >= 0 && s_alive[t]) || free_shine) {
+            const float *q = free_shine ? s_goal[k].p : s_kpos[t];
+            for (int i = 0; i < 3; i++) d[i] = q[i] - s_kpos[k][i], l += d[i] * d[i];
             l = sqrtf(l);
         }
-        bool ahead = t >= 0 && s_alive[t] && l > 1 && l < 3000 &&
+        bool ahead = ((t >= 0 && s_alive[t]) || free_shine) && l > 1 && l < 3000 &&
                      (d[0] * s_kfw[k][0] + d[1] * s_kfw[k][1] + d[2] * s_kfw[k][2]) / l > 0.9f;
         if (ahead) use = "catch", at = t, ad = l;
         else if (near >= 0 && (s_goal[k].kind == GOAL_FLEE || kind == 6)) use = "escape", at = near, ad = bd;
@@ -613,6 +625,9 @@ uint64_t i___ct__11BombStart2DFP7JKRHeap(Ctx *c, uint8_t *M, ARGS) {
 #define BAI_DIRECT 2000.0f
 #define BAI_DIRECT_KEEP 2600.0f
 #define BAI_DIRECT_HOLD 20u
+#define BAI_HUNT 4000.0f
+#define BAI_HUNT_KEEP 5000.0f
+#define BAI_FREE_NEAR 1500.0f
 static bool s_direct[8];
 static uint32_t s_direct_at[8]; /* s_bai_frame of s_direct's last change */
 /* network k's way between points i and j (either way round), BAI_INF when unknown */
@@ -628,19 +643,119 @@ static bool bai_direct(int k) {
     int n = s_kart_net[k];
     if (s_goal[k].kind != GOAL_CHASE || n < 0 || n >= ROUTE_NETS || !s_net_graph[n] || !isfinite(s_goal[k].p[0])) return false;
     const float *t = s_goal[k].p, *p = s_kpos[k], *f = s_kfw[k];
-    float d[3] = {t[0] - p[0], t[1] - p[1], t[2] - p[2]}, l = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    bool hunt = bai_hunt(k), on_ground = hunt && s_goal[k].target < 0; /* on_ground: the Shine on the ground, its centre sFootLength (200) up */
+    float d[3] = {t[0] - p[0], t[1] - (on_ground ? 200 : 0) - p[1], t[2] - p[2]}, l = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
     if (l < 1) return s_direct[k];
-    if (l > (s_direct[k] ? BAI_DIRECT_KEEP : BAI_DIRECT) || fabsf(d[1]) > 300) return false;
-    if ((d[0] * f[0] + d[1] * f[1] + d[2] * f[2]) / l < (s_direct[k] ? -0.3f : 0.0f)) return false;
+    float range = hunt ? (s_direct[k] ? BAI_HUNT_KEEP : BAI_HUNT) : s_direct[k] ? BAI_DIRECT_KEEP : BAI_DIRECT;
+    if (l > range || fabsf(d[1]) > 300) return false;
+    /* a free Shine close by: whichever way the kart faces (it turns round for it) */
+    if (!(on_ground && l < BAI_FREE_NEAR) && (d[0] * f[0] + d[1] * f[1] + d[2] * f[2]) / l < (s_direct[k] ? (hunt ? -0.6f : -0.3f) : (hunt ? -0.3f : 0.0f)))
+        return false;
     int ik = bai_nearest(n, p), it = bai_nearest(n, t);
-    if (ik < 0 || it < 0 || dist3(s_cl_pts[ik], p) > 800 || dist3(s_cl_pts[it], t) > 800) return false;
-    return bai_path(n, ik, it) <= 1.5f * l + 500;
+    if (ik < 0 || it < 0 || dist3(s_cl_pts[ik], p) > 800) return false;
+    /* a free Shine can lie off the network (it bounces off where it was dropped): the way to the
+     * network's point nearest it, then straight on */
+    float off = dist3(s_cl_pts[it], t);
+    if (off > (on_ground ? BAI_FREE_NEAR : 800)) return false;
+    return bai_path(n, ik, it) + (on_ground ? off : 0) <= 1.5f * l + 500;
+}
+/* Getting unstuck. The game's own wall handling (doColWallCtrl: a kart against a wall, slow, for a
+ * while) turns the kart in place (RivalBodyCtrl +0x84 state 3) toward its next point (+0x28), then
+ * drives on. In a battle that point is often past the wall (the kart was knocked off its route or
+ * chased a target into it), and objects don't count as walls, so a kart can sit there. Here a
+ * computer's kart that has moved less than STUCK_MOVE in STUCK_FRAMES is stuck, whatever holds it:
+ * it is turned the same way (state 3) toward a place it drove through a moment ago (its trail, a
+ * point every CRUMB_GAP, at least ESCAPE_FROM away: reachable, it came from there), drives there
+ * (steering at it, as for a target), then rejoins its network at the point nearest it, as after
+ * Lakitu (comebackRescure). Stuck again soon after: an older place on the trail. */
+#define STUCK_MOVE 250.0f
+#define STUCK_FRAMES 90u
+#define CRUMBS 16
+#define CRUMB_GAP 300.0f
+#define ESCAPE_FROM 700.0f
+#define ESCAPE_NEAR 350.0f  /* close enough to the place: back on the network */
+#define ESCAPE_FRAMES 150u  /* at most, from the start */
+#define ESCAPE_AGAIN 360u   /* stuck again within this: the trail further back */
+static struct stuck {
+    float anchor[3], last[3], crumb[CRUMBS][3], esc[3];
+    uint32_t at, esc_at;
+    int ncrumb, tries;
+    bool armed, escaping;
+} s_stuck[8];
+/* each frame (bai_state), a computer's kart k at p: how long it has stayed put, its trail. busy: hit,
+ * spinning, tumbling (KartBody +0x570 status, the bits doColWallCtrl leaves alone: r13 - 0x6f98,
+ * - 0x6f94), not stuck */
+static void bai_track(int k, const float *p, uint32_t now, bool busy) {
+    struct stuck *st = &s_stuck[k];
+    if (!s_alive[k] || !st->ncrumb || dist3(p, st->last) > 1500) { /* out, starting, or put back by Lakitu */
+        memcpy(st->anchor, p, 12), memcpy(st->last, p, 12), st->at = now, st->escaping = false;
+        st->ncrumb = s_alive[k];
+        memcpy(st->crumb[0], p, 12);
+        return;
+    }
+    memcpy(st->last, p, 12);
+    if (busy && !st->escaping) memcpy(st->anchor, p, 12), st->at = now;
+    if (dist3(p, st->anchor) > STUCK_MOVE) {
+        memcpy(st->anchor, p, 12), st->at = now, st->armed = true; /* (armed: it has driven, past the countdown) */
+        if (now - st->esc_at > ESCAPE_AGAIN) st->tries = 0;
+    }
+    if (!st->escaping && dist3(p, st->crumb[(st->ncrumb - 1) % CRUMBS]) > CRUMB_GAP) memcpy(st->crumb[st->ncrumb++ % CRUMBS], p, 12);
+}
+/* kart k is stuck: turn it toward a place on its trail */
+static void bai_escape(Ctx *c, uint8_t *M, uint32_t bc, int k) {
+    struct stuck *st = &s_stuck[k];
+    const float *p = s_kpos[k], *to = NULL;
+    int skip = 2 * st->tries, n = st->ncrumb < CRUMBS ? st->ncrumb : CRUMBS;
+    for (int i = 1; i <= n && !to; i++) {
+        const float *q = st->crumb[(st->ncrumb - i) % CRUMBS];
+        if (dist3(q, p) >= ESCAPE_FROM && skip-- <= 0) to = q;
+    }
+    if (!to && n) to = st->crumb[(st->ncrumb - n) % CRUMBS]; /* the oldest */
+    st->at = s_bai_frame;
+    if (!to || dist3(to, p) < STUCK_MOVE) return;
+    memcpy(st->esc, to, 12), st->escaping = true, st->esc_at = s_bai_frame, st->tries++;
+    mst(c, M, bc + 0x84, 4, 3);
+    for (int i = 0; i < 3; i++) stf(c, M, bc + 0x28 + 4 * (uint32_t)i, to[i]);
+    rt_log("battle cpus: kart %d stuck at (%.0f %.0f %.0f): backs out to (%.0f %.0f %.0f), try %d", k, p[0], p[1], p[2], to[0], to[1], to[2],
+           st->tries);
+}
+/* the place reached (or time up): kart k rejoins its network at the point nearest it */
+static void bai_rejoin(Ctx *c, uint8_t *M, uint32_t bc, int k) {
+    s_stuck[k].escaping = false, s_stuck[k].at = s_bai_frame;
+    uint32_t ctrl = ld32(c, M, bc + 0x24), cur = ram_ptr(ctrl) ? ld32(c, M, ctrl + 4) : 0;
+    int n = s_kart_net[k], i = cl_index(c, M, cur), best = n >= 0 && n < s_nets ? bai_nearest(n, s_kpos[k]) : -1;
+    if (ld32(c, M, bc + 0x84) == 3) mst(c, M, bc + 0x84, 4, 0);
+    if (i < 0 || best < 0) return;
+    uint32_t to = cur - 0x2c * (uint32_t)i + 0x2c * (uint32_t)best;
+    if (cl_index(c, M, to) != best) return;
+    ctx_set_gpr(c, 3, bc), ctx_set_gpr(c, 4, to), ctx_set_gpr(c, 5, 0);
+    i_comebackRescure__13RivalBodyCtrlFP7CLPointb(c, M, bc, to, 0, 0, 0, 0, 0, 0);
+    uint32_t kc = ld32(c, M, (uint32_t)ctx_gpr(c, 13) - 0x4e98);
+    if (ram_ptr(kc)) target_fix(c, M, kc, k, ld32(c, M, kc + 0x1c0 + 4 * (uint32_t)k), true);
+    rt_log("battle cpus: kart %d back on network %d at point %d", k, n + 1, best);
 }
 uint64_t i_doSterrCtrl__13RivalBodyCtrlFv(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t bc = (uint32_t)a0, mode = ld32(c, M, RACE_MODE), rival = ram_ptr(bc) ? ld32(c, M, bc + 4) : 0;
     int k = ram_ptr(rival) ? (int)ld32(c, M, rival + 0x38) : -1;
     bool can = g_battle_cpus && s_route_cpus && mode >= 4 && mode <= 7 && k >= s_players_now && k < s_karts_now && k < 8 && s_alive[k];
+    if (can) {
+        struct stuck *st = &s_stuck[k];
+        if (st->escaping && (dist3(s_kpos[k], st->esc) < ESCAPE_NEAR || s_bai_frame - st->esc_at > ESCAPE_FRAMES)) bai_rejoin(c, M, bc, k);
+        else if (!st->escaping && st->armed && s_bai_frame - st->at > STUCK_FRAMES) bai_escape(c, M, bc, k);
+        if (st->escaping) {
+            s_direct[k] = false, s_direct_at[k] = s_bai_frame;
+            if (ld32(c, M, bc + 0x84) == 3) { /* turning in place (doColWallCtrl), toward the place */
+                for (int i = 0; i < 3; i++) stf(c, M, bc + 0x28 + 4 * (uint32_t)i, st->esc[i]);
+                return 0;
+            }
+            float keep[3] = {ldf(c, M, bc + 0x58), ldf(c, M, bc + 0x5c), ldf(c, M, bc + 0x60)};
+            for (int i = 0; i < 3; i++) stf(c, M, bc + 0x58 + 4 * (uint32_t)i, st->esc[i]);
+            ctx_call_orig(c, g_native_addr[NAT_doSterrCtrl__13RivalBodyCtrlFv]);
+            for (int i = 0; i < 3; i++) stf(c, M, bc + 0x58 + 4 * (uint32_t)i, keep[i]);
+            return 0;
+        }
+    }
     bool on = can && bai_direct(k);
     if (k >= 0 && k < 8 && on != s_direct[k] && s_bai_frame - s_direct_at[k] < BAI_DIRECT_HOLD &&
         (on || (can && s_goal[k].kind == GOAL_CHASE && isfinite(s_goal[k].p[0]))))
@@ -668,6 +783,7 @@ static void bai_reset(void) {
         s_bai_item[k][0] = s_bai_item[k][1] = -1, s_hold_item[k] = s_hold_frames[k] = 0, s_alive[k] = false, s_direct[k] = false, s_direct_at[k] = 0;
         s_goal[k].kind = GOAL_NONE, s_goal[k].target = -1, s_goal[k].p[0] = NAN;
         s_focus[k] = 0.6f + 0.3f * bai_rand();
+        memset(&s_stuck[k], 0, sizeof s_stuck[k]);
     }
     for (int i = 0; i < BAI_BOXES; i++) s_box_gone[i] = 0;
     if (!(s_bai_rnd & 0xffff)) s_bai_rnd ^= plat_now_ns() | 1;
@@ -688,8 +804,13 @@ static void bai_state(Ctx *c, uint8_t *M, uint32_t mode, uint32_t rm, int karts,
         if (!isfinite(p[0]) || !isfinite(p[1]) || !isfinite(p[2]) || !isfinite(f[0]) || !isfinite(f[1]) || !isfinite(f[2])) continue;
         memcpy(s_kpos[k], p, 12), memcpy(s_kfw[k], f, 12);
         s_alive[k] = !(ld16(c, M, chk + 0x8c) & 4), s_balloons[k] = (int16_t)ld16(c, M, chk + 0x90);
+        if (k >= players) {
+            uint32_t r13 = (uint32_t)ctx_gpr(c, 13);
+            bool busy = (ld32(c, M, body + 0x570) & ld32(c, M, r13 - 0x6f98)) | (ld32(c, M, body + 0x574) & ld32(c, M, r13 - 0x6f94));
+            bai_track(k, p, now, busy);
+        }
     }
-    s_karts_now = karts, s_players_now = players;
+    s_karts_now = karts, s_players_now = players, s_mode_now = mode;
     for (int i = 0; i < s_nbox; i++)
         for (int k = 0; k < karts; k++)
             if (s_alive[k] && dist3(s_box[i].p, s_kpos[k]) < BAI_BOX_NEAR) s_box_gone[i] = now + BAI_BOX_GONE;

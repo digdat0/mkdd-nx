@@ -138,7 +138,8 @@ and 3 player battles, computer karts fill the empty places up to 4.
 - **The CPUs** drive routes made for each arena (the game has none for battles), built into the
   `.nro`: nothing to install. Each battle they take different routes. They go for item boxes, chase
   and aim at the nearest karts (shells forward or backward, bananas behind them), steal the Shine,
-  and run when they're down to their last balloon. Smaller arenas are fiercer, bigger ones calmer.
+  and run when they're down to their last balloon. One stuck on a wall or an object backs out and
+  rejoins its route. Smaller arenas are fiercer, bigger ones calmer.
 - **Your own routes:** the MKDD-NX Route Editor (Windows and Mac, from the releases) edits them; a
   `routes/<key>.txt` in the app folder is used instead of the built-in route for that arena. See the
   [Route Editor wiki page](https://github.com/digdat0/mkdd-nx/wiki/Route-Editor), and [docs/BATTLE_ROUTES.md](docs/BATTLE_ROUTES.md) for the

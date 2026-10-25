@@ -282,6 +282,8 @@ The game's log (`logs/mkdd.log`, with LOGGING on in the − menu's Debug page) s
 | `route: built-in <key>, network A, B, C of N` | The same, from the route built into the `.nro` |
 | `battle cpus: kart K drives network I of the M loaded` | Which of those each CPU drives |
 | `battle cpus: kart K onto network I at point P` | A CPU was put back on its own network (start or respawn) |
+| `battle cpus: kart K stuck at (…): backs out to (…), try N` | A CPU sat still for 1.5 s (against a wall or an object): it turns toward a place it drove through a moment ago and drives there |
+| `battle cpus: kart K back on network I at point P` | After backing out, it rejoins its network at the nearest point |
 | `battle ai: network I: N parts` | The network's junction map was built, so CPUs on it choose their way |
 | `battle ai:   kart K chases T (x y z), focus F` | Every 2 s: a CPU's goal (T: the kart it is after, -1 an item box or the Shine) and how often it takes the best way (0.6–0.9) |
 | `battle ai: frame F, kart K at (…): W ways, game G, took P to (…)` | A CPU at a junction: the game's random pick G and the one it took |
