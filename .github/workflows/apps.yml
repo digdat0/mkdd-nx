@@ -1,0 +1,58 @@
+# Builds the character pack app (tools/charpack.py) and the battle route editor (tools/route_editor.py):
+# MKDD-NX-Characters / MKDD-NX-Route-Editor as .exe (Windows) and .dmg (macOS, Apple Silicon and Intel).
+# Run it from the Actions tab with a release tag to attach the apps to that release, or without one to
+# only keep them as workflow artifacts. Publishing a release also runs it. The apps contain no game code
+# or data (the route editor carries the repository's routes/).
+name: Characters and route editor apps
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach the apps to (empty: artifacts only)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-14, macos-15-intel]
+        app: [charpack, route_editor]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install packaging tools
+        run: python -m pip install pyinstaller==6.16.0 pillow==12.0.0 zstandard==0.25.0
+      - name: Build the app
+        run: python tools/build_${{ matrix.app }}_app.py
+      - name: Check the packaged app (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          ls -l dist
+          hdiutil attach dist/*.dmg -mountpoint /tmp/app -nobrowse
+          ls /tmp/app/*.app/Contents/MacOS
+          if [ "${{ matrix.app }}" = route_editor ]; then
+            find /tmp/app -path '*routes/*.txt' | wc -l | grep -qv '^ *0$'
+          fi
+          hdiutil detach /tmp/app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.app }}-app-${{ matrix.os }}
+          path: dist/*
+      - name: Attach to the release
+        if: github.event_name == 'release' || inputs.tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: gh release upload "$TAG" dist/* --clobber

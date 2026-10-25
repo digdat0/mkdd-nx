@@ -42,7 +42,8 @@ except ImportError:
 
 # the routes built into the .nro: the repository's routes/ (in the .exe, its own copy)
 BUILTIN = os.path.join(getattr(sys, "_MEIPASS", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")), "routes")
-SETTINGS = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "MKDD-NX", "route_editor.json")
+SETTINGS = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~/Library/Application Support" if sys.platform == "darwin" else "~"),
+                        "MKDD-NX", "route_editor.json")
 NAMES = {"3a": "Cookie Land", "36": "Block City", "34": "Luigi's Mansion", "38": "Tilt-a-Kart", "35": "Nintendo GameCube", "3b": "Pipe Plaza"}
 # MKDD Plus v3.3's arenas (its CourseNam1-4 name pictures), by route key; the others go by NAMES
 PLUS_NAMES = {
@@ -153,12 +154,18 @@ class Editor:
         c.bind("<ButtonPress-1>", self.press)
         c.bind("<B1-Motion>", self.motion)
         c.bind("<ButtonRelease-1>", self.release)
-        c.bind("<ButtonPress-3>", self.right)
-        c.bind("<B3-Motion>", self.right_motion)
-        c.bind("<ButtonRelease-3>", self.release)
-        c.bind("<B2-Motion>", self.pan)
-        c.bind("<ButtonRelease-2>", lambda e: setattr(self, "drag", None))
-        c.bind("<ButtonPress-2>", lambda e: setattr(self, "drag", ("pan", e.x, e.y)))
+        rb, mb = ("2", "3") if sys.platform == "darwin" else ("3", "2")  # macOS Tk: right is button 2, middle 3
+        c.bind(f"<ButtonPress-{rb}>", self.right)
+        c.bind(f"<B{rb}-Motion>", self.right_motion)
+        c.bind(f"<ButtonRelease-{rb}>", self.release)
+        c.bind(f"<B{mb}-Motion>", self.pan)
+        c.bind(f"<ButtonRelease-{mb}>", lambda e: setattr(self, "drag", None))
+        c.bind(f"<ButtonPress-{mb}>", lambda e: setattr(self, "drag", ("pan", e.x, e.y)))
+        if sys.platform == "darwin":  # Control-click is a right click on a Mac
+            c.bind("<Control-ButtonPress-1>", self.right)
+            c.bind("<Control-B1-Motion>", self.right_motion)
+            c.bind("<Control-ButtonRelease-1>", self.release)
+            root.bind("<Command-z>", lambda e: self.do_undo())
         c.bind("<MouseWheel>", self.zoom)
         c.bind("<Motion>", self.hover)
         c.bind("<Configure>", lambda e: self.draw())
