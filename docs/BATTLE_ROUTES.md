@@ -272,7 +272,8 @@ point sits just before junction `b`; the game joins it to every part leaving `b`
 
 ## Checking in game
 
-The game's log shows one of these when a battle loads:
+The game's log (`logs/mkdd.log`, with LOGGING on in the − menu's Debug page) shows these. The
+`battle ai:` lines about the CPUs' decisions need LOGGING on **GAME + BATTLE AI**.
 
 | Log line | Meaning |
 |---|---|

@@ -328,16 +328,6 @@ static const VtxFormat *format(uint32_t vat) {
 /* Indexed attribute element (NULL past the end of RAM); r is a draw()'s Reader. */
 #define attr_idx(r, idx) ((uint64_t)(idx) * (r)->stride + (r)->elem <= (r)->limit ? (r)->base + (uint64_t)(idx) * (r)->stride : NULL)
 
-static inline float read_comp(const uint8_t *b, unsigned i, uint32_t fmt, float scale) {
-    switch (fmt) {
-    case 0: return (float)b[i] * scale;
-    case 1: return (float)(int8_t)b[i] * scale;
-    case 2: return (float)be16(b + 2 * i) * scale;
-    case 3: return (float)(int16_t)be16(b + 2 * i) * scale;
-    default: return u2f(be32(b + 4 * i));
-    }
-}
-
 /* n components of format fmt (u8, s8, u16, s16, f32) */
 static inline void read_comps(const uint8_t *b, unsigned n, uint32_t fmt, float scale, float *o) {
     switch (fmt) {

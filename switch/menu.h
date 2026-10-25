@@ -28,7 +28,7 @@ typedef struct {
                         * when let go 1 snaps back, 2 eases back, 3 stays (CAMERA RESET: back) */
     int cam_height;    /* CAMERA HEIGHT: the chase camera's, 0-3 low / medium / regular (the game's) / high */
     int cam_dist;      /* CAMERA DISTANCE: the chase camera's, 0-4 very close / close / regular (the game's) / far / very far */
-    int logging;       /* 0 disabled, 1 game, 2 game + audio, 3 audio */
+    int logging;       /* 0 disabled, 1 game, 2 game + audio, 3 audio, 4 game + battle AI */
     bool hd_textures;  /* use the HD texture file (HD_FILE) when there is one */
     bool characters;   /* EXTRA CHARACTERS: load mods/characters (character packs), from the next start */
     char mod[16];      /* the mod to play, from the next start: "auto" (the first found), "off" or a MODS key */

@@ -1,24 +1,14 @@
-"""Battle routes for the computer's karts, made from RECORD BATTLE ROUTE's recordings (runtime/route.c).
+"""Makes the battle routes the computer's karts drive (runtime/route.c reads them), spread to cover each arena.
 
 usage: py -3 tools/battle_routes.py <routes dir> [--key 3a_99e0cbaf] [--seed N] [--open KEYS] [--game IMAGE] [--mod DIR] [--variants N] [--install]
 
-<routes dir> is the repository's routes (built into the .nro) or the SD card's switch/MKDD-NX/routes
-(recordings in its rec/). For each arena (key:
-course ID _ BOL hash), all its recordings make a map of where karts drove: the floor in cells of
-CELL units (in layers, for floors above floors), the moves between cells, the cells at the edge
-(next to a wall, a drop or a part never driven). From that, a network of routes round the arena,
-kept off the walls: junctions spread over the arena and parts between them until the routes cover
-it (make_network); each computer's kart picks its next part at random at each junction, so they
-spread out. An arena's file holds --variants different networks (default VARIANTS); the game picks
-one at random each battle. Written to
-<routes dir>/net/<key>.txt (with --install to <routes dir>/<key>.txt, the file the game reads, any
-file there not made by these tools kept as <key>_old.txt) and a picture of the map and routes,
-<routes dir>/net/<key>.svg. tools/route_editor.py edits them, and the map: floor added where
-nobody drove (by hand or from the game's collision, game_collision) and taken away, in
-<routes dir>/map/<key>.txt (read_map), used here too. --game IMAGE makes the map from the game's
-collision instead (game_map: the real road and walls, read from your disc image and never kept);
-the recordings then only give the pipes' warps. --mod DIR does the same for a mod's arenas (MKDD Plus:
-the folder with files and sys in it; its files/Cours*/Mini*.arc), with or without --game.
+<routes dir>: the repository's routes (built into the .nro) or the SD card's switch/MKDD-NX/routes.
+The map (floor, walls, pipes) comes from the recordings in its rec/ with the edits in its map/, or
+with --game IMAGE from the game's collision (your disc image, only read; --mod DIR for a mod's
+arenas). Each arena gets --variants networks: junctions spread over the arena (make_network) and
+parts between them. Written to <routes dir>/net/<key>.txt with a picture (.svg), or with --install
+to <routes dir>/<key>.txt, the file the game reads. docs/BATTLE_ROUTES.md has the details: the
+options, the rules a network must keep and the file format.
 
 A recording's lines: "frame x y z fx fy fz", "-" a respawn (older "x y z" loops are read too).
 """
@@ -1279,7 +1269,7 @@ def game_collision(disc_path=None, mod_dir=None):
         bol = next((v for k, v in arc.items() if k[1].endswith("_course.bol")), None)
         if not bco or not bol or bco[:4] != b"0003" or len(bol) < 0x7c:
             continue
-        h = 2166136261  # the key, as runtime/native.c makes it: FNV-1a of the BOL's 0x7c byte header
+        h = 2166136261  # the key, as runtime/battle.c makes it: FNV-1a of the BOL's 0x7c byte header
         for x in bol[:0x7c]:
             h = ((h ^ x) * 16777619) & 0xFFFFFFFF
         tri, vtx, end = struct.unpack_from(">III", bco, 0x20)

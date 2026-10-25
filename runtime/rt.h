@@ -222,8 +222,9 @@ void diag_set_log_file(const char *path);
 void diag_start_watchdog(const char *trace_path);
 void diag_flush(void);
 /* What is logged (− menu LOGGING): LOG_GAME = mkdd.log / stderr.log lines, the 5 s trace and the
- * Switch profiler; LOG_AUDIO = audio lines (DSP, AI timing, audio thread). 0 writes nothing. */
-enum { LOG_GAME = 1, LOG_AUDIO = 2 };
+ * Switch profiler; LOG_AUDIO = audio lines (DSP, AI timing, audio thread); LOG_BATTLE = the battle
+ * CPUs' decisions (battle.c, with LOG_GAME). 0 writes nothing. */
+enum { LOG_GAME = 1, LOG_AUDIO = 2, LOG_BATTLE = 4 };
 extern volatile uint32_t g_log_mask;
 /* Race HUD elements not drawn, 1 to 4 players (native.c drawK2D): HUD_* bits. HUD_TIME only
  * until that player finishes. */

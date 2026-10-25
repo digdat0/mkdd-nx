@@ -1,7 +1,7 @@
 /* Battle routes (the - menu's SINGLE PLAYER BATTLE MODE, on the MODS page). The arenas have no route
  * for the computer's karts (their BOLs have no CL points), so they would sit still. A battle there gets
  * routes/<course ID>_<BOL hash>.txt (tools/battle_routes.py, tools/route_editor.py) as its CL points
- * (native.c, loadCrsData): the hash tells a mod's arena from the game's of the same ID. The files are
+ * (battle.c, loadCrsData): the hash tells a mod's arena from the game's of the same ID. The files are
  * the port's own data. Every arena's (the game's and MKDD Plus's) is also built in (route_builtin,
  * switch/CMakeLists.txt): a file on the SD card wins, else the built-in one is read the same way. */
 #include <math.h>

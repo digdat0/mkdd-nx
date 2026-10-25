@@ -13,7 +13,7 @@ static uint64_t s_seen_hash[MAX_SEEN];
 static uint32_t s_seen_count[MAX_SEEN];
 static unsigned s_nseen, s_lines;
 static FILE *s_log;
-volatile uint32_t g_log_mask = LOG_GAME | LOG_AUDIO;
+volatile uint32_t g_log_mask = LOG_GAME | LOG_AUDIO | LOG_BATTLE;
 volatile bool g_log_boot = true;
 static char s_trace_path[512];
 static struct { const char *name; uint64_t n; } s_intr[64];

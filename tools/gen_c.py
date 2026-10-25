@@ -208,10 +208,6 @@ def find_leaders(instructions, entries):
     return leaders
 
 
-def cstr(s):
-    return s.replace("\\", "\\\\").replace('"', '\\"')
-
-
 def has_ld(expr):
     return "mld(" in expr or "ctx_ld(" in expr or "ctx_intrinsic(" in expr
 

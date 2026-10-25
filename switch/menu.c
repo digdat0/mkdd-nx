@@ -154,12 +154,13 @@ static void defaults(void) {
     memcpy(g_set.map, MAP_DRIVE_DEFAULT, sizeof g_set.map);
 }
 
-static const uint32_t LOG_MASKS[4] = {0, LOG_GAME, LOG_GAME | LOG_AUDIO, LOG_AUDIO};
-static const char *LOG_NAMES[4] = {"DISABLED", "GAME", "GAME + AUDIO", "AUDIO"};
+#define LOG_MODES 5
+static const uint32_t LOG_MASKS[LOG_MODES] = {0, LOG_GAME, LOG_GAME | LOG_AUDIO, LOG_AUDIO, LOG_GAME | LOG_BATTLE};
+static const char *LOG_NAMES[LOG_MODES] = {"DISABLED", "GAME", "GAME + AUDIO", "AUDIO", "GAME + BATTLE AI"};
 static const char *DOCKED_NAMES[4] = {"NATIVE", "2X", "1.5X", "AUTO"};
 static const char *HANDHELD_NAMES[4] = {"NATIVE", "1.25X", "1.5X", "AUTO"};
 static void apply_logging(void) {
-    g_log_mask = LOG_MASKS[g_set.logging & 3];
+    g_log_mask = LOG_MASKS[(unsigned)g_set.logging % LOG_MODES];
     diag_flush();
 }
 
@@ -199,7 +200,7 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "special_items")) g_set.special_mode = atoi(v) < 0 || atoi(v) > 2 ? 0 : atoi(v);
         else if (!strcmp(k, "special")) /* one digit per character, SPECIAL_NAMES index */
             for (int i = 0; i < 20 && v[i] >= '0' && v[i] <= '9'; i++) g_set.special[i] = v[i] - '0';
-        else if (!strcmp(k, "logging")) g_set.logging = atoi(v) & 3;
+        else if (!strcmp(k, "logging")) g_set.logging = (int)((unsigned)atoi(v) % LOG_MODES);
         else if (!strcmp(k, "hd_textures")) g_set.hd_textures = atoi(v) != 0;
         else if (!strcmp(k, "characters")) g_set.characters = atoi(v) != 0;
         else if (!strcmp(k, "mod")) snprintf(g_set.mod, sizeof g_set.mod, "%s", v);
@@ -556,7 +557,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         case D_FPS: g_set.show_fps = (g_set.show_fps + (left ? 2 : 1)) % 3; settings_save(); break;
         case D_LOG:
             /* A / right: next mode, left: previous */
-            g_set.logging = (g_set.logging + (left ? 3 : 1)) & 3;
+            g_set.logging = (g_set.logging + (left ? LOG_MODES - 1 : 1)) % LOG_MODES;
             apply_logging();
             settings_save();
             break;
@@ -1325,7 +1326,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                                                  : "ON OR OFF";
         } else if (s_page == PAGE_DEBUG) {
             static const char *labels[D_COUNT] = {"SHOW FPS", "LOGGING", "PROFILER", "BACK"};
-            const char *values[D_COUNT] = {FPS_NAMES[g_set.show_fps % 3], LOG_NAMES[g_set.logging & 3], g_set.profiler ? "ON" : "OFF", NULL};
+            const char *values[D_COUNT] = {FPS_NAMES[g_set.show_fps % 3], LOG_NAMES[(unsigned)g_set.logging % LOG_MODES], g_set.profiler ? "ON" : "OFF", NULL};
             for (int i = 0; i < D_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, D_COUNT), pw, rh, k, s_sel[PAGE_DEBUG] == i, labels[i], values[i], false);
             hint = s_sel[PAGE_DEBUG] == D_FPS      ? "TIMES: MS PER FRAME OF GAME, GRAPHICS AND RENDER THREADS"
                    : s_sel[PAGE_DEBUG] == D_LOG    ? "DEBUG LOGS ON THE SD CARD, FOR BUG REPORTS"

@@ -2,31 +2,15 @@
 map they are made on.
 
 usage: py -3 tools/route_editor.py [<routes dir>] [--open KEYS] [--disc IMAGE] [--mod DIR] [--game-map]
-(or MKDD-NX-Route-Editor.exe, tools/build_route_editor_app.py). Without <routes dir> it asks for the
-folders, and remembers them (%APPDATA%/MKDD-NX/route_editor.json).
+(or the MKDD-NX Route Editor app, tools/build_route_editor_app.py). Without <routes dir> it asks for
+the folders, and remembers them (SETTINGS).
 
-<routes dir> is the repository's routes (the ones built into the .nro: rebuild after saving) or the SD
-card's switch/MKDD-NX/routes (in a card reader: a file there wins over the built-in one). An arena's map is drawn from its recordings (rec/), the same as battle_routes.py's, with
-its map edits (map/); its route from <key>.txt, the file the game reads (else net/<key>.txt, else the
-built-in one: the repository's routes/, which the .exe carries; Save writes it to <routes dir>). A
-route is a network: parts, each from a junction to the next; each computer's kart picks one of the
-parts leaving a junction at random. A file may hold several networks (Network, Add network): the
-game picks one at random each battle. Make routes makes the network shown again from the map,
-spread to cover the arena (Coverage: what no route comes near). Save writes <key>.txt (the one
-before kept as <key>.bak) and map/<key>.txt; the next battle there uses the route.
-
-The game's own map (its collision: road, walls, out of bounds, pipes) is drawn under it, read from
-your disc image (--disc; default the .iso/.gcm/.ciso/.rvz in the routes folder's parent, the app
-folder), and a mod's arenas from its folder (--mod DIR, e.g. MKDD Plus's, the folder holding
-files/Cours0..4). Nothing read from them is kept. Map from Game (--game-map to start so) makes the map itself
-from it instead of the recordings: the real road and walls, for the routes and the wall checks
-(the recordings then give only the pipes' warps, and the map edits are not used).
-
-Routes: drag a point or a junction (the numbered circles) to move it; click the selected part's
-line to add a point there; right-click a point to delete it; shift-click to add a point at the
-selected part's end. Map (Edit map on): drag to paint floor where karts can drive, right-drag to
-take it away. Wheel: zoom; middle drag (or right drag, routes): pan. Ctrl+Z: undo. Red points:
-nearer a wall than battle_routes.py allows; orange: nearer than it likes.
+<routes dir>: the repository's routes (built into the .nro: rebuild after saving) or the SD card's
+switch/MKDD-NX/routes (a file there wins over the built-in one). An arena with no <key>.txt there
+opens its built-in route (BUILTIN); Save writes <key>.txt (the one before kept as <key>.bak) and
+its map edits, map/<key>.txt. The game's map is drawn from your disc image (--disc, default the one
+in the app folder) and a mod's (--mod), only read. How to use the window: the wiki's Route Editor
+page and docs/BATTLE_ROUTES.md.
 """
 import argparse, copy, glob, math, os, random, sys
 import tkinter as tk

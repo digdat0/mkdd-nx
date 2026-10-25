@@ -123,75 +123,9 @@ Rumble works on controllers with HD Rumble and on GameCube controllers.
 
 ### Options menu (-)
 
-The game pauses while the menu is open (and while the Switch is in the HOME menu or asleep). It
-also opens by itself when a controller in use disconnects; reconnect it and close the menu.
-
-| Option | |
-|---|---|
-| Game | the page below |
-| Graphics | the page below |
-| Camera | the page below |
-| Controls | **Button mapping** (each Switch button's GameCube button or action: Driver FPV, Kart FPV, jump, camera reset; A, B, R, X and Start always keep a button, the rest may have none) and **Sync controllers** (the system screen for pairing, the player order and single Joy-Cons) |
-| Mods | **Level pack**: which installed mod to play, PLUS or RTGP, or OFF for the standard game (NONE FOUND when no mod is installed; see [Mods](#mods)). **HD textures** (Off (default) / On when `mods/hd/hd-textures.bin` is in the app folder (see [Mods](#mods)), else NO PACK), **Single player battle mode** (On (default) / Off: computer karts fill battles up to 4 karts; with one player, Battle is on the mode page) and **Restart now**, which starts the game again to apply a Level pack change (unsaved race progress is lost) |
-| Cheats | the page below |
-| Exit game | back to the homebrew menu. **Update** and **Debug** sit on the same row: press right |
-| Update | shows this version and the latest release; **Check for updates** downloads and installs the newest `MKDD-NX.nro`, then **Restart now** starts it (save your progress first). The button reads UPDATE: NEW when there is one |
-| Debug | the page below |
-
-**Graphics**
-
-| Option | |
-|---|---|
-| Widescreen | 16:9 (default): wider game camera, race HUD at the screen edges, menus 4:3 in the middle; or 4:3 |
-| 4:3 edge border | Off / On: checkered border art in the side bars during races in 4:3 (menus keep black bars) |
-| Docked resolution | on the TV (1080p output): Native (640x480), 1.5X, 2X (1280x960) or Auto (default: 2X, stepping down when the frame rate drops); handheld uses Handheld resolution |
-| Handheld resolution | on the Switch screen (1280x720): Native (the game's own 640x480), 1.25X, 1.5X (960x720, as many lines as the screen) or Auto (default: 1.5X, stepping down when the frame rate drops) |
-| Texture filtering | Normal / 2x / 4x / 8x / 16x anisotropic filtering: sharper roads and walls at a distance (most visible with HD textures, which have mipmaps) |
-| Color | Accurate / Vivid / Custom brightness, contrast, saturation (hold Y on that page to preview); saved to `config/color.ini` |
-
-**Camera**
-
-| Option | |
-|---|---|
-| Camera view | Normal (the game's chase camera), Driver FPV (first person from the driver's eyes) or Kart FPV (first person with the kart's front in view), in 1 to 4 player races. Both follow the driver's head, so every kart and character gets its own eye. With either chosen, A opens its page: eye height and eye forward (steps of 5, from the head), tilt (degrees down) and defaults, also in settings.ini (`driver_eye_up`, `driver_eye_forward`, `driver_tilt`, `kart_eye_up`, `kart_eye_forward`, `kart_tilt`). Player 1's setting; each player's right stick click switches their own camera between Normal and Kart FPV (Driver FPV can get a button too, in Button mapping). Y looks behind you in any view |
-| Camera height | Low / Medium / Regular (default, the game's) / High: the chase camera's height; it never goes below the kart |
-| Camera distance | Very close / Close / Regular (default, the game's) / Far / Very far: how far the chase camera sits behind the kart |
-| Field of view | Normal / Wide / Wider / Widest / Wideee race camera, kept separately for 4:3 (default Normal) and 16:9 (default Wider); the row changes the current display mode's |
-| Free camera | the right stick (a GameCube pad's C-stick) turns the camera around the kart. When you let go: Snap back (default), Ease back (glides back in about a third of a second) or Stay (until **Camera reset**, a button you choose in Button mapping). Off turns it off. Not on a single sideways Joy-Con |
-
-**Game**
-
-| Option | |
-|---|---|
-| Race HUD | Classic (the game's) or Modern: smaller pieces in the screen corners, 1 to 4 players |
-| Speed | the speedometer in MPH or KM/H |
-| HUD assets | turn each part of the race HUD on or off (position, items, laps, map, speedometer, race order; left/right turns them all on or off), 1 to 4 players |
-| Jump height | Off / Low / Mid (default) / High: a hop on the Jump button (ZL by default) that keeps your speed and follows the slope |
-| Rumble strength | Off / Low (default) / High; the game's own Rumble option must be on too |
-
-**Cheats**
-
-| Option | |
-|---|---|
-| Unlock all | every character, kart, cup and mode while it is on; never written to your save, so your own progress stays as it is |
-| No weight classes | any unlocked kart for any pair of drivers, whatever their weight |
-| Special items | Normal, Any (any character can get any special item), or Custom (choose each character's) |
-| Mini-turbo sweeps | how many steering sweeps charge a mini-turbo: 3 (the game's), 2 or 1 |
-| Mini-turbo speed | up to +100% boost speed (the speed cap rises with it while boosting) |
-| Mini-turbo length | up to 4x as long a boost |
-| Mini-turbo for CPUs | the computer's karts get the three mini-turbo settings above too (off: only the players') |
-| Perfect starts | every player gets the start boost at GO, without timing the button (holding it through the countdown no longer burns out) |
-| Laps | Normal (the course's) or 1 to 7 laps, for Grand Prix and Versus races from the next race; Time Trial and Battle keep theirs |
-
-**Debug**
-
-| Option | |
-|---|---|
-| Show FPS | Off / FPS / FPS + times: ms per game frame of the game thread (GAME), the graphics thread (GX) and the render thread (RENDER); 16.7 is the 60 fps budget |
-| Logging | debug logs on the SD card, for bug reports |
-| Profiler | Off / On: a sampling profile (`logs/mkdd_prof.bin`) for performance reports, from the next start |
-
-Settings are saved to `config/settings.ini`.
+Press **-** at any time for the options menu: **Game**, **Graphics**, **Camera**, **Controls**,
+**Mods**, **Cheats**, **Update** and **Debug**. The game pauses while it is open. Every option is
+described on the [Options Menu wiki page](https://github.com/digdat0/mkdd-nx/wiki/Options-Menu). Settings are saved to `config/settings.ini`.
 
 ## Battle mode
 
