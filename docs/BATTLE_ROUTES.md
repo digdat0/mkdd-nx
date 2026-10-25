@@ -78,6 +78,14 @@ py -3 tools/battle_routes.py "<SD>/switch/MKDD-NX/routes" --seed 1 --open 35_343
 
 ## 3. Edit routes
 
+**Windows app:** `MKDD-NX-Route-Editor.exe` from the releases (nothing to install). Started without
+arguments it asks for the routes folder, your disc image and MKDD Plus's folder (Cancel skips either), and
+remembers them for next time (`%APPDATA%/MKDD-NX/route_editor.json`). It carries the built-in routes:
+an arena with no file in the folder opens with its built-in route, and Save writes it to the folder.
+It takes the same arguments as the script. `py -3 tools/build_route_editor_app.py` builds it.
+
+**The script:**
+
 ```bash
 py -3 tools/route_editor.py routes --disc "E:/path/to/game.iso" --mod "E:/path/to/MKDD Plus"
 ```

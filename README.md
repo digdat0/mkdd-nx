@@ -207,9 +207,12 @@ and 3 player battles, computer karts fill the empty places up to 4.
   `.nro`: nothing to install. Each battle they take different routes. They go for item boxes, chase
   and aim at the nearest karts (shells forward or backward, bananas behind them), steal the Shine,
   and run when they're down to their last balloon. Smaller arenas are fiercer, bigger ones calmer.
-- **Your own routes:** `tools/route_editor.py` edits them on a PC, and a `routes/<key>.txt` in the
-  app folder is used instead of the built-in route for that arena. See
-  [docs/BATTLE_ROUTES.md](docs/BATTLE_ROUTES.md).
+- **Your own routes:** `MKDD-NX-Route-Editor.exe` from the releases (Windows, nothing to install; or
+  `tools/route_editor.py`) edits them on a PC. Start it, pick `switch/MKDD-NX/routes` on the SD card
+  (create the folder if there is none), your disc image and MKDD Plus's folder (both optional: they draw
+  the arenas' maps). Each arena opens with its built-in route; **Save** writes `routes/<key>.txt`, which
+  the game then uses instead of the built-in one (delete it to go back). The built-in routes are also in
+  this repository's [routes](routes) folder. See [docs/BATTLE_ROUTES.md](docs/BATTLE_ROUTES.md).
 
 ## Character packs
 

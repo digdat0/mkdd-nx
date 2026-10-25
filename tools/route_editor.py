@@ -1,11 +1,14 @@
 """Edit the battle routes of the computer's karts (the files tools/battle_routes.py writes), and the
 map they are made on.
 
-usage: py -3 tools/route_editor.py <routes dir> [--open KEYS] [--disc IMAGE] [--mod DIR] [--game-map]
+usage: py -3 tools/route_editor.py [<routes dir>] [--open KEYS] [--disc IMAGE] [--mod DIR] [--game-map]
+(or MKDD-NX-Route-Editor.exe, tools/build_route_editor_app.py). Without <routes dir> it asks for the
+folders, and remembers them (%APPDATA%/MKDD-NX/route_editor.json).
 
 <routes dir> is the repository's routes (the ones built into the .nro: rebuild after saving) or the SD
 card's switch/MKDD-NX/routes (in a card reader: a file there wins over the built-in one). An arena's map is drawn from its recordings (rec/), the same as battle_routes.py's, with
-its map edits (map/); its route from <key>.txt, the file the game reads (else net/<key>.txt). A
+its map edits (map/); its route from <key>.txt, the file the game reads (else net/<key>.txt, else the
+built-in one: the repository's routes/, which the .exe carries; Save writes it to <routes dir>). A
 route is a network: parts, each from a junction to the next; each computer's kart picks one of the
 parts leaving a junction at random. A file may hold several networks (Network, Add network): the
 game picks one at random each battle. Make routes makes the network shown again from the map,
@@ -37,6 +40,9 @@ try:
 except ImportError:
     sys.exit("the route editor needs Pillow: py -3 -m pip install pillow")
 
+# the routes built into the .nro: the repository's routes/ (in the .exe, its own copy)
+BUILTIN = os.path.join(getattr(sys, "_MEIPASS", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")), "routes")
+SETTINGS = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "MKDD-NX", "route_editor.json")
 NAMES = {"3a": "Cookie Land", "36": "Block City", "34": "Luigi's Mansion", "38": "Tilt-a-Kart", "35": "Nintendo GameCube", "3b": "Pipe Plaza"}
 # MKDD Plus v3.3's arenas (its CourseNam1-4 name pictures), by route key; the others go by NAMES
 PLUS_NAMES = {
@@ -87,7 +93,8 @@ class Editor:
         root.title("MKDD-NX route editor")
         bar = ttk.Frame(root)
         bar.pack(side=tk.TOP, fill=tk.X)
-        keys = sorted(set(br.recordings(routes)) | {f[:11] for f in os.listdir(routes) if f.endswith(".txt") and len(f) == 15}
+        files = os.listdir(routes) + (os.listdir(BUILTIN) if os.path.isdir(BUILTIN) else [])
+        keys = sorted(set(br.recordings(routes)) | {f[:11] for f in files if f.endswith(".txt") and len(f) == 15}
                       | {os.path.basename(f)[:11] for f in glob.glob(os.path.join(routes, "map", "*.txt"))})
         names = [f"{k}  {arena_name(k)}" for k in keys]
         # the whole list open at once, no scrolling, as far as the screen's height allows (~20 px a row)
@@ -264,12 +271,15 @@ class Editor:
         path = os.path.join(self.routes, key + ".txt")
         if not os.path.exists(path):
             path = os.path.join(self.routes, "net", key + ".txt")
+        if not os.path.exists(path):
+            path = os.path.join(BUILTIN, key + ".txt")
         self.nets = [[[a, b, list(p)] for a, b, p in net] for net in br.read_networks(path)] if os.path.exists(path) else [[]]
         self.cur = 0
         self.routes_dirty = self.map_dirty = False
         self.fit()
         self.show_net(0)
-        where = os.path.relpath(path, self.routes) if self.parts else "no route yet"
+        where = ("the built-in route" if os.path.dirname(path) == BUILTIN and os.path.abspath(self.routes) != os.path.abspath(BUILTIN)
+                 else os.path.relpath(path, self.routes)) if self.parts else "no route yet"
         if len(self.nets) > 1:
             where += f", {len(self.nets)} networks"
         game = f"; the game's map from {self.game_from.get(key, '?')}" if self.tris else "; no game map (" + (
@@ -903,20 +913,58 @@ def find_disc(routes):
     return None
 
 
+def ask_folders(root):
+    """(routes, disc, mod) chosen in dialogs (the last ones offered first, kept in SETTINGS); routes None: cancelled"""
+    from tkinter import filedialog
+    import json
+    try:
+        last = json.load(open(SETTINGS, encoding="utf-8"))
+    except (OSError, ValueError):
+        last = {}
+    ok = lambda k, test: last.get(k) if last.get(k) and test(last[k]) else None
+    routes, disc, mod = ok("routes", os.path.isdir), ok("disc", os.path.isfile), ok("mod", lambda p: os.path.isdir(os.path.join(p, "files")))
+    if routes and messagebox.askyesno("MKDD-NX route editor", f"Routes folder: {routes}\nDisc image: {disc or 'none'}\nMKDD Plus folder: {mod or 'none'}\n\nUse these again?"):
+        return routes, disc, mod
+    messagebox.showinfo("MKDD-NX route editor", "Pick the routes folder to edit: switch/MKDD-NX/routes on the SD card (create it if "
+                        "there is none), or the repository's routes. Arenas without a file there start from the built-in route.")
+    routes = filedialog.askdirectory(title="Routes folder", initialdir=routes or None)
+    if not routes:
+        return None, None, None
+    disc = filedialog.askopenfilename(title="Your disc image, for the game's arena maps (Cancel: none)", initialdir=os.path.dirname(disc) if disc else None,
+                                      filetypes=[("GameCube disc image", " ".join("*" + t for t in DISC_TYPES)), ("All files", "*.*")]) or find_disc(routes)
+    mod = filedialog.askdirectory(title="MKDD Plus's folder (the one holding files), for its arena maps (Cancel: none)", initialdir=mod or None) or None
+    if mod and not os.path.isdir(os.path.join(mod, "files")):
+        messagebox.showwarning("MKDD Plus", f"No files folder in {mod}: its arenas' maps are not shown.")
+        mod = None
+    try:
+        os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
+        json.dump({"routes": routes, "disc": disc, "mod": mod}, open(SETTINGS, "w", encoding="utf-8"))
+    except OSError:
+        pass  # (asked again next time)
+    return routes, disc, mod
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("routes")
+    ap.add_argument("routes", nargs="?")
     ap.add_argument("--open", default="35_3439d285,38_db1d03f9,3b_2ad1d46b", type=lambda v: set(v.split(",")) - {""},
                     help="arenas (keys, commas between) with no holes, as battle_routes.py's --open")
     ap.add_argument("--disc", help="your disc image (.iso/.gcm/.ciso/.rvz), for the game's map; default the one in the app folder")
     ap.add_argument("--mod", help="a mod's folder (the one holding files/), for its arenas' maps: MKDD Plus's")
     ap.add_argument("--game-map", action="store_true", help="start with Map from: Game (the map made from the game's, not the recordings)")
     a = ap.parse_args()
+    root = tk.Tk()
+    if not a.routes:
+        root.withdraw()
+        a.routes, disc, mod = ask_folders(root)
+        if not a.routes:
+            return
+        a.disc, a.mod = a.disc or disc, a.mod or mod
+        root.deiconify()
     if not os.path.isdir(a.routes):
         sys.exit(f"no folder {a.routes}")
     if a.mod and not os.path.isdir(os.path.join(a.mod, "files")):
         sys.exit(f"no files folder in {a.mod}: --mod is the folder holding files/")
-    root = tk.Tk()
     Editor(root, a.routes, a.open, a.disc or find_disc(a.routes), a.game_map, a.mod)
     root.mainloop()
 
