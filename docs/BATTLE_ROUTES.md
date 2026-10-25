@@ -78,9 +78,12 @@ py -3 tools/battle_routes.py "<SD>/switch/MKDD-NX/routes" --seed 1 --open 35_343
 
 ## 3. Edit routes
 
-**Windows app:** `MKDD-NX-Route-Editor.exe` from the releases (nothing to install). Started without
+**The app:** `MKDD-NX-Route-Editor.exe` (Windows) or `MKDD-NX-Route-Editor-arm64.dmg` / `-x86_64.dmg`
+(Mac) from the releases, nothing to install; step by step on the
+[Route Editor wiki page](https://github.com/digdat0/mkdd-nx/wiki/Route-Editor). Started without
 arguments it asks for the routes folder, your disc image and MKDD Plus's folder (Cancel skips either), and
-remembers them for next time (`%APPDATA%/MKDD-NX/route_editor.json`). It carries the built-in routes:
+remembers them for next time (`%APPDATA%/MKDD-NX/route_editor.json`; on a Mac
+`~/Library/Application Support/MKDD-NX/`). It carries the built-in routes:
 an arena with no file in the folder opens with its built-in route, and Save writes it to the folder.
 It takes the same arguments as the script. `py -3 tools/build_route_editor_app.py` builds it.
 
@@ -139,7 +142,7 @@ Point colours show how close each point is to a wall:
 | Click the selected part's line | Adds a point there |
 | Click another part's line | Selects that part |
 | Shift-click | Adds a point at the end of the selected part |
-| Right-click a point | Deletes it (a part keeps at least 2) |
+| Right-click a point (Mac: also Control-click) | Deletes it (a part keeps at least 2) |
 | Middle- or right-drag | Pans the map |
 | Mouse wheel | Zooms |
 | Ctrl+Z | Undo (50 steps) |

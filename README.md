@@ -207,8 +207,8 @@ and 3 player battles, computer karts fill the empty places up to 4.
   `.nro`: nothing to install. Each battle they take different routes. They go for item boxes, chase
   and aim at the nearest karts (shells forward or backward, bananas behind them), steal the Shine,
   and run when they're down to their last balloon. Smaller arenas are fiercer, bigger ones calmer.
-- **Your own routes:** `MKDD-NX-Route-Editor.exe` from the releases (Windows, nothing to install; or
-  `tools/route_editor.py`) edits them on a PC. Start it, pick `switch/MKDD-NX/routes` on the SD card
+- **Your own routes:** the MKDD-NX Route Editor from the releases (Windows `.exe` or Mac `.dmg`, nothing to
+  install; or `tools/route_editor.py`) edits them on a computer; see the [Route Editor wiki page](https://github.com/digdat0/mkdd-nx/wiki/Route-Editor). Start it, pick `switch/MKDD-NX/routes` on the SD card
   (create the folder if there is none), your disc image and MKDD Plus's folder (both optional: they draw
   the arenas' maps). Each arena opens with its built-in route; **Save** writes `routes/<key>.txt`, which
   the game then uses instead of the built-in one (delete it to go back). The built-in routes are also in
@@ -225,10 +225,11 @@ voice and special item. Your disc image and saves are not changed.
 [List of Custom Characters](https://mkdd.org/wiki/List_of_Custom_Characters/). Download and unzip
 them on a PC. Most come as a folder for the MKDD Patcher, with `modinfo.ini` and a `files` folder.
 
-**The easy way: the MKDD-NX Characters app** (`MKDD-NX-Characters.exe` from the releases, Windows,
-nothing to install):
+**The easy way: the MKDD-NX Characters app** (from the releases: `MKDD-NX-Characters.exe` for Windows,
+`MKDD-NX-Characters-arm64.dmg` / `-x86_64.dmg` for a Mac with Apple Silicon / Intel; nothing to install).
+The [Characters App wiki page](https://github.com/digdat0/mkdd-nx/wiki/Characters-App) has the details:
 
-1. Start it. **Add mod or folder of mods…** (or drop folders on the window) adds the characters you
+1. Start it. **Add mod or folder of mods…** (or, on Windows, drop folders on the window) adds the characters you
    downloaded: one mod, or a folder holding many. Mods the game can't use are rejected, with the reason.
 2. Optional: **Disc image** (your own `.iso`): each model is checked against the character it replaces.
    The disc image is only read.
@@ -268,7 +269,8 @@ resolution with mipmaps.
 
 ### The easy way: MKDD-NX HD Textures app
 
-Download the app for your computer from the [v1.4.1 release](https://github.com/digdat0/mkdd-nx/releases/tag/v1.4.1):
+Download the app for your computer from the [latest release](https://github.com/digdat0/mkdd-nx/releases/latest)
+(step by step: the [HD Textures App wiki page](https://github.com/digdat0/mkdd-nx/wiki/HD-Textures-App)):
 `MKDD-NX-HD-Textures.exe` (Windows) or `MKDD-NX-HD-Textures-arm64.dmg` / `-x86_64.dmg` (Mac with Apple
 Silicon / Intel). Nothing else needs installing.
 

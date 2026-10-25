@@ -813,7 +813,8 @@ def gui():
 
     for text, cmd in (("Add mod or folder of mods…", add), ("Remove", remove), ("Check again", recheck), ("Export…", do_export)):
         ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=(0, 6))
-    count_v = tk.StringVar(value="Drop mod folders (or a folder of them) on this window")
+    count_v = tk.StringVar(value="Drop mod folders (or a folder of them) on this window" if sys.platform == "win32"
+                           else "Add mod folders (or a folder of them)")
     ttk.Label(bar, textvariable=count_v).pack(side="left", padx=12)
     enable_drop(root, add_paths)
     tree.bind("<<TreeviewSelect>>", show)
