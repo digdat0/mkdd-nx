@@ -26,8 +26,8 @@ jobs:
         os: [windows-latest, macos-14, macos-15-intel]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install packaging tools
@@ -58,7 +58,7 @@ jobs:
           hdiutil attach dist/*.dmg -mountpoint /tmp/app -nobrowse
           find /tmp/app -path '*routes/*.txt' | wc -l | grep -qv '^ *0$'
           hdiutil detach /tmp/app
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: tools-app-${{ matrix.os }}
           path: dist/*
