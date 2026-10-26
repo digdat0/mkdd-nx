@@ -3837,7 +3837,7 @@ static SelModel s_sel[SEL_MAX];
 static int s_nsel;
 static uint32_t s_sel_heap, s_sel_base_md[CP_BASES], s_sel_base_ex[CP_BASES], s_sel_base_anm[CP_BASES][10];
 static uint32_t s_sel_hair_md, s_sel_hair_ex; /* the game's hair model */
-static bool s_sel_bad[2][128], s_sel_off;
+static bool s_sel_bad[2][CP_VARIANTS], s_sel_off;
 
 static uint32_t sel_call(Ctx *c, uint32_t fn, uint32_t a, uint32_t b, uint32_t c3, uint32_t d, uint32_t e) {
     const uint32_t args[5] = {a, b, c3, d, e};
@@ -3876,7 +3876,7 @@ static void sel_wipe(Ctx *c, uint8_t *M, uint32_t cs) {
         mst(c, M, cs + 0x3e8, 4, s_sel_hair_md), mst(c, M, cs + 0x3ec, 4, s_sel_hair_ex);
     for (int i = 0; i < s_nsel; i++)
         if (s_sel[i].solid) sel_call(c, 0x80014B38u, s_sel[i].solid, 0, 0, 0, 0); /* JKRHeap::destroy */
-    sel_call(c, 0x80014CB8u, s_sel_heap, 0, 0, 0, 0); /* JKRHeap::freeAll */
+    if (IS_RAM(s_sel_heap)) sel_call(c, 0x80014CB8u, s_sel_heap, 0, 0, 0, 0); /* JKRHeap::freeAll */
     s_nsel = 0;
 }
 /* a .bmd in host memory: its joint count (-1 not one) and INF1 flags */
@@ -3897,7 +3897,7 @@ static int host_bmd_info(const uint8_t *b, uint32_t n, uint32_t *inf) {
 static SelModel *sel_model(Ctx *c, uint8_t *M, uint32_t cs, int v, bool hair) {
     for (int i = 0; i < s_nsel; i++)
         if (s_sel[i].v == v && s_sel[i].hair == hair) return &s_sel[i];
-    if (s_sel_off || v < 0 || v >= 128 || s_sel_bad[hair][v]) return NULL;
+    if (s_sel_off || v < 0 || v >= CP_VARIANTS || s_sel_bad[hair][v]) return NULL;
     uint32_t r13 = (uint32_t)RD(c, REG_R13, 4);
     if (!s_sel_heap) {
         uint32_t mem = charpack_reserve(SEL_HEAP_SIZE), root = ld32(c, M, r13 - 0x67b0);
@@ -4077,9 +4077,15 @@ static uint64_t i_character__9SceneMenuFv(Ctx *c, uint8_t *M, ARGS) {
         int cell = (int)ld32(c, M, menu + 0x1c * p + 0x212c);
         if (ld32(c, M, menu + 0x1c * t + 0x2144) == 0 && cell >= 0 && cell < CP_BASES) cursor[p] = cell;
     }
-    /* a select screen opened anew (from the title, a race, a cancel): its first page; then any
-     * player's X: the next page, Y: the previous one */
-    if (!charpack_select_active()) charpack_page_first();
+    /* a select screen opened anew (from the title, a race, a cancel): its first page, and the
+     * previews of the last one gone (the game's own models back in their blocks), then the files
+     * they and the race after it were built from (charpack_pool_reset); then any player's X: the
+     * next page, Y: the previous one */
+    if (!charpack_select_active()) {
+        charpack_page_first();
+        if (s_nsel) sel_wipe(c, M, IS_RAM(menu) ? ld32(c, M, menu + 0x2014) : 0);
+        charpack_pool_reset();
+    }
     if (req & 0x0f) charpack_page_step(1);
     else if (req & 0xf0) charpack_page_step(-1);
     charpack_select_frame(cursor, chosen);

@@ -156,12 +156,14 @@ void charpack_art_init(void) {
 }
 
 /* ---- the variants' pictures, made on first use (render thread) ---- */
-typedef struct { uint32_t key; GLuint tex; } Made; /* tex 0: the variant has none */
-static Made s_made[2048];
+/* by key, open addressing: a few hundred lookups a frame (every bind of a stand-in texture) */
+typedef struct { uint32_t key; GLuint tex; bool used; } Made; /* tex 0: the variant has none */
+#define MADE_SLOTS 16384 /* a power of 2, over CP_VARIANTS x (3 pictures + MODEL_TEX) */
+static Made s_made[MADE_SLOTS];
 static unsigned s_nmade;
-static uint8_t *s_bmd[128];
-static size_t s_bmd_size[128];
-static bool s_bmd_tried[128];
+static uint8_t *s_bmd[CP_VARIANTS];
+static size_t s_bmd_size[CP_VARIANTS];
+static bool s_bmd_tried[CP_VARIANTS];
 
 /* A BTI at h decoded to RGBA (malloc'd), w x h out. */
 static uint8_t *decode_bti(const uint8_t *h, size_t avail, int *w, int *ht) {
@@ -299,7 +301,7 @@ static GLuint make(int v, int b, unsigned kind, unsigned i) {
         return tex;
     }
     /* a model texture: the variant's texture of the same name, else the same place */
-    if (v >= 128) return 0;
+    if (v >= CP_VARIANTS) return 0;
     if (!s_bmd_tried[v]) {
         char path[256];
         s_bmd_tried[v] = true;
@@ -326,13 +328,14 @@ unsigned charpack_art_texture(unsigned id) {
     else if (v == CP_DIM) return 0;
     else if (v < 0) return 0;
     uint32_t key = (uint32_t)v << 16 | kind << 12 | (kind == K_DIM ? b : i);
-    for (unsigned j = 0; j < s_nmade; j++)
+    unsigned j = (key * 2654435761u) & (MADE_SLOTS - 1);
+    for (; s_made[j].used; j = (j + 1) & (MADE_SLOTS - 1))
         if (s_made[j].key == key) return s_made[j].tex;
     GLint bound = 0;
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
     GLuint tex = make(v, (int)b, kind, i);
     glBindTexture(GL_TEXTURE_2D, (GLuint)bound);
-    if (s_nmade < sizeof s_made / sizeof s_made[0]) s_made[s_nmade++] = (Made){key, tex};
+    if (s_nmade < MADE_SLOTS - 1) s_made[j] = (Made){key, tex, true}, s_nmade++; /* else (never: see MADE_SLOTS) made each time */
     if (!tex && kind != K_DIM)
         rt_log("charpack art: %s has no %s picture %u", charpack_name(v), kind == K_FACE ? "face" : kind == K_MAP ? "map" : kind == K_NAME ? "name" : "model", i);
     return tex;

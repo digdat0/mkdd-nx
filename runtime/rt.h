@@ -169,6 +169,7 @@ unsigned mod_install(const char *path, const char *out_dir, ModProgress cb, void
  * trees), variants of the 20 drivers. Characters ("bases") are numbered in the select screen's grid
  * order (Mario 0 ... King Boo 19). ---- */
 #define CP_BASES 20
+#define CP_VARIANTS 256 /* variants at most (folders in mods/characters too) */
 #define CP_DIM (-2) /* charpack_show: the game's own picture, dimmed (a page with no variant there) */
 void charpack_scan(const char *dir); /* at start-up: the mods/characters folder */
 unsigned charpack_count(void);
@@ -194,6 +195,21 @@ void charpack_race_begin(void);
 void charpack_loaded(int base, int variant);
 uint32_t charpack_file(int variant, const char *file, uint32_t *size); /* MEM1 address, 0: none */
 uint8_t *charpack_orig(int base, const char *file, uint32_t *size); /* the game's own, malloc'd */
+/* the folder of a variant's sounds (character.ini layout voice/, MKDD Patcher layout audio_waves/);
+ * false when it has none (out may be NULL to ask only that) */
+bool charpack_voice_dir(int variant, char *out, size_t n);
+/* A select screen opens anew (native.c, after its previews are gone): the files read for the last
+ * one and the race after it no longer used, the pool's files start over. */
+void charpack_pool_reset(void);
+/* ---- charvoice.c: the variants' voices, played in place of their bases' (dsp.c) ---- */
+typedef struct {
+    const int16_t *pcm; /* mono */
+    uint32_t n;
+    float ratio; /* its sample rate over the original's */
+} CharVoiceSound;
+extern volatile unsigned g_charvoice_on; /* any sound replaced now */
+void charvoice_update(void);             /* after charpack_model may have changed (charpack.c) */
+bool charvoice_match(uint32_t wave, CharVoiceSound *out); /* a channel starting on the wave at ARAM address wave */
 /* Select screen page buttons, set by the front end, taken by SceneMenu::character: bit p player p's
  * next page (ZR / X), bit 4 + p previous (ZL / Y). */
 extern volatile uint32_t g_char_cycle;

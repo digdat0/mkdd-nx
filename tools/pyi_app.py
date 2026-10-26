@@ -1,4 +1,4 @@
-"""Shared by tools/build_charpack_app.py and tools/build_route_editor_app.py: PyInstaller packaging.
+"""tools/build_tools_app.py's PyInstaller packaging.
 Windows -> dist/<FILE>.exe (one file); macOS -> dist/<FILE>-<arch>.dmg (the .app inside, with an
 Applications link to drag it on). No console window either way.
 """

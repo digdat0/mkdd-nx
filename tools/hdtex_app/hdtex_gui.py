@@ -2,7 +2,8 @@
 
 Pick the Dolphin pack's GM4E01 folder and an output folder, press Convert, walk away: the
 computer is kept awake until it is done, and the window then says where hd-textures.bin is
-and where it goes on the SD card. Packaged as a single .exe / .app by tools/hdtex_app/build_app.py.
+and where it goes on the SD card. Part of MKDD-NX Tools (tools/mkddnx_tools.py, packaged by
+tools/build_tools_app.py).
 
     py -3 tools/hdtex_app/hdtex_gui.py      (run from source)
 """
@@ -73,8 +74,10 @@ class App:
         self.cancel = threading.Event()
         self.events = queue.Queue()
 
-        root.title(APP)
-        root.resizable(False, False)
+        self.embedded = root.winfo_toplevel() is not root  # MKDD-NX Tools' tab: the window is the app's
+        if not self.embedded:
+            root.title(APP)
+            root.resizable(False, False)
         f = ttk.Frame(root, padding=16)
         f.grid(sticky="nsew")
         f.columnconfigure(1, weight=1)
@@ -113,7 +116,8 @@ class App:
         self.open_btn = ttk.Button(btns, text="Open output folder", command=lambda: open_folder(self.out_dir))
         self.cancel_btn = ttk.Button(btns, text="Cancel", command=self.ask_cancel)
 
-        root.protocol("WM_DELETE_WINDOW", self.close)
+        if not self.embedded:
+            root.protocol("WM_DELETE_WINDOW", self.close)
 
     def update_go(self):
         self.go.configure(state="normal" if self.pack and self.out_dir else "disabled")
@@ -230,13 +234,17 @@ class App:
             self.status.set("Stopping...")
             self.cancel_btn.configure(state="disabled")
 
-    def close(self):
+    def can_close(self):
         if self.worker and self.worker.is_alive():
             if not messagebox.askyesno(APP, "A conversion is running. Stop it and quit?"):
-                return
+                return False
             self.cancel.set()
             self.worker.join(timeout=30)
-        self.root.destroy()
+        return True
+
+    def close(self):
+        if self.can_close():
+            self.root.destroy()
 
 
 def main():

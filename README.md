@@ -143,7 +143,7 @@ and 3 player battles, computer karts fill the empty places up to 4.
   and aim at the nearest karts (shells forward or backward, bananas behind them), steal the Shine,
   and run when they're down to their last balloon. One stuck on a wall or an object backs out and
   rejoins its route. Smaller arenas are fiercer, bigger ones calmer.
-- **Your own routes:** the MKDD-NX Route Editor (Windows and Mac, from the releases) edits them; a
+- **Your own routes:** MKDD-NX Tools' Battle Routes (Windows and Mac, from the releases) edits them; a
   `routes/<key>.txt` in the app folder is used instead of the built-in route for that arena. See the
   [Route Editor wiki page](https://github.com/digdat0/mkdd-nx/wiki/Route-Editor), and [docs/BATTLE_ROUTES.md](docs/BATTLE_ROUTES.md) for the
   automatic route maker and the file format. The built-in routes are in the [routes](routes) folder.
@@ -158,13 +158,14 @@ and your disc image is never changed. Step-by-step instructions are on the wiki.
 | [MKDD Plus](https://mkdd.org/wiki/Mario_Kart:_Double_Dash!!_Plus) 3.3 NTSC | extra cups, courses and 24 battle arenas | `mods/plus/files`, `sys` | [wiki: MKDD Plus](https://github.com/digdat0/mkdd-nx/wiki/MKDD-Plus) |
 | [Retro Track Grand Prix](https://gamebanana.com/mods/594415) 2.1 | retro cups and courses | `mods/<patch>.xdelta`, installed on the Switch at the next start | [wiki: Retro Track Grand Prix](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix) |
 | [MKDD HD texture pack](https://sites.google.com/view/mkddhd/home-page) (English) | the game's textures in HD | `mods/hd/hd-textures.bin`, converted once on a computer | [wiki: HD Textures](https://github.com/digdat0/mkdd-nx/wiki/HD-Textures-App) |
-| Custom characters from [GameBanana](https://gamebanana.com/games/6555) and the [MKDD wiki](https://mkdd.org/wiki/List_of_Custom_Characters/) | up to 128 extra characters on more select screen pages | `mods/characters/` | [wiki: Characters App](https://github.com/digdat0/mkdd-nx/wiki/Characters-App) |
+| Custom characters from [GameBanana](https://gamebanana.com/games/6555) and the [MKDD wiki](https://mkdd.org/wiki/List_of_Custom_Characters/) | up to 256 extra characters on more select screen pages | `mods/characters/` | [wiki: Characters App](https://github.com/digdat0/mkdd-nx/wiki/Characters-App) |
 
 - **Level packs:** Plus and RTGP each keep their own saves (`save/plus/`, `save/rtgp/`). Pick one with
   **Level pack** on the − menu's **Mods** page (OFF: the standard game), then **Restart now**.
-- **Companion apps** for Windows and Mac, from the [latest release](https://github.com/digdat0/mkdd-nx/releases/latest):
-  MKDD-NX HD Textures converts the texture pack, MKDD-NX Characters prepares character mods, and the
-  MKDD-NX Route Editor edits the battle CPUs' routes.
+- **MKDD-NX Tools**, one app for Windows and Mac, from the [latest release](https://github.com/digdat0/mkdd-nx/releases/latest)
+  (`MKDD-NX-Tools.exe`, or `MKDD-NX-Tools-arm64.dmg` / `-x86_64.dmg`), a tab for each tool:
+  **HD Textures** (converts the texture pack), **Characters** (prepares character mods) and
+  **Battle Routes** (edits the battle CPUs' routes).
 
 ## Reporting bugs
 

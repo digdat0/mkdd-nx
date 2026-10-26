@@ -1,6 +1,6 @@
-/* In-game updater (− menu > UPDATE): fetches the latest GitHub release's update.txt
- * (version, size, SHA-256 of MKDD-NX.nro), downloads the .nro next to the running one, checks it,
- * swaps it in (the old one kept as .nro.old) and relaunches. Runs on its own thread; the menu
+/* In-game updater (− menu > UPDATE): asks GitHub for the latest release (its version, and
+ * MKDD-NX.nro's size and SHA-256; else the release's update.txt), downloads the .nro next to the
+ * running one, checks it, swaps it in (the old one kept as .nro.old) and relaunches. Runs on its own thread; the menu
  * polls update_status. Release side: tools/release.sh. */
 #pragma once
 #include <stdbool.h>

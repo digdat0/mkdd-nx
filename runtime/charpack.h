@@ -20,7 +20,7 @@ int charpack_moved(int base);
 /* This frame base's block of the select screen's 3D models shows variant v (a second preview of
  * another character, native.c). */
 void charpack_borrow(int base, int variant);
-/* The variant whose model textures and name tag stand in for base's now (select screen: the one
+/* The variant whose model textures, name tag and voice (charvoice.c) stand in for base's now (select screen: the one
  * previewed or chosen; race: the one loaded), -1 the game's own. */
 int charpack_model(int base);
 /* n bytes of MEM1 above the game's 24 MiB kept for good (32-byte aligned), 0 when there is no room. */

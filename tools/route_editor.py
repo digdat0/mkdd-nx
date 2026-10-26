@@ -2,7 +2,7 @@
 map they are made on.
 
 usage: py -3 tools/route_editor.py [<routes dir>] [--open KEYS] [--disc IMAGE] [--mod DIR] [--game-map]
-(or the MKDD-NX Route Editor app, tools/build_route_editor_app.py). Without <routes dir> it asks for
+(or Battle Routes in the MKDD-NX Tools app, tools/build_tools_app.py). Without <routes dir> it asks for
 the folders, and remembers them (SETTINGS).
 
 <routes dir>: the repository's routes (built into the .nro: rebuild after saving) or the SD card's
@@ -75,7 +75,9 @@ class Editor:
         self.show_game, self.map_mode, self.brush = tk.BooleanVar(value=True), tk.BooleanVar(value=False), tk.IntVar(value=1)
         self.source = tk.StringVar(value="Game" if game_map else "Recordings")  # what the map is made from
         self.show_cover, self.net_name = tk.BooleanVar(value=False), tk.StringVar(value="1")
-        root.title("MKDD-NX route editor")
+        self.embedded = root.winfo_toplevel() is not root  # MKDD-NX Tools' tab: the window is the app's
+        if not self.embedded:
+            root.title("MKDD-NX Battle Routes")
         bar = ttk.Frame(root)
         bar.pack(side=tk.TOP, fill=tk.X)
         files = os.listdir(routes) + (os.listdir(BUILTIN) if os.path.isdir(BUILTIN) else [])
@@ -149,12 +151,13 @@ class Editor:
             c.bind("<Control-ButtonPress-1>", self.right)
             c.bind("<Control-B1-Motion>", self.right_motion)
             c.bind("<Control-ButtonRelease-1>", self.release)
-            root.bind("<Command-z>", lambda e: self.do_undo())
+            root.winfo_toplevel().bind("<Command-z>", lambda e: self.root.winfo_ismapped() and self.do_undo())
         c.bind("<MouseWheel>", self.zoom)
         c.bind("<Motion>", self.hover)
         c.bind("<Configure>", lambda e: self.draw())
-        root.bind("<Control-z>", lambda e: self.do_undo())
-        root.protocol("WM_DELETE_WINDOW", self.quit)
+        root.winfo_toplevel().bind("<Control-z>", lambda e: self.root.winfo_ismapped() and self.do_undo())
+        if not self.embedded:
+            root.protocol("WM_DELETE_WINDOW", self.quit)
         self.draw_legend()
         self.set_mode()
         if len(keys) == 1:
@@ -240,8 +243,11 @@ class Editor:
         what = [w for w, d in (("the route", self.routes_dirty), ("the map", self.map_dirty)) if d]
         return not what or messagebox.askyesno("Not saved", f"Changes to {' and '.join(what)} are not saved. {doing} anyway?")
 
+    def can_close(self):
+        return self.unsaved("Close")
+
     def quit(self):
-        if self.unsaved("Close"):
+        if self.can_close():
             self.root.destroy()
 
     def load(self, key):
@@ -904,6 +910,9 @@ def find_disc(routes):
     return None
 
 
+DEFAULT_OPEN = "35_3439d285,38_db1d03f9,3b_2ad1d46b"  # the arenas with no holes (battle_routes.py's --open)
+
+
 def ask_folders(root):
     """(routes, disc, mod) chosen in dialogs (the last ones offered first, kept in SETTINGS); routes None: cancelled"""
     from tkinter import filedialog
@@ -914,9 +923,9 @@ def ask_folders(root):
         last = {}
     ok = lambda k, test: last.get(k) if last.get(k) and test(last[k]) else None
     routes, disc, mod = ok("routes", os.path.isdir), ok("disc", os.path.isfile), ok("mod", lambda p: os.path.isdir(os.path.join(p, "files")))
-    if routes and messagebox.askyesno("MKDD-NX route editor", f"Routes folder: {routes}\nDisc image: {disc or 'none'}\nMKDD Plus folder: {mod or 'none'}\n\nUse these again?"):
+    if routes and messagebox.askyesno("MKDD-NX Battle Routes", f"Routes folder: {routes}\nDisc image: {disc or 'none'}\nMKDD Plus folder: {mod or 'none'}\n\nUse these again?"):
         return routes, disc, mod
-    messagebox.showinfo("MKDD-NX route editor", "Pick the routes folder to edit: switch/MKDD-NX/routes on the SD card (create it if "
+    messagebox.showinfo("MKDD-NX Battle Routes", "Pick the routes folder to edit: switch/MKDD-NX/routes on the SD card (create it if "
                         "there is none), or the repository's routes. Arenas without a file there start from the built-in route.")
     routes = filedialog.askdirectory(title="Routes folder", initialdir=routes or None)
     if not routes:
@@ -935,10 +944,18 @@ def ask_folders(root):
     return routes, disc, mod
 
 
+def open_editor(frame):
+    """the editor in frame (MKDD-NX Tools' tab), the folders asked for as the app does; None when cancelled"""
+    routes, disc, mod = ask_folders(frame)
+    if not routes:
+        return None
+    return Editor(frame, routes, set(DEFAULT_OPEN.split(",")), disc or find_disc(routes), False, mod)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("routes", nargs="?")
-    ap.add_argument("--open", default="35_3439d285,38_db1d03f9,3b_2ad1d46b", type=lambda v: set(v.split(",")) - {""},
+    ap.add_argument("--open", default=DEFAULT_OPEN, type=lambda v: set(v.split(",")) - {""},
                     help="arenas (keys, commas between) with no holes, as battle_routes.py's --open")
     ap.add_argument("--disc", help="your disc image (.iso/.gcm/.ciso/.rvz), for the game's map; default the one in the app folder")
     ap.add_argument("--mod", help="a mod's folder (the one holding files/), for its arenas' maps: MKDD Plus's")

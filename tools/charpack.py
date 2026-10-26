@@ -10,6 +10,8 @@ Each character becomes one folder, copied to the SD card's /switch/MKDD-NX/mods/
     <id>/name.bti        select screen name tag (optional: the game writes the name)
     <id>/anims/          its own driving animations (the packs' are another character's,
                          Mario's, copied: the game plays that character's)
+    <id>/voice/          its own voice (optional): <archive>/<wave>.wav (Voice/, SelectVoice/,
+                         CommendationVoice/), played in place of its base's
 
 Input: a mod folder as shipped for the MKDD Patcher (modinfo.ini + files/MRAM.arc/mram/driver/
 <character>/...), any number of characters, a folder made by this tool, or a folder with just one
@@ -26,11 +28,18 @@ given, each model is checked against the character it replaces: the skeleton (jo
 character's: it moves as that one) and the textures (the select screen shows the variant's textures on the
 game's model). Yaz0-compressed files are decompressed.
 
+A one-character mod's sounds become its voice/: its audio_waves/ (the MKDD Patcher's .wav files)
+or, in older mods, its rebuilt AudioRes/ (GCKart.baa and Waves/*.aw: the waves that differ from the
+disc's, decoded). With the disc image, each is made what the game expects in place of the wave it
+replaces, as the MKDD Patcher and MKDD Plus do: mono, no higher sample rate, no longer than the
+original (the game's sound tables are made for those lengths); the game cuts long ones too.
+
     py -3 tools/charpack.py                     the window
     py -3 tools/charpack.py --cli --iso GAME.iso --out OUT MOD [MOD ...]   check and export
 
 The disc image is only read, to compare; nothing from it is written.
 """
+import array
 import hashlib
 import json
 import os
@@ -38,6 +47,7 @@ import re
 import shutil
 import struct
 import sys
+import types
 
 # ---- characters, in MKDD-NX's order (the select screen's grid) ----
 # id (character.ini base=), name, game driver folder, race2d face, map icon, menu name tag
@@ -73,6 +83,7 @@ CROW_NAMES = ["Metal Mario", "Gooigi", "Bride Peach", "HoliDaisy", "Blue Yoshi",
 PACK_NAMES = {"puyo pack": {"mario": "Arle", "luigi": "Ringo", "yoshi": "Sig", "catherine": "Amitie", "dk": "Feli",
                             "dkjr": "Lemres", "koopa": "Satan", "koopajr": "Draco"}}
 DRIVERS = ("MRAM.arc", "mram", "driver")
+KARTS = ("MRAM.arc", "mram", "kart")
 ANIMS = ("ARAM.arc", "aram", "driveranm")
 FACES = ("race2d.arc", "mram_race2d", "timg")
 NAMES = ("SceneData", "English", "menu.arc", "menu", "timg")
@@ -149,6 +160,255 @@ def read(path):
         return yaz0(f.read())
 
 
+# ---- voices: audio_waves/<archive>/<wave id>.wav (MKDD Patcher), the character folder's voice/ ----
+# the Patcher's folder names: the .aw each replaces waves of, and where the game plays it
+VOICE_ARCS = {"selectvoice": ("SelectVoice", "SelectVoice_0.aw", "select screen"),
+              "voice": ("Voice", "Voice_0.aw", "race"),
+              "commendationvoice": ("CommendationVoice", "CommendationVoice_0.aw", "awards"),
+              "soundeffects": ("SoundEffects", "se00_0.aw", "sound effects"),
+              "nintendologo": ("NintendoLogo", "NintendoLogoMario_0.aw", "Nintendo logo"),
+              "bgmsamples": ("BGMSamples", "bgm_0.aw", "music")}
+
+
+def wav_info(path):
+    """(rate, samples) of a .wav the game plays (16- or 8-bit PCM, any channels: runtime/charvoice.c),
+    else the reason it can't"""
+    with open(path, "rb") as f:
+        d = f.read()
+    if d[:4] != b"RIFF" or d[8:12] != b"WAVE":
+        return "not a .wav"
+    fmt = data = None
+    o = 12
+    while o + 8 <= len(d):
+        tag, n = d[o:o + 4], struct.unpack("<I", d[o + 4:o + 8])[0]
+        if tag == b"fmt " and n >= 16:
+            fmt = struct.unpack("<HHIIHH", d[o + 8:o + 24])
+            if fmt[0] == 0xFFFE and n >= 26:  # WAVE_FORMAT_EXTENSIBLE: its subformat
+                fmt = (struct.unpack("<H", d[o + 32:o + 34])[0],) + fmt[1:]
+        elif tag == b"data":
+            data = min(n, len(d) - o - 8)
+        o += 8 + n + (n & 1)
+    if not fmt or data is None:
+        return "not a .wav (no fmt or data)"
+    kind, ch, rate, _, _, bits = fmt
+    if kind != 1 or bits not in (8, 16) or not 1 <= ch <= 8:
+        return f"{bits}-bit {'PCM' if kind == 1 else f'format {kind}'}: the game plays 16- or 8-bit PCM"
+    if not 1000 <= rate <= 192000 or not data:
+        return "empty, or an odd sample rate"
+    return rate, data // (ch * bits // 8)
+
+
+def read_wav(path):
+    """(rate, mono int16 samples) of a .wav, the channels averaged"""
+    with open(path, "rb") as f:
+        d = f.read()
+    o, fmt, data = 12, None, b""
+    while o + 8 <= len(d):
+        tag, n = d[o:o + 4], struct.unpack("<I", d[o + 4:o + 8])[0]
+        if tag == b"fmt ":
+            fmt = struct.unpack("<HHIIHH", d[o + 8:o + 24])
+        elif tag == b"data":
+            data = d[o + 8:o + 8 + n]
+        o += 8 + n + (n & 1)
+    ch, rate, bits = fmt[1], fmt[2], fmt[5]
+    width = bits // 8
+    frames = len(data) // (ch * width)
+    if bits == 16:
+        v = array.array("h", data[:frames * ch * 2])
+        if sys.byteorder == "big":
+            v.byteswap()
+    else:
+        v = array.array("h", ((b - 128) << 8 for b in data[:frames * ch]))
+    if ch > 1:
+        v = array.array("h", (sum(v[k * ch:k * ch + ch]) // ch for k in range(frames)))
+    return rate, v
+
+
+def write_wav(path, rate, v):
+    v = array.array("h", v)
+    if sys.byteorder == "big":
+        v.byteswap()
+    data = v.tobytes()
+    with open(path, "wb") as f:
+        f.write(b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVEfmt " +
+                struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16) + b"data" + struct.pack("<I", len(data)) + data)
+
+
+def conform(rate, v, orig_rate, orig_count):
+    """a sound as the game gets it in place of a wave of orig_count samples at orig_rate: no faster
+    than that rate (linear resampling) and no longer than that wave (the MKDD Patcher's and MKDD
+    Plus's rules: the game's sound tables are made for the original lengths)"""
+    orig_rate = int(round(orig_rate))
+    if rate > orig_rate:
+        step, n = rate / orig_rate, int(len(v) * orig_rate / rate)
+        out = array.array("h", bytes(2 * n))
+        for k in range(n):
+            x = k * step
+            a = int(x)
+            b = min(a + 1, len(v) - 1)
+            out[k] = int(v[a] + (v[b] - v[a]) * (x - a))
+        rate, v = orig_rate, out
+    most = int(orig_count * rate / orig_rate)
+    return rate, v[:most]
+
+
+AFC_COEF = ((0, 0), (2048, 0), (0, 2048), (1024, 1024), (4096, -2048), (3584, -1536), (3072, -1024), (4608, -2560),
+            (4200, -2248), (4800, -2300), (5120, -3072), (2048, -2048), (1024, -1024), (-1024, 1024), (-1024, 0), (-2048, 0))
+
+
+def decode_wave(d, fmt, count):
+    """a wave of an .aw as int16 samples: format 0 4-bit AFC ADPCM (9 bytes a 16 samples), 1 2-bit
+    (5 bytes), 2 PCM8, 3 PCM16 (as runtime/dsp.c plays them)"""
+    if fmt == 3:
+        v = array.array("h", d[:2 * count])
+        if sys.byteorder == "little":
+            v.byteswap()
+        return v
+    if fmt == 2:
+        return array.array("h", ((b - 256 if b > 127 else b) << 8 for b in d[:count]))
+    size, out, h0, h1 = (9 if fmt == 0 else 5), array.array("h"), 0, 0
+    for blk in range(0, len(d) - size + 1, size):
+        hd = d[blk]
+        delta, (c0, c1) = 1 << (hd >> 4), AFC_COEF[hd & 15]
+        for k in range(16):
+            if size == 9:
+                nib = d[blk + 1 + k // 2] >> (0 if k & 1 else 4) & 15
+                val, shift = nib - 16 if nib > 7 else nib, 11
+            else:
+                bits = d[blk + 1 + k // 4] >> (6 - 2 * (k % 4)) & 3
+                val, shift = bits - 4 if bits > 1 else bits, 13
+            x = ((delta * val) << shift) + h0 * c0 + h1 * c1 >> 11
+            x = max(-32768, min(32767, x))
+            h1, h0 = h0, x
+            out.append(x)
+        if len(out) >= count:
+            break
+    return out[:count]
+
+
+def wave_tables(baa):
+    """{.aw name (lower case): {wave id: (format, rate, offset, bytes, samples)}} of a GCKart.baa"""
+    out = {}
+    u32 = lambda o: struct.unpack(">I", baa[o:o + 4])[0]
+    for w in range(0, len(baa) - 0x18, 4):
+        if baa[w:w + 4] != b"WSYS":
+            continue
+        try:
+            winf, wbct = w + u32(w + 0x10), w + u32(w + 0x14)
+            if baa[winf:winf + 4] != b"WINF" or baa[wbct:wbct + 4] != b"WBCT":
+                continue
+            for g in range(min(u32(winf + 4), u32(wbct + 8))):
+                go, so = w + u32(winf + 8 + 4 * g), w + u32(wbct + 12 + 4 * g)
+                aw = baa[go:go + 0x70].split(b"\0")[0].decode("latin-1").lower()
+                cdf, table = w + u32(so + 0xc), {}
+                for i in range(u32(go + 0x70)):
+                    wo, eo = w + u32(go + 0x74 + 4 * i), w + u32(cdf + 8 + 4 * i)
+                    rate = struct.unpack(">f", baa[wo + 4:wo + 8])[0]
+                    table.setdefault(struct.unpack(">h", baa[eo + 2:eo + 4])[0],
+                                     (baa[wo + 1], rate, u32(wo + 8), u32(wo + 0xc), u32(wo + 0x1c)))
+                out.setdefault(aw, table)
+        except (struct.error, IndexError):
+            continue
+    return out
+
+
+def voice_files(folder):
+    """the sounds in an audio_waves (or voice) folder: ([(archive dir, wave id, path, (rate, samples))],
+    [(file, why)])"""
+    ok, bad = [], []
+    for sub in sorted(os.listdir(folder)):
+        sp = os.path.join(folder, sub)
+        if not os.path.isdir(sp):
+            bad.append((sub, "not in an archive folder (Voice/, SelectVoice/, ...)"))
+            continue
+        arc = VOICE_ARCS.get(sub.lower())
+        for name in sorted(os.listdir(sp)):
+            rel = f"{sub}/{name}"
+            if arc is None:
+                bad.append((rel, f"unknown folder {sub} (known: {', '.join(a[0] for a in VOICE_ARCS.values())})"))
+            elif not re.fullmatch(r"\d+\.wav", name, re.I):
+                bad.append((rel, "not named <wave number>.wav"))
+            else:
+                info = wav_info(os.path.join(sp, name))
+                if isinstance(info, str):
+                    bad.append((rel, info))
+                else:
+                    ok.append((arc[0], int(name[:-4]), os.path.join(sp, name), info))
+    return ok, bad
+
+
+def archive_sounds(audiores, disc):
+    """the waves a mod's own AudioRes (GCKart.baa and Waves/*.aw, rebuilt whole: older mods, Sonic)
+    has changed from the disc's: ([(archive dir, wave id, rate, samples)], [problems])"""
+    baa = find_ci(audiores, "GCKart.baa")
+    with open(baa, "rb") as f:
+        mine = wave_tables(f.read())
+    theirs = disc.wave_tables()
+    out, bad = [], []
+    for arc_dir, aw, _ in VOICE_ARCS.values():
+        path = find_ci(audiores, "Waves", aw)
+        if not path or aw.lower() not in mine:
+            continue
+        with open(path, "rb") as f:
+            data = f.read()
+        orig = disc.file("AudioRes/Waves/" + aw)
+        for wid, (fmt, rate, off, size, count) in sorted(mine[aw.lower()].items()):
+            o = theirs.get(aw.lower(), {}).get(wid)
+            if o is None:
+                bad.append(f"{arc_dir}/{wid}: no such wave in the game")
+            elif data[off:off + size] != orig[o[2]:o[2] + o[3]] or abs(rate - o[1]) > 0.5:
+                if off + size > len(data) or fmt > 3:
+                    bad.append(f"{arc_dir}/{wid}: {'format ' + str(fmt) if fmt > 3 else 'cut short'}")
+                else:
+                    out.append((arc_dir, wid, int(round(rate)), decode_wave(data[off:off + size], fmt, count)))
+    return out, bad
+
+
+def voice_check(c, disc, n):
+    """c.voice: [(archive dir, wave id, rate, samples)] the export writes, conformed with the disc"""
+    c.voice = []
+    sounds, cut, unknown = [], [], []
+    if "voice" in c.files:
+        ok, bad = voice_files(c.files["voice"])
+        for rel, why in bad:
+            n.append(("warn", f"voice: {rel} skipped: {why}"))
+        sounds = [(arc, wid, *read_wav(path)) for arc, wid, path, _ in ok]
+    if "audiores" in c.files:
+        if not disc:
+            n.append(("warn", "voice: the mod's sounds are in rebuilt sound archives (AudioRes): pick the disc image "
+                              "to find the ones it changes"))
+        else:
+            sounds, bad = archive_sounds(c.files["audiores"], disc)
+            for why in bad:
+                n.append(("warn", f"voice: {why}, skipped"))
+    if not sounds:
+        if "voice" in c.files or (disc and "audiores" in c.files):
+            n.append(("warn", "voice: none of its sounds can be played: it has its base's voice"))
+        return
+    for arc, wid, rate, v in sounds:
+        if disc:
+            orig = disc.waves(arc).get(wid)
+            if orig is None:
+                unknown.append(f"{arc}/{wid}")
+                continue
+            r2, v2 = conform(rate, v, orig[0], orig[1])
+            if len(v2) < len(v) * r2 / rate - 1:
+                cut.append(f"{arc}/{wid} {len(v) / rate:.2f} s to {orig[1] / orig[0]:.2f} s")
+            rate, v = r2, v2
+        c.voice.append((arc, wid, rate, v))
+    if unknown:
+        n.append(("warn", f"voice: no such wave in the game, skipped: {', '.join(unknown)}"))
+    per = {}
+    for arc, *_ in c.voice:
+        per[arc] = per.get(arc, 0) + 1
+    where = ", ".join(f"{k} {v} ({next(a[2] for a in VOICE_ARCS.values() if a[0] == k)})" for k, v in per.items())
+    n.append(("ok", f"voice: {len(c.voice)} sounds of its own, played in place of {BASES[c.base][1]}'s: {where}"))
+    if cut:
+        n.append(("info", f"voice: {len(cut)} longer than the sounds they replace, cut to their length (as the MKDD "
+                          f"Patcher does): {'; '.join(cut[:4])}{' ...' if len(cut) > 4 else ''}"))
+    if not disc:
+        n.append(("info", "voice: no disc image given: wave numbers and lengths not checked (the game cuts long ones)"))
+
 # ---- J3D models: the joint and texture names ----
 def _names(b, at):
     n = struct.unpack(">H", b[at:at + 2])[0]
@@ -221,6 +481,17 @@ class Disc:
             info = bmd_info(yaz0(b)) if b else None
             self._joints[base] = info["joints"] if info else []
         return self._joints[base]
+
+    def wave_tables(self):
+        """GCKart.baa's wave tables (wave_tables), read once"""
+        if not hasattr(self, "_waves"):
+            self._waves = wave_tables(self.file("AudioRes/GCKart.baa"))
+        return self._waves
+
+    def waves(self, arc):
+        """{wave id: (sample rate, samples)} of a Patcher archive folder name (Voice)"""
+        aw = next(a[1] for a in VOICE_ARCS.values() if a[0] == arc).lower()
+        return {k: (v[1], v[4]) for k, v in self.wave_tables().get(aw, {}).items()}
 
     def driver_file(self, base, name):
         """the game's MRAM.arc Driver/<folder>/<name>, or None"""
@@ -335,6 +606,11 @@ def scan(folder):
     crow = len(found) == 20 and author.lower() == "crow8028"
     faces, names, anims = find_ci(files, *FACES), find_ci(files, *NAMES), find_ci(files, *ANIMS)
     voice = find_ci(folder, "audio_waves")
+    kd = find_ci(files, *KARTS)
+    karts = sorted(k for k in os.listdir(kd) if os.path.isdir(os.path.join(kd, k))) if kd else []
+    audiores = find_ci(files, "AudioRes")
+    if audiores and not find_ci(audiores, "GCKart.baa"):
+        audiores = None
     out = []
     for b, d in found:
         dfolder = os.path.join(drivers, d)
@@ -349,6 +625,8 @@ def scan(folder):
             cf["anims"] = a
         if voice and len(found) == 1:
             cf["voice"] = voice
+        elif audiores and len(found) == 1:
+            cf["audiores"] = audiores
         if crow:
             name = CROW_NAMES[b]
         elif d.lower() in PACK_NAMES.get(modname.lower(), {}):
@@ -357,7 +635,9 @@ def scan(folder):
             name = re.sub(r"\s+in\s+MKDD.*$", "", modname, flags=re.I)
         else:
             name = f"{BASES[b][1]} 2"
-        out.append(Character(b, name, author, "", cf, f"{folder} ({d})"))
+        c = Character(b, name, author, "", cf, f"{folder} ({d})")
+        c.karts = karts
+        out.append(c)
     return out
 
 
@@ -411,8 +691,11 @@ def check(c, disc):
                     ("name.bti", "no name tag: the game writes the name")):
         if f not in c.files:
             n.append(("info" if f != "face.bti" else "warn", what))
-    if "voice" in c.files:
-        n.append(("info", "voice files kept in voice/ (not played yet)"))
+    if "voice" in c.files or "audiores" in c.files:
+        voice_check(c, disc, n)
+    if getattr(c, "karts", None):
+        n.append(("info", f"kart: the mod's kart{'s' if len(c.karts) > 1 else ''} ({', '.join(c.karts)}) not used yet: "
+                          "it drives the game's"))
 
 
 def folder_ids(chars):
@@ -539,7 +822,11 @@ def export(chars, out):
             shutil.rmtree(dest)
         os.makedirs(dest)
         for name, src in c.files.items():
-            if os.path.isdir(src):
+            if name in ("voice", "audiores"):  # check() made c.voice: the sounds the game plays
+                for arc, wid, rate, v in getattr(c, "voice", []):
+                    os.makedirs(os.path.join(dest, "voice", arc), exist_ok=True)
+                    write_wav(os.path.join(dest, "voice", arc, f"{wid}.wav"), rate, v)
+            elif os.path.isdir(src):
                 shutil.copytree(src, os.path.join(dest, name))
             else:
                 with open(os.path.join(dest, name), "wb") as f:
@@ -623,7 +910,9 @@ def enable_drop(root, on_drop):
     shell32.DragAcceptFiles(hwnd, True)
 
 
-def gui():
+def gui(root=None):
+    """the window; in root, a frame (MKDD-NX Tools' tab, tools/mkddnx_tools.py), when given: then
+    returns the tool (its can_close())"""
     import tkinter as tk
     from tkinter import ttk, filedialog, messagebox
 
@@ -633,9 +922,11 @@ def gui():
     except (OSError, ValueError):
         cfg = {}
 
-    root = tk.Tk()
-    root.title("MKDD-NX character pack tool")
-    root.geometry("980x640")
+    own = root is None
+    root = root or tk.Tk()
+    if own:
+        root.title("MKDD-NX Characters")
+        root.geometry("980x640")
     chars = []
     state = {"disc": None}
 
@@ -816,7 +1107,7 @@ def gui():
     count_v = tk.StringVar(value="Drop mod folders (or a folder of them) on this window" if sys.platform == "win32"
                            else "Add mod folders (or a folder of them)")
     ttk.Label(bar, textvariable=count_v).pack(side="left", padx=12)
-    enable_drop(root, add_paths)
+    enable_drop(root.winfo_toplevel(), lambda paths: root.winfo_ismapped() and add_paths(paths))  # (in a tab: while shown)
     tree.bind("<<TreeviewSelect>>", show)
     for v in (name_v, author_v, source_v):
         v.trace_add("write", lambda *_: None)
@@ -828,7 +1119,9 @@ def gui():
     slot_box.bind("<<ComboboxSelected>>", apply)
     if iso_v.get():
         root.after(100, open_disc)
-    root.mainloop()
+    if own:
+        root.mainloop()
+    return types.SimpleNamespace(can_close=lambda: True)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,8 @@
  *       JASAramStream moves its loop point a few sub-frames ahead and gives up for good,
  *       sFatalErrorFlag, when playback has already passed it).
  * Mixing: AFC 4-bit/2-bit ADPCM and 8/16-bit PCM from ARAM, pitch (4.12 fixed point), loops with
- * stored predictor history, main-bus mixer volumes or the auto-mixer, the finished flag.
+ * stored predictor history, main-bus mixer volumes or the auto-mixer, the finished flag. A wave a
+ * character pack replaces plays the pack's samples instead (charvoice.c).
  * Not emulated: FX/reverb buses, IIR/FIR filters, oscillators, Dolby surround.
  *
  * Sub-frames render in the DSP interrupt. MKDD_DSP_ASYNC=1 (not the native verifier, which
@@ -39,6 +40,8 @@ typedef struct {
     unsigned idx, valid;  /* next sample to take, end of valid samples */
     unsigned skip;        /* samples to drop from the next decoded block */
     int32_t h0, h1;       /* ADPCM history */
+    CharVoiceSound rep;   /* a character's own sound in place of this wave (charvoice.c), pcm NULL none */
+    uint32_t rep_pos;
 } Voice;
 
 extern int g_native_verify; /* native.c: its RAM snapshots need the DSP synchronous */
@@ -203,6 +206,12 @@ static uint32_t addr_of(const Src *s, uint32_t pos) {
  * in Dolphin's ZeldaAudioRenderer): AFC "remaining" counts samples decoded, not played; at the
  * end of a looping voice the source restarts at the loop block with the loop history. */
 static bool fetch(const Src *s, Voice *v, uint32_t *addr, uint32_t *remaining, int32_t *out) {
+    if (v->rep.pcm) { /* never loops, like the MKDD Patcher's */
+        if (v->rep_pos >= v->rep.n) return false;
+        *out = v->rep.pcm[v->rep_pos++];
+        *remaining = v->rep.n - v->rep_pos;
+        return true;
+    }
     if (s->afc) {
         if (v->idx >= v->valid) {
             if (*remaining == 0) {
@@ -307,6 +316,7 @@ static bool mix_channel(uint32_t ch, float *out_l, float *out_r) {
         addr = addr_of(&s, start);
         remaining = R32(0x114) - start;
         W16(0x08, 0);
+        if (g_charvoice_on && !start && charvoice_match(s.wave, &v->rep)) remaining = v->rep.n;
     } else {
         addr = R32(0x70);
         remaining = R32(0x74);
@@ -315,6 +325,7 @@ static bool mix_channel(uint32_t ch, float *out_l, float *out_r) {
     s.loop_h1 = (int16_t)R16(0x106);
     s.loop_pos = R32(0x110);
     s.loop_end = R32(0x114);
+    if (v->rep.pcm) pitch *= v->rep.ratio;
     bool finished = false;
     if (v->cur == INT32_MIN) {
         int32_t x;
@@ -339,7 +350,7 @@ static bool mix_channel(uint32_t ch, float *out_l, float *out_r) {
     m_write_be(b + 0x70, 4, addr);
     m_write_be(b + 0x74, 4, remaining);
     /* VPB +0x64: decoded AFC samples not yet consumed (JASAramStream's play position uses it). */
-    W16(0x64, s.afc && v->valid > v->idx ? v->valid - v->idx : 0);
+    W16(0x64, s.afc && !v->rep.pcm && v->valid > v->idx ? v->valid - v->idx : 0);
     if (finished) W16(0x02, 1);
     return true;
 #undef R16

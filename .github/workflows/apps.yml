@@ -1,9 +1,9 @@
-# Builds the character pack app (tools/charpack.py) and the battle route editor (tools/route_editor.py):
-# MKDD-NX-Characters / MKDD-NX-Route-Editor as .exe (Windows) and .dmg (macOS, Apple Silicon and Intel).
-# Run it from the Actions tab with a release tag to attach the apps to that release, or without one to
-# only keep them as workflow artifacts. Publishing a release also runs it. The apps contain no game code
-# or data (the route editor carries the repository's routes/).
-name: Characters and route editor apps
+# Builds MKDD-NX Tools (tools/mkddnx_tools.py: the Characters, HD Textures and Battle Routes apps in one):
+# MKDD-NX-Tools.exe (Windows) and MKDD-NX-Tools-<arch>.dmg (macOS, Apple Silicon and Intel). Run it from
+# the Actions tab with a release tag to attach the apps to that release, or without one to only keep
+# them as workflow artifacts. Publishing a release also runs it. The apps contain no game code or data
+# (they carry the repository's routes/).
+name: MKDD-NX Tools app
 
 on:
   release:
@@ -24,7 +24,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-14, macos-15-intel]
-        app: [charpack, route_editor]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -32,22 +31,36 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install packaging tools
-        run: python -m pip install pyinstaller==6.16.0 pillow==12.0.0 zstandard==0.25.0
+        run: python -m pip install -r tools/apps_requirements.txt
       - name: Build the app
-        run: python tools/build_${{ matrix.app }}_app.py
+        run: python tools/build_tools_app.py
+      - name: A tiny texture pack, for the checks
+        shell: bash
+        run: |
+          python - <<'EOF'
+          from pathlib import Path
+          from PIL import Image
+          d = Path("ci-pack/GM4E01"); d.mkdir(parents=True)
+          Image.new("RGBA", (64, 32), (200, 40, 40, 255)).save(d / "tex1_16x8_0123456789abcdef_14.png")
+          EOF
+      - name: Check the packaged app (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          ./dist/MKDD-NX-Tools.exe --convert ci-pack ci-out/hd-textures.bin
+          test -s ci-out/hd-textures.bin
       - name: Check the packaged app (macOS)
         if: runner.os == 'macOS'
         run: |
           ls -l dist
+          "build-tools-app/dist/MKDD-NX Tools.app/Contents/MacOS/MKDD-NX Tools" --convert ci-pack ci-out/hd-textures.bin
+          test -s ci-out/hd-textures.bin
           hdiutil attach dist/*.dmg -mountpoint /tmp/app -nobrowse
-          ls /tmp/app/*.app/Contents/MacOS
-          if [ "${{ matrix.app }}" = route_editor ]; then
-            find /tmp/app -path '*routes/*.txt' | wc -l | grep -qv '^ *0$'
-          fi
+          find /tmp/app -path '*routes/*.txt' | wc -l | grep -qv '^ *0$'
           hdiutil detach /tmp/app
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.app }}-app-${{ matrix.os }}
+          name: tools-app-${{ matrix.os }}
           path: dist/*
       - name: Attach to the release
         if: github.event_name == 'release' || inputs.tag != ''

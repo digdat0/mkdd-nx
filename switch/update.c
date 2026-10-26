@@ -1,15 +1,20 @@
-/* In-game updater, see update.h. The release carries two assets: MKDD-NX.nro and update.txt
+/* In-game updater, see update.h. What the latest release is comes from GitHub's own record of it,
+ * api.github.com/repos/<repo>/releases/latest: its tag (v1.2.0) and its MKDD-NX.nro asset's size,
+ * SHA-256 (the asset's "digest", which GitHub works out on upload) and download url, so a release
+ * needs nothing but the .nro. When the API can't be used (60 requests an hour per address without
+ * a token, or an asset uploaded before GitHub kept digests) it falls back to the release's update.txt
  *   version=1.2.0
  *   size=12345678
  *   sha256=<64 hex>
- * fetched from github.com/<repo>/releases/latest/download/ (no API, no token: the repository has
- * to be public while players update). An update is offered when the release's version is not
- * older than this build's and its .nro differs from the running one, so same-version rebuilds
- * install too and nothing ever downgrades. */
+ * the only thing builds up to 1.6.1 read (tools/release.sh still attaches it for them). No token
+ * either way: the repository has to be public while players update. An update is offered when the
+ * release's version is not older than this build's and its .nro differs from the running one, so
+ * same-version rebuilds install too and nothing ever downgrades. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <ctype.h>
 
 #include <switch.h>
 #include <curl/curl.h>
@@ -24,14 +29,18 @@
 #ifndef MKDD_VERSION
 #define MKDD_VERSION "0.0.0"
 #endif
-#define RELEASE_URL "https://github.com/digdat0/mkdd-nx/releases/latest/download/"
+#define REPO "digdat0/mkdd-nx"
+#define API_URL "https://api.github.com/repos/" REPO "/releases/latest"
+#define RELEASE_URL "https://github.com/" REPO "/releases/latest/download/"
+#define ASSET_URL "https://github.com/" REPO "/releases/download/" /* the API's download urls */
 #define MANIFEST_MAX 4096
+#define API_MAX (512 << 10) /* the release's JSON: its notes and every asset */
 
 static PMutex s_lock;
 static UpdateStatus s_st;
 static bool s_busy; /* the worker is running */
 static char s_nro[512];
-static struct { char version[24]; unsigned long long size; u8 sha[32]; } s_rel;
+static struct { char version[24]; unsigned long long size; u8 sha[32]; char url[384]; } s_rel;
 
 const char *update_version(void) { return MKDD_VERSION; }
 
@@ -73,6 +82,16 @@ static int hexval(char c) {
     return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
 }
 
+/* 64 hex digits -> 32 bytes */
+static bool parse_sha(const char *hex, u8 out[32]) {
+    for (int i = 0; i < 32; i++) {
+        int hi = hexval(hex[2 * i]), lo = hi < 0 ? -1 : hexval(hex[2 * i + 1]);
+        if (lo < 0) return false;
+        out[i] = (u8)(hi << 4 | lo);
+    }
+    return true;
+}
+
 /* ---- HTTP ---- */
 typedef struct {
     char *buf; size_t len, cap;   /* manifest: into memory */
@@ -111,6 +130,12 @@ static int on_progress(void *u, curl_off_t dltotal, curl_off_t dlnow, curl_off_t
 static const char *fetch(const char *url, Sink *s) {
     CURL *h = curl_easy_init();
     if (!h) return "COULD NOT START THE DOWNLOAD";
+    struct curl_slist *hdr = NULL;
+    if (!strncmp(url, "https://api.github.com/", 23)) {
+        hdr = curl_slist_append(hdr, "Accept: application/vnd.github+json");
+        hdr = curl_slist_append(hdr, "X-GitHub-Api-Version: 2022-11-28");
+        curl_easy_setopt(h, CURLOPT_HTTPHEADER, hdr);
+    }
     curl_easy_setopt(h, CURLOPT_URL, url);
     curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L); /* releases/latest/download -> the asset's CDN url */
     curl_easy_setopt(h, CURLOPT_MAXREDIRS, 8L);
@@ -127,10 +152,11 @@ static const char *fetch(const char *url, Sink *s) {
     long code = 0;
     curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &code);
     curl_easy_cleanup(h);
+    curl_slist_free_all(hdr);
     rt_log("update: GET %s -> curl %d (%s), HTTP %ld", url, (int)r, curl_easy_strerror(r), code);
     if (r == CURLE_COULDNT_RESOLVE_HOST || r == CURLE_COULDNT_CONNECT) return "NO INTERNET CONNECTION";
     if (r == CURLE_OPERATION_TIMEDOUT) return "THE CONNECTION TIMED OUT: TRY AGAIN";
-    if (r == CURLE_WRITE_ERROR) return s->f ? "COULD NOT WRITE TO THE SD CARD" : "UPDATE.TXT IS TOO BIG";
+    if (r == CURLE_WRITE_ERROR) return s->f ? "COULD NOT WRITE TO THE SD CARD" : "THE RELEASE INFO IS TOO BIG";
     if (r != CURLE_OK) return "DOWNLOAD FAILED: TRY AGAIN";
     if (code == 404) return "NO RELEASE FOUND (IS THE REPOSITORY PUBLIC?)";
     if (code != 200) return "THE SERVER REFUSED: TRY AGAIN LATER";
@@ -150,15 +176,96 @@ static bool parse_manifest(const char *t) {
         } else if (!strncmp(line, "size=", 5)) {
             s_rel.size = strtoull(line + 5, NULL, 10);
         } else if (!strncmp(line, "sha256=", 7)) {
-            have_sha = true;
-            for (int i = 0; i < 32; i++) {
-                int hi = hexval(line[7 + 2 * i]), lo = hi < 0 ? -1 : hexval(line[8 + 2 * i]);
-                if (lo < 0) { have_sha = false; break; }
-                s_rel.sha[i] = (u8)(hi << 4 | lo);
-            }
+            have_sha = parse_sha(line + 7, s_rel.sha);
         }
     }
+    snprintf(s_rel.url, sizeof s_rel.url, "%s", RELEASE_URL "MKDD-NX.nro");
     return s_rel.version[0] && s_rel.size > 0x80 && s_rel.size < (256ull << 20) && have_sha;
+}
+
+/* ---- the API's JSON: just enough of it, never trusting its shape (NUL-terminated text) ---- */
+static const char *ws(const char *p) {
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    return p;
+}
+
+/* Past the value at p (strings, nesting), NULL when it's cut off or malformed. */
+static const char *skip(const char *p) {
+    int depth = 0;
+    p = ws(p);
+    do {
+        if (*p == '"') {
+            for (p++; *p && *p != '"'; p++)
+                if (*p == '\\' && p[1]) p++;
+            if (!*p) return NULL;
+            p++;
+        } else if (*p == '{' || *p == '[') {
+            if (++depth > 64) return NULL;
+            p++;
+        } else if (*p == '}' || *p == ']') {
+            if (!depth--) return NULL;
+            p++;
+        } else if (!*p) {
+            return NULL;
+        } else {
+            p += depth ? 1 : strcspn(p, ",}] \t\r\n"); /* a number, true, null */
+        }
+    } while (depth > 0);
+    return p;
+}
+
+/* The value of the object at p's own member key (not a nested object's), NULL when absent. */
+static const char *member(const char *p, const char *key) {
+    size_t k = strlen(key);
+    if (!p || *(p = ws(p)) != '{') return NULL;
+    for (p++;;) {
+        p = ws(p);
+        if (*p != '"') return NULL;
+        const char *name = p + 1, *v = skip(p);
+        if (!v || *(v = ws(v)) != ':') return NULL;
+        v = ws(v + 1);
+        if (!strncmp(name, key, k) && name[k] == '"') return v;
+        if (!(p = skip(v)) || *(p = ws(p)) != ',') return NULL;
+        p++;
+    }
+}
+
+/* A string value without escapes into out. */
+static bool str_val(const char *v, char *out, size_t n) {
+    if (!v || *v != '"') return false;
+    size_t i = 0;
+    for (v++; *v != '"'; v++) {
+        if (!*v || *v == '\\' || i + 1 >= n) return false;
+        out[i++] = *v;
+    }
+    out[i] = 0;
+    return true;
+}
+
+/* releases/latest: the tag and MKDD-NX.nro's size, digest and url into s_rel. */
+static bool parse_release(const char *t) {
+    memset(&s_rel, 0, sizeof s_rel);
+    char tag[32], name[64], digest[80];
+    if (!str_val(member(t, "tag_name"), tag, sizeof tag)) return false;
+    const char *v = tag + (tag[0] == 'v' || tag[0] == 'V');
+    if (!isdigit((unsigned char)*v)) return false;
+    snprintf(s_rel.version, sizeof s_rel.version, "%s", v);
+    const char *a = member(t, "assets");
+    if (!a || *a != '[') return false;
+    for (a = ws(a + 1); *a == '{'; a = ws(a + 1)) {
+        if (str_val(member(a, "name"), name, sizeof name) && !strcmp(name, "MKDD-NX.nro")) {
+            if (!skip(a)) return false; /* cut off inside it: a number could be short */
+            const char *size = member(a, "size");
+            s_rel.size = size && isdigit((unsigned char)*size) ? strtoull(size, NULL, 10) : 0;
+            return str_val(member(a, "digest"), digest, sizeof digest) && !strncmp(digest, "sha256:", 7) &&
+                   strlen(digest) == 7 + 64 && parse_sha(digest + 7, s_rel.sha) &&
+                   str_val(member(a, "browser_download_url"), s_rel.url, sizeof s_rel.url) &&
+                   !strncmp(s_rel.url, ASSET_URL, strlen(ASSET_URL)) &&
+                   s_rel.size > 0x80 && s_rel.size < (256ull << 20);
+        }
+        if (!(a = skip(a)) || *(a = ws(a)) != ',') break;
+    }
+    return false;
 }
 
 /* SHA-256 of a file; false when it can't be read. */
@@ -177,12 +284,29 @@ static bool file_sha(const char *path, u8 out[32], unsigned long long *size) {
     return true;
 }
 
-static void do_check(void) {
-    char *buf = calloc(1, MANIFEST_MAX);
-    Sink s = {buf, 0, MANIFEST_MAX};
-    const char *err = buf ? fetch(RELEASE_URL "update.txt", &s) : "OUT OF MEMORY";
-    if (!err && !parse_manifest(buf)) err = "THE RELEASE HAS NO VALID UPDATE.TXT";
+/* The latest release into s_rel: GitHub's record of it, else its update.txt. NULL or what went wrong. */
+static const char *find_release(void) {
+    char *buf = calloc(1, API_MAX);
+    if (!buf) return "OUT OF MEMORY";
+    Sink s = {buf, 0, API_MAX};
+    const char *err = fetch(API_URL, &s);
+    if (!err && !parse_release(buf)) err = "THE RELEASE HAS NO MKDD-NX.NRO";
+    /* offline: update.txt can't help */
+    if (err && strcmp(err, "NO INTERNET CONNECTION") && strcmp(err, "THE CONNECTION TIMED OUT: TRY AGAIN")) {
+        rt_log("update: the API gave \"%s\", trying update.txt", err);
+        memset(buf, 0, MANIFEST_MAX);
+        s = (Sink){buf, 0, MANIFEST_MAX};
+        const char *api = err;
+        err = fetch(RELEASE_URL "update.txt", &s);
+        if (!err && !parse_manifest(buf)) err = "THE RELEASE HAS NO VALID UPDATE.TXT";
+        if (err) err = api; /* the API's answer says more */
+    }
     free(buf);
+    return err;
+}
+
+static void do_check(void) {
+    const char *err = find_release();
     if (err) { set_state(UPD_ERROR, err); return; }
     pmutex_lock(&s_lock);
     snprintf(s_st.version, sizeof s_st.version, "%s", s_rel.version);
@@ -190,7 +314,8 @@ static void do_check(void) {
     u8 cur[32];
     bool same = file_sha(s_nro, cur, NULL) && !memcmp(cur, s_rel.sha, 32);
     int vc = version_cmp(s_rel.version, MKDD_VERSION);
-    rt_log("update: release %s (%llu bytes), running %s from %s: %s", s_rel.version, s_rel.size, MKDD_VERSION, s_nro,
+    rt_log("update: release %s (%llu bytes, %s), running %s from %s: %s", s_rel.version, s_rel.size, s_rel.url,
+           MKDD_VERSION, s_nro,
            same ? "same file" : vc < 0 ? "older" : "different");
     set_state(same || vc < 0 ? UPD_CURRENT : UPD_AVAILABLE, NULL);
 }
@@ -206,7 +331,7 @@ static void do_install(void) {
     if (!s.f) { set_state(UPD_ERROR, "COULD NOT WRITE TO THE SD CARD"); return; }
     setvbuf(s.f, NULL, _IOFBF, 256 << 10);
     sha256ContextCreate(&s.sha);
-    const char *err = fetch(RELEASE_URL "MKDD-NX.nro", &s);
+    const char *err = fetch(s_rel.url, &s);
     if (fclose(s.f) != 0 && !err) err = "COULD NOT WRITE TO THE SD CARD";
     u8 got[32];
     sha256ContextGetHash(&s.sha, got);

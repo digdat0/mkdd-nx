@@ -10,8 +10,9 @@
  *    race2d.arc and menu.arc. Names: names.txt next to files/ ("nokonoko=SHY GUY"), Crow8028's
  *    Character Texture Pack's own (recognised by its contents), else "KOOPA 2"; the author from the
  *    pack's modinfo.ini.
- * A variant has its base's stats, voice and animations, its own model, face animations and pictures
- * (charpack_art.c makes the missing map icon and name tag).
+ * A variant has its base's stats and animations, its own model, face animations and pictures
+ * (charpack_art.c makes the missing map icon and name tag), and its own voice when it ships one
+ * (voice/, or a one-character pack's audio_waves/: charvoice.c), else its base's.
  *
  * The game never sees them. The character select screen (native.c SceneMenu::character) shows pages:
  * page 1 the game's 20, page k the k-th variant placed in each cell (dimmed where there is none); Y
@@ -26,8 +27,9 @@
  * the character: Mario's are the variant's when the Mario of this race (or of the select screen) is one.
  *
  * The files are read once each from the SD card into MEM1 above the game's 24 MiB (gc_core.h
- * RAM_SIZE), where they stay: the models the game builds from them point into them. 8 MiB holds
- * over 100 models. */
+ * RAM_SIZE): the models the game builds from them point into them. They stay until a select
+ * screen opens anew (charpack_pool_reset), when no model built from them is left: the 8 MiB (3 of
+ * them the select screen's models' heap) need hold only one visit's and the race's after it. */
 #include <ctype.h>
 #include <dirent.h>
 #include <stdlib.h>
@@ -41,8 +43,8 @@
 #define CP_ANIMS "ARAM.arc/aram/driveranm"
 #define POOL_LO 0x81800000u
 #define POOL_HI 0x82000000u
-#define VAR_MAX 128
-#define FILE_MAX 512
+#define VAR_MAX CP_VARIANTS
+#define FILE_MAX 4096 /* each file asked for, there or not */
 
 /* The game's driver folders (ResMgr::getDriverName), lower case, in the select screen's grid order
  * (column by column, top row first): SceneMenu's cell numbers are these indices. */
@@ -77,6 +79,7 @@ typedef struct {
     uint8_t base, cell; /* cell: where the select screen shows it (layout) */
     bool pinned;        /* character.ini slot= */
     int8_t anim;        /* the character whose animations move it (its skeleton's), -1 its base's */
+    char voice;         /* its sounds (charvoice.c): 'v' in dir/voice, 'a' in the pack's audio_waves, 0 none */
 } Variant;
 static Variant s_var[VAR_MAX];
 static unsigned s_nvar;
@@ -278,6 +281,8 @@ static void scan_character(const char *dir) {
     Variant *v = add_variant(b, dir, "");
     if (!v) return;
     v->anim = (int8_t)anim;
+    snprintf(p, sizeof p, "%s/voice", dir);
+    if (is_dir(p)) v->voice = 'v';
     if (!ini_get(ini, "name", v->name, sizeof v->name)) default_name(v);
     ini_get(ini, "author", v->author, sizeof v->author);
     char slot[32];
@@ -326,6 +331,9 @@ static void scan_pack(const char *pack) {
         Variant *v = add_variant(b, root, folder);
         if (!v) return;
         v->anim = (int8_t)anim;
+        char waves[200];
+        snprintf(waves, sizeof waves, "%s/audio_waves", pack);
+        if (nf == 1 && is_dir(waves)) v->voice = 'a'; /* a pack's sounds are its one character's */
         char names[200];
         snprintf(names, sizeof names, "%s/names.txt", pack);
         if (!ini_get(names, folder, v->name, sizeof v->name)) {
@@ -369,10 +377,10 @@ void charpack_scan(const char *dir) {
         s_pick[b] = s_show[b] = s_model[b] = s_moved[b] = -1, s_pending[b] = NO_PENDING, s_pick_cell[b] = b, s_chosen[b] = false;
     scan_pack(dir); /* mods/characters/files */
     DIR *d = opendir(dir);
-    char subs[64][64];
+    static char subs[VAR_MAX][64];
     unsigned n = 0;
     struct dirent *e;
-    while (d && (e = readdir(d)) && n < 64)
+    while (d && (e = readdir(d)) && n < VAR_MAX)
         if (e->d_name[0] != '.' && strcasecmp(e->d_name, "files")) snprintf(subs[n++], sizeof subs[0], "%s", e->d_name);
     if (d) closedir(d);
     /* folder name order, so the pages keep their order */
@@ -522,6 +530,7 @@ void charpack_select_frame(const int cursor[4], const bool chosen[CP_BASES]) {
     }
     s_select_gx = gx_frame_count();
     s_select_seen = true;
+    charvoice_update();
 }
 /* counted in game frames, not time: one slow frame is still the same screen */
 bool charpack_select_active(void) { return s_select_seen && gx_frame_count() - s_select_gx <= 3; }
@@ -546,9 +555,25 @@ bool charpack_hint(int p, char *out, size_t n) {
 /* A race's drivers are about to be built: nothing is shown as a variant until one is loaded. */
 void charpack_race_begin(void) {
     for (int b = 0; b < CP_BASES; b++) s_show[b] = s_model[b] = -1;
+    charvoice_update();
 }
 void charpack_loaded(int b, int v) {
     if (b >= 0 && b < CP_BASES) s_show[b] = s_model[b] = v;
+    charvoice_update();
+}
+
+bool charpack_voice_dir(int v, char *out, size_t n) {
+    if (v < 0 || (unsigned)v >= s_nvar || !s_var[v].voice) return false;
+    if (!out) return true;
+    const char *d = s_var[v].dir;
+    if (s_var[v].voice == 'v') snprintf(out, n, "%s/voice", d);
+    else snprintf(out, n, "%.*s/audio_waves", (int)(strlen(d) - strlen("/files")), d); /* dir: the pack's files/ */
+    return true;
+}
+
+void charpack_pool_reset(void) {
+    if (s_nfile) rt_log("charpack: %u files (%u KiB) let go, the pool starts over", s_nfile, (s_pool - POOL_LO) >> 10);
+    s_pool = POOL_LO, s_nfile = 0;
 }
 
 /* n bytes of the pool for good (native.c: the select screen's heap for the variants' models), 0 when

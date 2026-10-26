@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Publish a build for the in-game updater (switch/update.c), and open the update window.
 #
-#   tools/release.sh publish ["notes"]   upload build-switch/MKDD-NX.nro + update.txt as release v<version>
+#   tools/release.sh publish ["notes"]   upload build-switch/MKDD-NX.nro (+ update.txt) as release v<version>
 #                                        (version from switch/CMakeLists.txt; an existing release of
 #                                        that version gets its files replaced: same-version rebuilds)
 #   tools/release.sh window [seconds]    make the repository public, wait (Enter, or the seconds given),
 #                                        make it private again. Private again on Ctrl-C or any error.
 #
-# The updater reads github.com/<repo>/releases/latest/download/update.txt with no token, so it
-# only works while the repository is public. Never put anything in a release but the .nro.
+# The updater reads the latest release from api.github.com (its tag, and the .nro's size and the
+# SHA-256 GitHub records on upload), with no token, so it only works while the repository is public.
+# update.txt is only for builds up to 1.6.1, which read nothing else (newer ones fall back to it
+# when the API is refused): drop it once players have moved on. Never put game files in a release.
 set -euo pipefail
 REPO=digdat0/mkdd-nx
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -47,7 +49,7 @@ window)
     fi
     ;;
 *)
-    sed -n '2,12p' "$0"
+    sed -n '2,13p' "$0"
     exit 1
     ;;
 esac
