@@ -4,6 +4,9 @@ Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo
 **No game code or data is in this repository.** 
 **Bring your own legally dumped disc image of Mario Kart: Double Dash!! (USA, GM4E01). We do not condone piracy and will not respond to requests for game image files!**
 
+
+Note: This is an AI assisted project. 
+
 ## Features
 
 **Game**
