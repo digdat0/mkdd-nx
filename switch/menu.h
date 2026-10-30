@@ -43,6 +43,8 @@ typedef struct {
     int drv_up, drv_forward, drv_tilt; /* DRIVER FPV: eye above and ahead of the driver's head, degrees down */
     int kart_up, kart_forward, kart_tilt; /* KART view: eye above and ahead of the driver's head, degrees down (settings.ini only) */
     bool profiler;     /* sampling profiler (logs/mkdd_prof.bin), from the next start */
+    bool game_clocks;  /* CLOCKS: GAME, the port raises the handheld profile and boosts the CPU while
+                        * booting; off (SYSTEM, the default) leaves clocks alone, for overclock tools. Next start */
     bool lan;          /* LAN play over Wi-Fi: a Broadband Adapter (eth.c), from the next start (MULTIPLAYER > LAN PLAY) */
     char lan_peer[64]; /* "a.b.c.d[:port]": the other console's address, for networks that drop broadcasts ("" none; MULTIPLAYER > LAN PEER) */
     int docked_res;    /* docked (TV), 1080p output: DOCKED_NATIVE (the game's 640x480-ish frame), _2X, _1_5X or
@@ -51,6 +53,8 @@ typedef struct {
                         * screen's own lines) or _AUTO (1.5x, stepping down while the GPU can't keep up) */
     uint64_t map[MAP_COUNT]; /* Switch buttons (HidNpadButton_*) that press each GameCube button: the
                              * BUTTON MAPPING page's actions (menu.c ACTIONS), one per Switch button */
+    uint64_t jmap[MAP_COUNT]; /* the same for a single Joy-Con held sideways (JOY-CON SIDEWAYS), its buttons
+                               * as main_switch.c sideways_buttons names them */
 } Settings;
 enum { DOCKED_NATIVE, DOCKED_2X, DOCKED_1_5X, DOCKED_AUTO };
 enum { HANDHELD_NATIVE, HANDHELD_1_25X, HANDHELD_1_5X, HANDHELD_AUTO };

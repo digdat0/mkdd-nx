@@ -31,13 +31,17 @@ Note: This is an AI assisted project.
   and the one it plays as can now race together. See [Mods](#mods).
 - **Mario Kart Wii drivers:** MKDD-NX Tools converts a Mario Kart Wii driver into a character. See
   [Wii Characters](https://github.com/digdat0/mkdd-nx/wiki/Wii-Characters).
+- **Characters for a real GameCube:** MKDD-NX Tools can also export characters (native or converted
+  from Wii) as MKDD Patcher mods, to patch into your own disc image for a GameCube or Dolphin.
 - Camera options: rear view on Y, camera height and distance, and a free camera on the right stick
   that turns 360° around your kart.
 - Texture filtering: 2x, 4x, 8x or 16x anisotropic.
 - Higher  resolution: up to 2x docked (1080p output) and 1.5x handheld, with an Auto mode
   that lowers it only when the frame rate would drop.
 - Colour options: Accurate, Vivid, or your own brightness, contrast and saturation.
-- Up to 4 players, controller syncing from the game menu, and button remapping.
+- Up to 4 players, controller syncing from the game menu, single Joy-Cons held sideways, and
+  button remapping (full controllers and single Joy-Cons separately).
+- Clocks are left to the system by default, so overclock tools work as set (**Debug > Clocks**).
 - Unlock-all option that never touches your save.
 - Race HUD options: a MODERN style for 1 to 4 players, MPH or KM/H, and hiding the position, items,
   laps, map, speedometer or race order one by one.
@@ -121,18 +125,23 @@ The app creates three folders next to the `.nro` and the disc image:
 
 Up to 4 players. Controllers become players in order: the console in handheld mode first,
 then wireless controllers as the system numbers them (so handheld + one Pro Controller is a
-2-player game). **CONTROLLERS** in the - menu opens the system screen for pairing, the player
-order and single Joy-Cons. Connects and disconnects are logged (`pad:` lines in `mkdd.log`).
+2-player game). **Controls > Sync controllers** in the - menu opens the system screen for pairing,
+the player order and single Joy-Cons (L + R pairs two Joy-Cons; one Joy-Con alone: hold it sideways
+and press SL + SR). A Joy-Con left on its own for 2 seconds becomes a single sideways controller by
+itself. Connects and disconnects are logged (`pad:` lines in `mkdd.log`). Full details:
+[Controls](https://github.com/digdat0/mkdd-nx/wiki/Controls).
 
 - **Handheld, Pro Controller, Joy-Con pair:** A/B/X/Y as on the GameCube, + = Start,
   ZR = R (drift), R = Z, left stick (or the D-pad) = control stick. ZL = jump (when Game >
   Jump is on), L or Y = rear view in races, right stick click = Kart FPV on and off, right stick
   sideways = free camera. Remappable in the menu (applies to all of these; **Reset** on the Button
   mapping page gives these defaults again). In menus L and R are both Z, as before.
-- **Single Joy-Con, held sideways:** the four face buttons sit where a GameCube pad's A (right),
-  B (bottom), X (top) and Y (left) are; SL = L, SR = R, the top shoulder or stick click = Z,
-  + (right Joy-Con) or ZL / - (left Joy-Con) = Start. Player 1 on a single right Joy-Con opens
-  the menu with stick click + +.
+- **Single Joy-Con, held sideways (rail on top):** the stick steers as held, the four face buttons
+  sit where a GameCube pad's A (right), B (bottom), X (top) and Y (left) are, in races and menus;
+  SL and SR = drift, the shoulder or stick click = Z, + or ZL / ZR = Start (- too for players 2-4).
+  Remappable for driving on its own page (**Controls > Joy-Con sideways**). Player 1 on a single
+  right Joy-Con opens the menu with stick click + +. HOME and Capture belong to the system and
+  can't be remapped.
 - **GameCube controller (official adapter):** its own layout, with analog L/R.
 
 Rumble works on controllers with HD Rumble and on GameCube controllers.

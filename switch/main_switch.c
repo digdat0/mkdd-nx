@@ -513,27 +513,54 @@ static void rumble_update(bool paused) {
     }
 }
 
-/* Single Joy-Con held sideways: its four face buttons where a GameCube pad's A (right), B
- * (bottom), X (top) and Y (left) are; SL = L, SR = R, the top shoulder or the stick = Z. */
-static void map_sideways(u64 b, bool left, bool p1, PadStatus *p) {
-    const u64 A = left ? HidNpadButton_Up : HidNpadButton_B, B = left ? HidNpadButton_Right : HidNpadButton_Y;
-    const u64 X = left ? HidNpadButton_Left : HidNpadButton_A, Y = left ? HidNpadButton_Down : HidNpadButton_X;
-    if (b & A) p->button |= PAD_A;
-    if (b & B) p->button |= PAD_B;
-    if (b & X) p->button |= PAD_X;
-    if (b & Y) p->button |= PAD_Y;
-    if (b & HidNpadButton_AnySL) p->button |= PAD_TRIGGER_L;
-    if (b & HidNpadButton_AnySR) p->button |= PAD_TRIGGER_R;
-    if (b & (HidNpadButton_L | HidNpadButton_R | HidNpadButton_StickL | HidNpadButton_StickR)) p->button |= PAD_TRIGGER_Z;
-    /* Start: + on the right Joy-Con; on the left one - (player 1's - opens the menu, so ZL) */
-    if (b & (HidNpadButton_Plus | HidNpadButton_ZL | (p1 ? 0 : HidNpadButton_Minus))) p->button |= PAD_START;
+/* A single Joy-Con, which the system reports as held upright, as held sideways (rail, SL / SR,
+ * on top): its face buttons named by where they are then, as on a full controller (the right
+ * Joy-Con's X, on the right, is A; the left one's down is A), and its stick's directions turned
+ * a quarter, as left-stick directions. Everything that reads buttons (the - menu, the game's
+ * menus, driving) then sees one layout. */
+static u64 sideways_buttons(u64 b, bool left) {
+    static const u64 FROM[2][8] = {
+        {HidNpadButton_X, HidNpadButton_A, HidNpadButton_Y, HidNpadButton_B, /* right Joy-Con */
+         HidNpadButton_StickRUp, HidNpadButton_StickRDown, HidNpadButton_StickRLeft, HidNpadButton_StickRRight},
+        {HidNpadButton_Down, HidNpadButton_Left, HidNpadButton_Right, HidNpadButton_Up, /* left Joy-Con */
+         HidNpadButton_StickLDown, HidNpadButton_StickLUp, HidNpadButton_StickLRight, HidNpadButton_StickLLeft}};
+    static const u64 TO[8] = {HidNpadButton_A, HidNpadButton_B, HidNpadButton_X, HidNpadButton_Y,
+                              HidNpadButton_StickLRight, HidNpadButton_StickLLeft, HidNpadButton_StickLUp, HidNpadButton_StickLDown};
+    u64 out = b & ~(HidNpadButton_R | HidNpadButton_ZR | HidNpadButton_StickR | HidNpadButton_AnySL | HidNpadButton_AnySR);
+    for (int i = 0; i < 8; i++) out &= ~FROM[left][i];
+    for (int i = 0; i < 8; i++)
+        if (b & FROM[left][i]) out |= TO[i];
+    /* and the shoulder, the trigger, the stick press, SL and SR by one name whichever Joy-Con
+     * (L, ZL, left stick, LeftSL, LeftSR): JOY-CON SIDEWAYS maps those */
+    if (b & (HidNpadButton_L | HidNpadButton_R)) out |= HidNpadButton_L;
+    if (b & (HidNpadButton_ZL | HidNpadButton_ZR)) out |= HidNpadButton_ZL;
+    if (b & (HidNpadButton_StickL | HidNpadButton_StickR)) out |= HidNpadButton_StickL;
+    if (b & HidNpadButton_AnySL) out |= HidNpadButton_LeftSL;
+    if (b & HidNpadButton_AnySR) out |= HidNpadButton_LeftSR;
+    return out;
+}
+static bool single_joycon(u32 st) {
+    return (st & (HidNpadStyleTag_NpadJoyLeft | HidNpadStyleTag_NpadJoyRight)) &&
+           !(st & (HidNpadStyleTag_NpadJoyDual | HidNpadStyleTag_NpadFullKey | HidNpadStyleTag_NpadHandheld));
+}
+
+/* A single Joy-Con held sideways outside driving (buttons from sideways_buttons): its four face
+ * buttons where a GameCube pad's A (right), B (bottom), X (top) and Y (left) are; SL = L, SR = R,
+ * the shoulder or the stick press = Z, + or the trigger = Start. Driving: JOY-CON SIDEWAYS. */
+static const uint64_t JOY_MAP_DEFAULT[MAP_COUNT] = {
+    [GC_A] = HidNpadButton_A, [GC_B] = HidNpadButton_B, [GC_X] = HidNpadButton_X, [GC_Y] = HidNpadButton_Y,
+    [GC_Z] = HidNpadButton_L | HidNpadButton_StickL, [GC_L] = HidNpadButton_LeftSL, [GC_R] = HidNpadButton_LeftSR,
+    [GC_START] = HidNpadButton_Plus | HidNpadButton_ZL,
+};
+static const uint16_t GC_BITS[GC_COUNT] = {PAD_A, PAD_B, PAD_X, PAD_Y, PAD_TRIGGER_Z, PAD_TRIGGER_L, PAD_TRIGGER_R, PAD_START};
+static void map_buttons(u64 b, const uint64_t *map, PadStatus *p) {
+    for (int i = 0; i < GC_COUNT; i++)
+        if (b & map[i]) p->button |= GC_BITS[i];
 }
 
 /* map: BUTTON MAPPING's layout while driving, the standard one everywhere else (update_pads) */
 static void map_full(PadState *pad, u64 b, const uint64_t *map, PadStatus *p) {
-    static const uint16_t GC_BITS[GC_COUNT] = {PAD_A, PAD_B, PAD_X, PAD_Y, PAD_TRIGGER_Z, PAD_TRIGGER_L, PAD_TRIGGER_R, PAD_START};
-    for (int i = 0; i < GC_COUNT; i++)
-        if (b & map[i]) p->button |= GC_BITS[i];
+    map_buttons(b, map, p);
     HidAnalogStickState r = padGetStickPos(pad, 1);
     p->substick_x = stick(r.x);
     p->substick_y = stick(r.y);
@@ -570,6 +597,20 @@ static void update_pads(void) {
         padUpdate(&s_src[i]);
         if (padIsConnected(&s_src[i]) && n < 4) src_of[n++] = i;
     }
+    /* A lone Joy-Con the system still counts as half of a pair (style JoyDual, one side
+     * connected) has no A or B of its own: after 2 s alone (so a pair waking one Joy-Con after
+     * the other stays a pair) it becomes a player by itself, held sideways. The controller
+     * screen (L + R on both) joins two into a pair again. */
+    static int lone[NSRC];
+    for (int i = 1; i < NSRC; i++) {
+        u32 a = padGetAttributes(&s_src[i]);
+        bool left = a & HidNpadAttribute_IsLeftConnected, right = a & HidNpadAttribute_IsRightConnected;
+        lone[i] = (padGetStyleSet(&s_src[i]) & HidNpadStyleTag_NpadJoyDual) && left != right ? lone[i] + 1 : 0;
+        if (lone[i] == 120) {
+            Result rc = hidSetNpadJoyAssignmentModeSingle(SRC_ID[i], left ? HidNpadJoyDeviceType_Left : HidNpadJoyDeviceType_Right);
+            rt_log("pad: controller %d is a lone %s Joy-Con: single (%#x)", i, left ? "left" : "right", rc);
+        }
+    }
     /* connect / disconnect / controller change, logged with the time (rt_log stamps it) */
     for (int p = 0; p < 4; p++) {
         u32 st = src_of[p] >= 0 ? padGetStyleSet(&s_src[src_of[p]]) : 0;
@@ -593,7 +634,11 @@ static void update_pads(void) {
     /* The - menu belongs to player 1 (a single right Joy-Con: press its stick and +). */
     PadState *p1 = s_player_src[0] >= 0 ? &s_src[s_player_src[0]] : &s_src[0];
     u64 down1 = padGetButtonsDown(p1), held1 = padGetButtons(p1);
-    if ((s_player_style[0] & HidNpadStyleTag_NpadJoyRight) && (held1 & HidNpadButton_StickR) && (down1 & HidNpadButton_Plus))
+    if (single_joycon(s_player_style[0])) {
+        bool left = s_player_style[0] & HidNpadStyleTag_NpadJoyLeft;
+        down1 = sideways_buttons(down1, left), held1 = sideways_buttons(held1, left);
+    }
+    if ((s_player_style[0] & HidNpadStyleTag_NpadJoyRight) && (held1 & (HidNpadButton_StickL | HidNpadButton_StickR)) && (down1 & HidNpadButton_Plus))
         down1 |= HidNpadButton_Minus;
     bool menu = menu_input(down1, held1, &s_quit);
     uint32_t jump = 0, cam_reset = 0; /* JUMP (menu.c ACTIONS, GAME > JUMP): the ports holding it, for the game thread */
@@ -611,18 +656,28 @@ static void update_pads(void) {
         s.connected = src >= 0 || p == 0; /* port 1 is always there (the game expects a pad) */
         if (src >= 0 && !menu) {
             PadState *pad = &s_src[src];
-            u64 b = padGetButtons(pad);
-            if (pad == p1) b &= ~menu_blocked();
-            if (drive == 1 && (b & map[MAP_JUMP])) jump |= 1u << p;
-            if (drive == 1 && (b & map[MAP_CAM_RESET])) cam_reset |= 1u << p;
             u32 st = s_player_style[p];
-            bool single = (st & (HidNpadStyleTag_NpadJoyLeft | HidNpadStyleTag_NpadJoyRight)) &&
-                          !(st & (HidNpadStyleTag_NpadJoyDual | HidNpadStyleTag_NpadFullKey | HidNpadStyleTag_NpadHandheld));
+            bool single = single_joycon(st);
+            u64 b = padGetButtons(pad);
+            if (single) {
+                b = sideways_buttons(b, st & HidNpadStyleTag_NpadJoyLeft);
+                if (p) b = b & HidNpadButton_Minus ? (b & ~HidNpadButton_Minus) | HidNpadButton_Plus : b; /* - is + but for player 1 (the menu) */
+            }
+            if (pad == p1) b &= ~menu_blocked();
+            const uint64_t *pmap = single ? (drive == 1 ? g_set.jmap : JOY_MAP_DEFAULT) : map;
+            if (drive == 1 && (b & pmap[MAP_JUMP])) jump |= 1u << p;
+            if (drive == 1 && (b & pmap[MAP_CAM_RESET])) cam_reset |= 1u << p;
             HidAnalogStickState l = padGetStickPos(pad, single && (st & HidNpadStyleTag_NpadJoyRight) ? 1 : 0);
+            if (single) { /* the system reports it as held upright: turn it a quarter, rail (SL / SR) on top */
+                s32 x = l.x;
+                bool left = st & HidNpadStyleTag_NpadJoyLeft;
+                l.x = left ? -l.y : l.y;
+                l.y = left ? x : -x;
+            }
             s.stick_x = stick(l.x);
             s.stick_y = stick(l.y);
             if (st & HidNpadStyleTag_NpadGc) map_gc(pad, b, &s);
-            else if (single) map_sideways(b, (st & HidNpadStyleTag_NpadJoyLeft) != 0, p == 0, &s);
+            else if (single) map_buttons(b, pmap, &s);
             else {
                 map_full(pad, b, map, &s);
                 if (b & resume) s.button |= PAD_START;
@@ -673,12 +728,12 @@ static void update_pads(void) {
             bool was = was_fp[p], kwas = was_kfp[p];
             int src = s_player_src[p];
             u32 st = s_player_style[p];
-            bool full = !(st & HidNpadStyleTag_NpadGc) &&
-                        (!(st & (HidNpadStyleTag_NpadJoyLeft | HidNpadStyleTag_NpadJoyRight)) ||
-                         (st & (HidNpadStyleTag_NpadJoyDual | HidNpadStyleTag_NpadFullKey | HidNpadStyleTag_NpadHandheld)));
-            u64 pb = src >= 0 && !menu && full && drive == 1
-                         ? padGetButtons(&s_src[src]) & (&s_src[src] == p1 ? ~menu_blocked() : ~0ull) : 0;
-            bool on = pb & map[MAP_FP], kon = pb & map[MAP_KFP];
+            bool single = single_joycon(st); /* its buttons from JOY-CON SIDEWAYS */
+            u64 pb = src >= 0 && !menu && !(st & HidNpadStyleTag_NpadGc) && drive == 1 ? padGetButtons(&s_src[src]) : 0;
+            if (single) pb = sideways_buttons(pb, st & HidNpadStyleTag_NpadJoyLeft);
+            if (src >= 0 && &s_src[src] == p1) pb &= ~menu_blocked();
+            const uint64_t *pmap = single ? g_set.jmap : map;
+            bool on = pb & pmap[MAP_FP], kon = pb & pmap[MAP_KFP];
             u32 bit = 1u << p;
             bool fp = g_first_person & bit, kart = g_fp_kart & bit;
             if (on && !was) {
@@ -909,7 +964,11 @@ int main(int argc, char **argv) {
     g_lan_on = g_set.lan; /* LAN MODE on the title menu (eth.c): before the game boots */
     snprintf(g_lan_peer, sizeof g_lan_peer, "%s", g_set.lan_peer);
     color_load(CFG_DIR "/color.ini");
-    if (hosversionAtLeast(7, 0, 0)) appletSetCpuBoostMode(ApmCpuBoostMode_FastLoad);
+    /* DEBUGGING > CLOCKS: GAME boosts the CPU until the first game frame and raises the handheld
+     * profile; SYSTEM (the default) leaves clocks to the system or an overclock tool, which would
+     * otherwise fight over them (clocks changing under the game, crashes when one toggles mid-boot) */
+    bool game_clocks = g_set.game_clocks;
+    if (game_clocks && hosversionAtLeast(7, 0, 0)) appletSetCpuBoostMode(ApmCpuBoostMode_FastLoad);
 
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
@@ -1016,11 +1075,11 @@ int main(int argc, char **argv) {
     u32 perf_prev = 0;
     bool perf_set = false;
     if (R_SUCCEEDED(apmInitialize())) {
-        if (R_SUCCEEDED(apmGetPerformanceConfiguration(ApmPerformanceMode_Normal, &perf_prev))) {
+        if (game_clocks && R_SUCCEEDED(apmGetPerformanceConfiguration(ApmPerformanceMode_Normal, &perf_prev))) {
             perf_set = R_SUCCEEDED(apmSetPerformanceConfiguration(ApmPerformanceMode_Normal, 0x92220008)) ||
                        R_SUCCEEDED(apmSetPerformanceConfiguration(ApmPerformanceMode_Normal, 0x00020004));
         }
-        rt_log("apm: handheld profile %s (was %#x)", perf_set ? "raised" : "unchanged", perf_prev);
+        rt_log("apm: clocks %s, handheld profile %s (was %#x)", game_clocks ? "GAME" : "SYSTEM", perf_set ? "raised" : "unchanged", perf_prev);
         clocks_init();
     }
 
@@ -1041,7 +1100,7 @@ int main(int argc, char **argv) {
     pthread_start("game", game_thread, NULL, 32u << 20, 1, 0);
     screen("BOOTING", NULL, 0.6f);
 
-    bool boost = true;
+    bool boost = true; /* until the first game frame */
     unsigned frames = 0;
     u64 stat_tick = armGetSystemTick();
     unsigned rendered = 0, total_rendered = 0, fps_frames = 0;
@@ -1107,6 +1166,11 @@ int main(int argc, char **argv) {
             HidLaControllerSupportArg arg;
             hidLaCreateControllerSupportArg(&arg);
             arg.hdr.player_count_max = 4;
+            /* L + R pairs two Joy-Cons; one Joy-Con alone needs SL + SR held sideways, or the
+             * screen waits for its other half */
+            arg.enable_explain_text = 1;
+            for (int i = 0; i < 4; i++)
+                hidLaSetExplainText(&arg, "One Joy-Con: hold it sideways, press SL + SR", (HidNpadIdType)(HidNpadIdType_No1 + i));
             HidLaControllerSupportResultInfo res;
             Result rc = hidLaShowControllerSupport(&res, &arg);
             rt_log("pad: controller screen closed (%#x), %d players", rc, R_SUCCEEDED(rc) ? res.player_count : -1);
@@ -1181,7 +1245,7 @@ int main(int argc, char **argv) {
             total_rendered++;
             fps_frames++;
             if (boost && total_rendered == 1) {
-                appletSetCpuBoostMode(ApmCpuBoostMode_Normal); /* boost throttles the GPU */
+                if (game_clocks) appletSetCpuBoostMode(ApmCpuBoostMode_Normal); /* boost throttles the GPU */
                 boost = false;
                 rt_log("first game frame at %.1f s", (double)armTicksToNs(armGetSystemTick() - s_boot_tick) / 1e9);
                 if (!g_log_mask) rt_log("logging is off (DEBUGGING > LOGGING): nothing more is logged");

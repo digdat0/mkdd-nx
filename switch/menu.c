@@ -43,15 +43,36 @@ static const uint64_t MAP_DRIVE_DEFAULT[MAP_COUNT] = {
     [MAP_CAM_RESET] = HidNpadButton_StickL,
 };
 static const char *GC_KEYS[MAP_COUNT] = {"map_a", "map_b", "map_x", "map_y", "map_z", "map_l", "map_r", "map_start", "map_fp", "map_jump", "map_cam_reset", "map_kfp"};
+static const char *JOY_KEYS[MAP_COUNT] = {"joycon_a", "joycon_b", "joycon_x", "joycon_y", "joycon_z", "joycon_l", "joycon_r", "joycon_start",
+                                          "joycon_fp", "joycon_jump", "joycon_cam_reset", "joycon_kfp"};
+/* JOY-CON SIDEWAYS's default (driving): main_switch.c's fixed layout, SL drifting too (GameCube L does) */
+static const uint64_t JOY_DRIVE_DEFAULT[MAP_COUNT] = {
+    [GC_A] = HidNpadButton_A, [GC_B] = HidNpadButton_B, [GC_X] = HidNpadButton_X, [GC_Y] = HidNpadButton_Y,
+    [GC_Z] = HidNpadButton_L | HidNpadButton_StickL, [GC_R] = HidNpadButton_LeftSR | HidNpadButton_LeftSL,
+    [GC_START] = HidNpadButton_Plus | HidNpadButton_ZL,
+};
 
 /* Switch buttons the BUTTON MAPPING page assigns (− is reserved for the menu; the sticks and the
  * d-pad always steer). */
-static const struct { uint64_t bit; const char *name; } SW_BUTTONS[] = {
+typedef struct { uint64_t bit; const char *name; } SwButton;
+static const SwButton FULL_BUTTONS[] = {
     {HidNpadButton_A, "A"}, {HidNpadButton_B, "B"}, {HidNpadButton_X, "X"}, {HidNpadButton_Y, "Y"},
     {HidNpadButton_L, "L"}, {HidNpadButton_R, "R"}, {HidNpadButton_ZL, "ZL"}, {HidNpadButton_ZR, "ZR"},
     {HidNpadButton_Plus, "+"}, {HidNpadButton_StickL, "LEFT STICK PRESS"}, {HidNpadButton_StickR, "RIGHT STICK PRESS"},
 };
-#define N_SW (int)(sizeof SW_BUTTONS / sizeof SW_BUTTONS[0])
+/* a single Joy-Con held sideways, rail on top: face buttons by where they are, the shoulder,
+ * trigger and stick press whichever Joy-Con it is (main_switch.c sideways_buttons) */
+static const SwButton JOY_BUTTONS[] = {
+    {HidNpadButton_A, "RIGHT BUTTON"}, {HidNpadButton_B, "BOTTOM BUTTON"}, {HidNpadButton_X, "TOP BUTTON"},
+    {HidNpadButton_Y, "LEFT BUTTON"}, {HidNpadButton_LeftSL, "SL"}, {HidNpadButton_LeftSR, "SR"},
+    {HidNpadButton_L, "L / R"}, {HidNpadButton_ZL, "ZL / ZR"}, {HidNpadButton_Plus, "+ / -"}, {HidNpadButton_StickL, "STICK PRESS"},
+};
+/* the set BUTTON MAPPING shows and edits: 0 full controllers, 1 a single Joy-Con sideways */
+static int s_mset;
+#define SW_BUTTONS (s_mset ? JOY_BUTTONS : FULL_BUTTONS)
+#define N_SW (s_mset ? (int)(sizeof JOY_BUTTONS / sizeof JOY_BUTTONS[0]) : (int)(sizeof FULL_BUTTONS / sizeof FULL_BUTTONS[0]))
+#define CUR_MAP (s_mset ? g_set.jmap : g_set.map)
+#define CUR_DEFAULT (s_mset ? JOY_DRIVE_DEFAULT : MAP_DRIVE_DEFAULT)
 static uint64_t mappable(void) {
     uint64_t m = 0;
     for (int i = 0; i < N_SW; i++) m |= SW_BUTTONS[i].bit;
@@ -84,13 +105,13 @@ static bool action_required(int a) {
 }
 static int button_action(int sw) {
     for (int a = 0; a < N_ACT; a++)
-        if (g_set.map[ACTIONS[a].gc] & SW_BUTTONS[sw].bit) return a;
+        if (CUR_MAP[ACTIONS[a].gc] & SW_BUTTONS[sw].bit) return a;
     return N_ACT;
 }
 /* every required action has a button (settings from older builds or edited by hand may not) */
 static bool map_valid(void) {
     for (int a = 0; a < N_ACT; a++)
-        if (action_required(a) && !(g_set.map[ACTIONS[a].gc] & mappable())) return false;
+        if (action_required(a) && !(CUR_MAP[ACTIONS[a].gc] & mappable())) return false;
     return true;
 }
 /* each required action without a button gets its default ones back (taken from whatever has
@@ -99,10 +120,10 @@ static int map_fix(const char **name) {
     int n = 0;
     for (int a = 0; a < N_ACT; a++) {
         int gc = ACTIONS[a].gc;
-        if (!action_required(a) || (g_set.map[gc] & mappable())) continue;
-        uint64_t bits = MAP_DRIVE_DEFAULT[gc] & mappable();
-        for (int i = 0; i < MAP_COUNT; i++) g_set.map[i] &= ~bits;
-        g_set.map[gc] |= bits;
+        if (!action_required(a) || (CUR_MAP[gc] & mappable())) continue;
+        uint64_t bits = CUR_DEFAULT[gc] & mappable();
+        for (int i = 0; i < MAP_COUNT; i++) CUR_MAP[i] &= ~bits;
+        CUR_MAP[gc] |= bits;
         if (!n++ && name) *name = ACTIONS[a].name;
     }
     return n;
@@ -152,9 +173,11 @@ static void defaults(void) {
     g_set.docked_res = DOCKED_AUTO;
     g_set.handheld_res = HANDHELD_AUTO;
     g_set.profiler = false;
+    g_set.game_clocks = false;
     g_set.lan = false;
     g_set.lan_peer[0] = 0;
     memcpy(g_set.map, MAP_DRIVE_DEFAULT, sizeof g_set.map);
+    memcpy(g_set.jmap, JOY_DRIVE_DEFAULT, sizeof g_set.jmap);
 }
 
 #define LOG_MODES 5
@@ -225,13 +248,15 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "kart_eye_forward")) g_set.kart_forward = atoi(v);
         else if (!strcmp(k, "kart_tilt")) g_set.kart_tilt = atoi(v);
         else if (!strcmp(k, "profiler")) g_set.profiler = atoi(v) != 0;
+        else if (!strcmp(k, "game_clocks")) g_set.game_clocks = atoi(v) != 0;
         else if (!strcmp(k, "lan")) g_set.lan = atoi(v) != 0;
         else if (!strcmp(k, "lan_peer")) snprintf(g_set.lan_peer, sizeof g_set.lan_peer, "%s", v);
         else if (!strcmp(k, "handheld_res")) g_set.handheld_res = atoi(v) >= 0 && atoi(v) <= HANDHELD_AUTO ? atoi(v) : HANDHELD_AUTO;
         else if (!strcmp(k, "docked_res")) g_set.docked_res = atoi(v) >= 0 && atoi(v) <= DOCKED_AUTO ? atoi(v) : DOCKED_AUTO;
         else
             for (int i = 0; i < MAP_COUNT; i++)
-                if (!strcmp(k, GC_KEYS[i])) g_set.map[i] = strtoull(v, NULL, 16) & mappable(), kfp_seen |= i == MAP_KFP;
+                if (!strcmp(k, GC_KEYS[i])) g_set.map[i] = strtoull(v, NULL, 16), kfp_seen |= i == MAP_KFP;
+                else if (!strcmp(k, JOY_KEYS[i])) g_set.jmap[i] = strtoull(v, NULL, 16);
     }
     fclose(f);
     if (!view_seen && old_view >= 1 && old_view <= 4) {
@@ -242,16 +267,20 @@ void settings_load(const char *path) {
     if (!kfp_seen && g_set.map[MAP_FP]) g_set.map[MAP_KFP] = g_set.map[MAP_FP], g_set.map[MAP_FP] = 0;
     /* one action per Switch button (older builds could give one button several), the first in
      * ACTIONS order kept; a required action left without one gets its default buttons back */
-    for (int sw = 0; sw < N_SW; sw++) {
-        int a = button_action(sw);
-        for (int i = 0; i < MAP_COUNT; i++)
-            if (a == N_ACT || i != ACTIONS[a].gc) g_set.map[i] &= ~SW_BUTTONS[sw].bit;
+    for (s_mset = 0; s_mset < 2; s_mset++) {
+        for (int i = 0; i < MAP_COUNT; i++) CUR_MAP[i] &= mappable();
+        for (int sw = 0; sw < N_SW; sw++) {
+            int a = button_action(sw);
+            for (int i = 0; i < MAP_COUNT; i++)
+                if (a == N_ACT || i != ACTIONS[a].gc) CUR_MAP[i] &= ~SW_BUTTONS[sw].bit;
+        }
+        if (!map_valid()) {
+            const char *name = "";
+            int n = map_fix(&name);
+            rt_log("settings: %s mapping missing %d required action(s) (%s), their default buttons back", s_mset ? "Joy-Con" : "button", n, name);
+        }
     }
-    if (!map_valid()) {
-        const char *name = "";
-        int n = map_fix(&name);
-        rt_log("settings: button mapping missing %d required action(s) (%s), their default buttons back", n, name);
-    }
+    s_mset = 0;
     apply_logging();
     rt_log("settings: 16:9 %d, fov %d / %d, fps %d, logging %d, rumble %d, unlock all %d", g_set.wide, g_set.fov[0], g_set.fov[1], g_set.show_fps,
            g_set.logging, g_set.rumble, g_set.unlock_all);
@@ -268,12 +297,14 @@ void settings_save(void) {
     fprintf(f, "mt_sweeps=%d\nmt_speed=%d\nmt_length=%d\njump=%d\nlaps=%d\nfree_camera=%d\ncamera_height=%d\ncamera_distance=%d\n", g_set.mt_sweeps, g_set.mt_speed,
             g_set.mt_length, g_set.jump, g_set.laps, g_set.free_cam, g_set.cam_height, g_set.cam_dist);
     fprintf(f, "characters=%d\n", g_set.characters);
+    fprintf(f, "game_clocks=%d\n", g_set.game_clocks);
     fprintf(f, "split_side_by_side=%d\n", g_set.vsplit);
     fprintf(f, "lan=%d\nlan_peer=%s\n", g_set.lan, g_set.lan_peer);
     fprintf(f, "special_items=%d\nspecial=", g_set.special_mode);
     for (int i = 0; i < 20; i++) fputc('0' + g_set.special[i] % 10, f);
     fputc('\n', f);
     for (int i = 0; i < MAP_COUNT; i++) fprintf(f, "%s=%llx\n", GC_KEYS[i], (unsigned long long)g_set.map[i]);
+    for (int i = 0; i < MAP_COUNT; i++) fprintf(f, "%s=%llx\n", JOY_KEYS[i], (unsigned long long)g_set.jmap[i]);
     fclose(f);
 }
 
@@ -420,7 +451,7 @@ static void upper(char *dst, size_t size, const char *s) {
     for (; s[i] && i + 1 < size; i++) dst[i] = (char)toupper((unsigned char)s[i]);
     dst[i] = 0;
 }
-enum { C_MAP, C_SYNC, C_BACK, C_COUNT };
+enum { C_MAP, C_JOYMAP, C_SYNC, C_BACK, C_COUNT };
 enum { GM_STYLE, GM_UNITS, GM_HUD, GM_JUMP, GM_RUMBLE, GM_BACK, GM_COUNT };
 enum { CA_VIEW, CA_HEIGHT, CA_DIST, CA_FOV, CA_FREE, CA_BACK, CA_COUNT };
 /* the KART view's page (A on CAMERA VIEW while it is KART): its eye (KA_UP, KA_FWD: steps of 5 from
@@ -493,12 +524,14 @@ static const char *HUD_STYLES[2] = {"CLASSIC", "MODERN"};
 static const char *hud_value(void) { return !g_set.hud_hide ? "ON" : g_set.hud_hide == HUD_ALL ? "OFF" : "CUSTOM"; }
 static const char *FOV_NAMES[5] = {"NORMAL", "WIDE", "WIDER", "WIDEST", "WIDEEE"};
 static const char *ANISO_NAMES[5] = {"NORMAL", "2X", "4X", "8X", "16X"};
-enum { D_FPS, D_LOG, D_PROF, D_BACK, D_COUNT };
+enum { D_FPS, D_LOG, D_PROF, D_CLOCKS, D_BACK, D_COUNT };
 static const char *FPS_NAMES[3] = {"OFF", "FPS", "FPS + TIMES"};
 static const char *RUMBLE_NAMES[3] = {"OFF", "LOW", "HIGH"};
 static bool s_want_controllers;
 static bool s_want_peer; /* LAN PEER: the keyboard (main_switch.c) */
-enum { P_RESET = N_SW, P_BACK, P_COUNT };
+#define P_RESET N_SW
+#define P_BACK (N_SW + 1)
+#define P_COUNT (N_SW + 2)
 enum { K_MODE, K_BRIGHT, K_CONTRAST, K_SAT, K_RESET, K_BACK, K_COUNT };
 static bool s_open;
 static bool s_preview;          /* colour page with Y held: panel hidden to see the whole image */
@@ -517,9 +550,9 @@ static void set_action(int sw, int a) {
     if (was == a) return;
     s_notice[0] = 0;
     s_map_warned = false;
-    for (int i = 0; i < MAP_COUNT; i++) g_set.map[i] &= ~bit;
-    if (a < N_ACT) g_set.map[ACTIONS[a].gc] |= bit;
-    if (action_required(was) && !(g_set.map[ACTIONS[was].gc] & mappable()))
+    for (int i = 0; i < MAP_COUNT; i++) CUR_MAP[i] &= ~bit;
+    if (a < N_ACT) CUR_MAP[ACTIONS[a].gc] |= bit;
+    if (action_required(was) && !(CUR_MAP[ACTIONS[was].gc] & mappable()))
         snprintf(s_notice, sizeof s_notice, "%s HAS NO BUTTON: GIVE IT ONE", ACTIONS[was].name);
     settings_save();
 }
@@ -530,7 +563,7 @@ static bool map_leave(bool force) {
     const char *name = "";
     if (!force && !s_map_warned) {
         for (int a = 0; a < N_ACT; a++)
-            if (action_required(a) && !(g_set.map[ACTIONS[a].gc] & mappable())) { name = ACTIONS[a].name; break; }
+            if (action_required(a) && !(CUR_MAP[ACTIONS[a].gc] & mappable())) { name = ACTIONS[a].name; break; }
         snprintf(s_notice, sizeof s_notice, "%s HAS NO BUTTON. B AGAIN: ITS DEFAULT", name);
         s_map_warned = true;
         return false;
@@ -639,6 +672,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
             settings_save();
             break;
         case D_PROF: g_set.profiler = !g_set.profiler; settings_save(); break;
+        case D_CLOCKS: g_set.game_clocks = !g_set.game_clocks; settings_save(); break;
         case D_BACK: if (ok) s_page = PAGE_MAIN; break;
         }
         return true;
@@ -674,7 +708,8 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
     if (s_page == PAGE_CTRL && (ok || side)) {
         switch (*sel) {
         case C_SYNC: if (ok) { s_want_controllers = true; s_open = false; s_block = s_pressed & held; } break;
-        case C_MAP: if (ok) { s_page = PAGE_MAP; s_sel[PAGE_MAP] = 0; } break;
+        case C_MAP:
+        case C_JOYMAP: if (ok) { s_mset = *sel == C_JOYMAP; s_page = PAGE_MAP; s_sel[PAGE_MAP] = 0; } break;
         case C_BACK: if (ok) s_page = PAGE_MAIN; break;
         }
         return true;
@@ -802,7 +837,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         }
     } else if (s_page == PAGE_MAP && ok) {
         if (*sel < N_SW) set_action(*sel, (button_action(*sel) + 1) % (N_ACT + 1));
-        else if (*sel == P_RESET) { memcpy(g_set.map, MAP_DRIVE_DEFAULT, sizeof g_set.map); s_notice[0] = 0; settings_save(); }
+        else if (*sel == P_RESET) { memcpy(CUR_MAP, CUR_DEFAULT, sizeof g_set.map); s_notice[0] = 0; settings_save(); }
         else if (map_leave(false)) s_page = PAGE_CTRL;
     } else if (s_page == PAGE_UPDATE && ok) {
         if (*sel == U_BACK) s_page = PAGE_MAIN;
@@ -1217,7 +1252,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
         if (top + rh * (float)rows + foot > maxh) rh = (maxh - top - foot) / (float)rows;
         float ph = top + rh * (float)rows + foot, x = ((float)w - pw) / 2, y = ((float)h - ph) / 2;
         /* the image is never dimmed behind the menu: colour and picture changes show as they look in play */
-        const char *title = s_page == PAGE_MAP ? "BUTTON MAPPING" : s_page == PAGE_EXIT ? "EXIT THE GAME?"
+        const char *title = s_page == PAGE_MAP ? (s_mset ? "JOY-CON SIDEWAYS" : "BUTTON MAPPING") : s_page == PAGE_EXIT ? "EXIT THE GAME?"
                             : s_page == PAGE_COLOR ? "COLOR" : s_page == PAGE_DEBUG ? "DEBUG"
                             : s_page == PAGE_GFX ? "GRAPHICS" : s_page == PAGE_UPDATE ? "UPDATE"
                             : s_page == PAGE_CTRL ? "CONTROLS" : s_page == PAGE_GAME ? "GAME" : s_page == PAGE_CAM ? "CAMERA" : s_page == PAGE_KART ? (g_set.camera == 2 ? "KART FPV" : "DRIVER FPV")
@@ -1282,12 +1317,13 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s_sel[PAGE_MAIN] == M_EXIT   ? "A: EXIT THE GAME   RIGHT: UPDATE, DEBUG"
                                                   : "GAME PAUSED   A: SELECT   B OR -: CLOSE";
         } else if (s_page == PAGE_CTRL) {
-            static const char *labels[C_COUNT] = {"BUTTON MAPPING", "SYNC CONTROLLERS", "BACK"};
-            const char *values[C_COUNT] = {NULL, NULL, NULL};
-            static const bool more[C_COUNT] = {false, true, false};
+            static const char *labels[C_COUNT] = {"BUTTON MAPPING", "JOY-CON SIDEWAYS", "SYNC CONTROLLERS", "BACK"};
+            const char *values[C_COUNT] = {NULL, NULL, NULL, NULL};
+            static const bool more[C_COUNT] = {false, false, true, false};
             for (int i = 0; i < C_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, C_COUNT), pw, rh, k, s_sel[PAGE_CTRL] == i, labels[i], values[i], more[i]);
             hint = s_sel[PAGE_CTRL] == C_SYNC     ? "PAIR CONTROLLERS, SET THE PLAYER ORDER, SINGLE JOY-CONS"
                    : s_sel[PAGE_CTRL] == C_MAP    ? "CHOOSE WHAT EACH SWITCH BUTTON DOES"
+                   : s_sel[PAGE_CTRL] == C_JOYMAP ? "BUTTONS OF ONE JOY-CON HELD SIDEWAYS"
                                                   : "B: BACK";
         } else if (s_page == PAGE_GFX) {
             static const char *labels[G_COUNT] = {"WIDESCREEN", "4:3 EDGE BORDER", "DOCKED RESOLUTION", "HANDHELD RESOLUTION",
@@ -1470,12 +1506,15 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s_sel[PAGE_HUD] == HU_TIME  ? "HIDDEN WHILE YOU RACE, SHOWN AGAIN AT THE FINISH"
                                                  : "ON OR OFF";
         } else if (s_page == PAGE_DEBUG) {
-            static const char *labels[D_COUNT] = {"SHOW FPS", "LOGGING", "PROFILER", "BACK"};
-            const char *values[D_COUNT] = {FPS_NAMES[g_set.show_fps % 3], LOG_NAMES[(unsigned)g_set.logging % LOG_MODES], g_set.profiler ? "ON" : "OFF", NULL};
+            static const char *labels[D_COUNT] = {"SHOW FPS", "LOGGING", "PROFILER", "CLOCKS", "BACK"};
+            const char *values[D_COUNT] = {FPS_NAMES[g_set.show_fps % 3], LOG_NAMES[(unsigned)g_set.logging % LOG_MODES], g_set.profiler ? "ON" : "OFF",
+                                           g_set.game_clocks ? "GAME" : "SYSTEM", NULL};
             for (int i = 0; i < D_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, D_COUNT), pw, rh, k, s_sel[PAGE_DEBUG] == i, labels[i], values[i], false);
             hint = s_sel[PAGE_DEBUG] == D_FPS      ? "TIMES: MS PER FRAME OF GAME, GRAPHICS AND RENDER THREADS"
                    : s_sel[PAGE_DEBUG] == D_LOG    ? "DEBUG LOGS ON THE SD CARD, FOR BUG REPORTS"
                    : s_sel[PAGE_DEBUG] == D_PROF   ? "PERFORMANCE PROFILE FOR BUG REPORTS, FROM THE NEXT START"
+                   : s_sel[PAGE_DEBUG] == D_CLOCKS ? (g_set.game_clocks ? "HANDHELD GPU 460 MHZ, FASTER LOADING. FROM THE NEXT START"
+                                                                        : "LEFT TO THE SYSTEM OR AN OVERCLOCK TOOL. FROM THE NEXT START")
                                                    : "B: BACK";
         } else if (s_page == PAGE_COLOR) {
             int v[3];
