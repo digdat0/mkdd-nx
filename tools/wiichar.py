@@ -12,7 +12,10 @@ targets, the cap), so the game's animations move it; a separate hair model (Toad
 becomes the character's hair model where Double Dash has one (kinoko_hair.bmd), else it is
 joined to the head.
 
-    py -3 tools/wiichar.py IN.szs OUT_FOLDER [--base toadette] [--name NAME] [--author A] [--iso GAME.iso]
+    py -3 tools/wiichar.py IN.szs OUT_FOLDER [--base toadette] [--name NAME] [--author A] [--iso GAME.iso] [--gc]
+
+With --gc (in the window: Write GameCube mod), OUT_FOLDER gets an MKDD Patcher mod (<id>.zip) that
+replaces the base on the GameCube disc instead (tools/charpack.py export_gc).
 
 The output is a character folder (tools/charpack.py) for the SD card's mods/characters/. Nothing
 from the game's disc is written: the disc image, when given, is only read to check the skeleton.
@@ -494,12 +497,25 @@ def direction(m, v):
     return tuple(x / n for x in d)
 
 
+def rigid(m):
+    """m without scale or shear: its rotation (the columns made orthonormal, X kept) and translation"""
+    cols = []
+    for j in range(3):
+        v = [m[i][j] for i in range(3)]
+        for c in cols:
+            d = sum(a * b for a, b in zip(v, c))
+            v = [a - d * b for a, b in zip(v, c)]
+        n = math.sqrt(sum(a * a for a in v)) or 1.0
+        cols.append([a / n for a in v])
+    return [[cols[j][i] for j in range(3)] + [m[i][3]] for i in range(3)]
+
+
 def decompose(m):
     """scale, rotation (degrees), translation of m"""
     s = [math.sqrt(sum(m[i][j] ** 2 for i in range(3))) for j in range(3)]
     r = [[m[i][j] / s[j] for j in range(3)] for i in range(3)]
     sy = -r[2][0]
-    if abs(sy) < 0.99999:
+    if abs(sy) < 1 - 1e-12:  # (0.99999 took 89.88 degrees, Shinx's arms, as 90: off by 0.1 degree)
         ry = math.asin(sy)
         rx, rz = math.atan2(r[2][1], r[2][2]), math.atan2(r[1][0], r[0][0])
     else:  # Y at +-90: only X - Z (or X + Z) counts
@@ -580,6 +596,8 @@ def skeleton_of_bmd(b):
 
 # limb ends: the Double Dash hand and foot targets (*_pos) sit where these Wii joints are
 TARGETS = {"foot_l_pos": "ankle_l1", "foot_r_pos": "ankle_r1", "hand_l_pos": "wrist_l1", "hand_r_pos": "wrist_r1"}
+# other targets only some characters have (Peach's and Daisy's skirt_pos): Mario Kart Wii's models lack them
+PLACED_AT = dict(TARGETS, skirt_pos="skirt_1")
 
 
 def default_skeleton(model, cap):
@@ -637,8 +655,10 @@ def build(model, skel, wii_tex, notes, what):
             w = IDENT
         elif n in wii:
             w = mul(frame, wii[n].world)
-        elif n in TARGETS and TARGETS[n] in wii:
-            w = mul(frame, wii[TARGETS[n]].world)
+        elif n in PLACED_AT and PLACED_AT[n] in wii:
+            # a target: where its joint is and how it turns, without the scale (or the shear a joint
+            # under a stretched one has: Croagunk's legs are scaled 1.3 on one axis)
+            w = rigid(mul(frame, wii[PLACED_AT[n]].world))
         else:
             w = world[skel.parents[i]] if skel.parents[i] >= 0 else IDENT
         world.append(w)
@@ -827,6 +847,33 @@ def build(model, skel, wii_tex, notes, what):
     return out
 
 
+def hidden_hair(body, skel):
+    """a hair model that draws nothing, on skel (Toadette's hair joints): one triangle with no area and a
+    transparent 4x4 texture, in a material made from body's first textured one. For a Wii Toadette
+    without braids (no hair model, an empty one, or one whose texture the mod took out): without a hair
+    model of its own the game draws Toadette's braids on it"""
+    m = next((m for m in body.mats if m.layers), None)
+    if m is None:
+        raise ConvertError("hair: no material to make an empty hair model with")
+    t = Tex.__new__(Tex)
+    t.name, t.ci, t.w, t.h, t.fmt, t.levels, t.min_lod, t.max_lod = m.layers[0].tex, 0, 4, 4, 5, 1, 0.0, 0.0
+    t.data = bytes(32)  # RGB5A3, alpha 0
+    out = Built()
+    out.joints = [(n, skel.kinds[i], skel.parents[i], (1.0, 1.0, 1.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+                  for i, n in enumerate(skel.names)]
+    out.inv = [IDENT] * len(skel.names)
+    out.tex = [(t.name, t, 0, 0, 1, 1)]
+    out.mats = [material(m, out.tex, [], "hair")]
+    out.mats[0].update(name="hidden_hair", vclr=(False, False))
+    out.drw = [(0, 0)]
+    out.pos = [(0.0, 0.0, 0.0)]
+    dl = struct.pack(">BH", PRIM_CODE["triangles"], 3) + struct.pack(">HHH", 0, 0, 0)
+    out.shapes = [(False, False, [(POS, 3)], [([0], dl + bytes(-len(dl) % 32))], [[0.0] * 3, [0.0] * 3])]
+    out.mesh = [(0, 0)]
+    out.bbox = [[0.0] * 3, [0.0] * 3]
+    return out
+
+
 HILIGHT = "lm_1"  # Mario Kart Wii's shine (a sphere map), in Double Dash's highlight place
 
 
@@ -882,6 +929,8 @@ def texture_layout(model, skel, wii_tex, notes, what):
     # gets this model's own eyes (the first texture a material starts on that is numbered); the rest the
     # first texture. At least 16 places, so a face animation made for another layout points at a texture
     full = [e for e in out if e and len(e) > 2]
+    if not full:
+        raise ConvertError(f"{what}: no textures to draw with")
     first = full[0]
     eyes = next((e for e in full if numbered(e[0]) and any(l.tex == e[0] for m in model.mats for l in m.layers[:1])), first)
     out = [e if e and len(e) > 2 else eyes if e else first for e in out]
@@ -1635,6 +1684,8 @@ def driver_models(szs):
     body = models.get("model") or next((m for n, m in models.items() if n not in ("hair",) and "lod" not in n), None)
     if body is None:
         raise ConvertError("no driver model in the file")
+    if not any(m.layers for m in body.mats):
+        raise ConvertError("the driver model draws nothing (an invisible driver: the mod's character is in the kart)")
     return body, models.get("hair"), tex
 
 
@@ -1744,7 +1795,7 @@ def convert(szs, base, disc=None):
                               "order (face animations may show the wrong picture)"))
     if skel is None:
         skel = default_skeleton(body, cap=folder in ("kinopio", "kinopico"))
-    core = [n for n in skel.names[1:] if n not in TARGETS and n != "cap1"]
+    core = [n for n in skel.names[1:] if n not in PLACED_AT and n != "cap1"]  # as pick_base: targets are added
     missing = [n for n in core if n not in {j.name for j in body.bones}]
     if missing:
         raise ConvertError(f"the model's skeleton isn't {charpack.BASES[base][1]}'s: no {', '.join(missing[:5])}")
@@ -1762,16 +1813,23 @@ def convert(szs, base, disc=None):
     out["driver_200.bmd"] = out["driver.bmd"]  # the game's smaller model: the same one
     notes.append(("ok", f"driver: {len(drv.pos)} vertices, {len(drv.shapes)} parts, {len(drv.mats)} materials, "
                         f"{len(drv.tex)} textures, {len(drv.joints)} joints"))
+    if hair is not None and hair_skel is None:
+        hair_skel = Skeleton(["k_hair_all_root"] + [j.name for j in hair.bones if j.parent >= 0],
+                             [-1] + [max(0, j.parent) for j in hair.bones if j.parent >= 0],
+                             [0] + [1] * (len(hair.bones) - 1))
+    why = "no hair model"
     if hair is not None:
+        try:
+            hb = build(hair, hair_skel, tex, notes, "hair")
+            out["kinoko_hair.bmd"] = write_bmd(hb)
+            notes.append(("ok", f"hair: {len(hb.pos)} vertices, {len(hb.joints)} joints (kinoko_hair.bmd)"))
+        except ConvertError as e:  # an empty one, or its texture taken out: the mod's way to hide the braids
+            why = str(e)
+    if folder == "kinopico" and "kinoko_hair.bmd" not in out:
         if hair_skel is None:
-            hair_skel = Skeleton(["k_hair_all_root"] + [j.name for j in hair.bones if j.parent >= 0],
-                                 [-1] + [max(0, j.parent) for j in hair.bones if j.parent >= 0],
-                                 [0] + [1] * (len(hair.bones) - 1))
-        hb = build(hair, hair_skel, tex, notes, "hair")
-        out["kinoko_hair.bmd"] = write_bmd(hb)
-        notes.append(("ok", f"hair: {len(hb.pos)} vertices, {len(hb.joints)} joints (kinoko_hair.bmd)"))
-    elif folder == "kinopico":
-        notes.append(("warn", "no hair model: Toadette's own braids are drawn on it"))
+            hair_skel = Skeleton(["k_hair_all_root"], [-1], [0])
+        out["kinoko_hair.bmd"] = write_bmd(hidden_hair(body, hair_skel))
+        notes.append(("info", f"{why}: no braids, as in Mario Kart Wii (an empty hair model, so the game doesn't draw Toadette's)"))
     return out, notes
 
 
@@ -1783,6 +1841,17 @@ def write_character(out_dir, files, name, base, author="", source=""):
             fh.write(data)
     with open(os.path.join(out_dir, "character.ini"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write(f"name={name}\nbase={charpack.BASE_IDS[base]}\nauthor={author}\nsource={source}\n")
+
+
+def write_gc_mod(out_dir, files, name, base, author="", source="", as_zip=True):
+    """an MKDD Patcher mod (<id>.zip or the folder <id>/, charpack.export_gc) replacing base on the GameCube
+    disc -> its path"""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        write_character(os.path.join(tmp, "c"), files, name, base, author, source)
+        chars = charpack.scan(os.path.join(tmp, "c"))
+        charpack.export_gc(chars, out_dir, as_zip)
+        return os.path.join(out_dir, charpack.folder_ids(chars)[0] + (".zip" if as_zip else ""))
 
 
 # ---- select screen pictures ----
@@ -1927,10 +1996,16 @@ def gui(root):
         cfg = {}
     szs_v, iso_v, out_v = tk.StringVar(), tk.StringVar(value=cfg.get("iso", "")), tk.StringVar(value=cfg.get("wii_out", cfg.get("out", "")))
     name_v, author_v, source_v, base_v = tk.StringVar(), tk.StringVar(), tk.StringVar(), tk.StringVar(value=charpack.BASES[9][1])
+    pack_v = tk.StringVar(name=charpack.GC_PACK_VAR, value=cfg.get("gc_pack") if cfg.get("gc_pack") in charpack.GC_PACKS
+                          else charpack.GC_PACKS[0])  # zip / folder, shared with the Characters tab's box
     state = {"files": None, "busy": False, "photo": None}
 
     def save_cfg():
-        cfg.update(iso=iso_v.get(), wii_out=out_v.get())
+        try:  # the other tab's settings, as saved since this one opened
+            cfg.update(json.load(open(cfg_path)))
+        except (OSError, ValueError):
+            pass
+        cfg.update(iso=iso_v.get(), wii_out=out_v.get(), gc_pack=pack_v.get())
         try:
             json.dump(cfg, open(cfg_path, "w"))
         except OSError:
@@ -2125,8 +2200,32 @@ def gui(root):
         messagebox.showinfo("Convert WiiMK Characters (beta)", f"{name} written to\n{dest}\n\nCopy that folder to the SD card's "
                             "/switch/MKDD-NX/mods/characters/ (or add it in the Characters tab).")
 
+    def write_gc():
+        if not state["files"]:
+            messagebox.showinfo("Convert WiiMK Characters (beta)", "Pick a Wii driver file first (it converts when picked).")
+            return
+        if not out_v.get():
+            pick_out()
+        if not out_v.get():
+            return
+        name, base = name_v.get().strip() or "Wii character", charpack.base_index(base_v.get())
+        try:
+            dest = write_gc_mod(out_v.get(), state["files"], name, base, author_v.get().strip(), source_v.get().strip(),
+                                pack_v.get() != "folder")
+        except (OSError, ValueError) as e:
+            messagebox.showerror("Convert WiiMK Characters (beta)", str(e))
+            return
+        messagebox.showinfo("Convert WiiMK Characters (beta)", f"{name} written to\n{dest}\n\nAdd it in the MKDD Patcher and "
+                            f"patch a copy of your disc image: it replaces {charpack.BASES[base][1]}. Wii models can be "
+                            "bigger than the game's: try it in Dolphin first.")
+
     ttk.Button(bar, text="Convert again", command=run).pack(side="left", padx=(0, 6))
     ttk.Button(bar, text="Write character folder…", command=write).pack(side="left", padx=(0, 6))
+    ttk.Button(bar, text="Write GameCube mod…", command=write_gc).pack(side="left", padx=(0, 2))
+    ttk.Label(bar, text="as").pack(side="left", padx=(0, 4))
+    pack_box = ttk.Combobox(bar, textvariable=pack_v, values=charpack.GC_PACKS, state="readonly", width=7)
+    pack_box.pack(side="left", padx=(0, 6))
+    pack_box.bind("<<ComboboxSelected>>", lambda e: save_cfg())
     ttk.Label(bar, text="Drop a .szs on this window" if sys.platform == "win32" else "").pack(side="left", padx=12)
     charpack.enable_drop(root.winfo_toplevel(), lambda paths: paths[0].lower().endswith(".szs") and set_szs(paths[0]), root.winfo_ismapped)
     return types.SimpleNamespace(open=set_szs, can_close=lambda: not state["busy"] or messagebox.askyesno("Convert WiiMK Characters (beta)", "A conversion is running. Close anyway?"))
@@ -2142,6 +2241,8 @@ def main(argv):
     ap.add_argument("--author", default="")
     ap.add_argument("--source", default="")
     ap.add_argument("--iso", help="your disc image (only read: the character's skeleton and texture order)")
+    ap.add_argument("--gc", action="store_true", help="write an MKDD Patcher mod (.zip) into OUT for the GameCube disc instead")
+    ap.add_argument("--folder", action="store_true", help="with --gc: the mod as a folder, not a .zip")
     a = ap.parse_args(argv)
     b = a.base or guess_base(a.szs)
     base = charpack.base_index(b) if b else None
@@ -2166,7 +2267,10 @@ def main(argv):
         print(f"can't convert: {e}")
         return 1
     name = a.name or os.path.splitext(os.path.basename(a.szs))[0]
-    write_character(a.out, files, name, base, a.author, a.source)
+    if a.gc:
+        a.out = write_gc_mod(a.out, files, name, base, a.author, a.source, not a.folder)
+    else:
+        write_character(a.out, files, name, base, a.author, a.source)
     for level, text in notes:
         print(f"{level:5} {text}")
     print(f"written: {a.out} ({', '.join(sorted(files))})")

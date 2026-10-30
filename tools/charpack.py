@@ -40,6 +40,11 @@ original (the game's sound tables are made for those lengths); the game cuts lon
 
     py -3 tools/charpack.py                     the window
     py -3 tools/charpack.py --cli --iso GAME.iso --out OUT MOD [MOD ...]   check and export
+    py -3 tools/charpack.py --cli --gc [--folder] --iso GAME.iso --out OUT MOD [MOD ...]   ... as MKDD Patcher mods
+
+With --gc (in the window: Output format, GameCube), each character is written as an MKDD Patcher mod
+(<id>.zip, or with --folder the folder <id>/: modinfo.ini, files/ as on the disc, audio_waves/) that replaces its base, to patch into a
+GameCube disc image. The disc has one of each character: apply one mod per base.
 
 The disc image is only read, to compare; nothing from it is written.
 """
@@ -52,6 +57,7 @@ import shutil
 import struct
 import sys
 import types
+import zipfile
 
 # ---- characters, in MKDD-NX's order (the select screen's grid) ----
 # id (character.ini base=), name, game driver folder, race2d face, map icon, menu name tag
@@ -94,6 +100,8 @@ NAMES = ("SceneData", "English", "menu.arc", "menu", "timg")
 SELECTANM = ("SceneData", "selectAnm.arc", "selectanm")
 ITEMS = ("MRAM.arc", "mram", "item")
 LANGS = ("French", "German", "Italian", "Japanese", "Spanish")
+# how a GameCube mod is written; the window's box and the Wii Characters tab's share one Tk variable
+GC_PACKS, GC_PACK_VAR = ("zip", "folder"), "mkddnx_gc_pack"
 
 
 def base_of_folder(d):
@@ -231,14 +239,18 @@ def read_wav(path):
     return rate, v
 
 
-def write_wav(path, rate, v):
+def wav_bytes(rate, v):
     v = array.array("h", v)
     if sys.byteorder == "big":
         v.byteswap()
     data = v.tobytes()
+    return (b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVEfmt " +
+            struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16) + b"data" + struct.pack("<I", len(data)) + data)
+
+
+def write_wav(path, rate, v):
     with open(path, "wb") as f:
-        f.write(b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVEfmt " +
-                struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16) + b"data" + struct.pack("<I", len(data)) + data)
+        f.write(wav_bytes(rate, v))
 
 
 def conform(rate, v, orig_rate, orig_count):
@@ -542,6 +554,7 @@ class Character:
         self.notes = []           # (level, text): level "ok", "info", "warn", "error"
         self.loose = False        # a loose model: its base from its skeleton (gather), else chosen
         self.unknown = False      # ... and none was found
+        self.other = None         # check(): the other character whose skeleton the model has
 
     @property
     def id(self):
@@ -667,6 +680,7 @@ def scan(folder):
 def check(c, disc):
     """c.notes: what the game will do with it"""
     n = c.notes = []
+    c.other = None
     if "driver.bmd" not in c.files:
         n.append(("error", "no driver.bmd: the model is required"))
         return
@@ -687,6 +701,7 @@ def check(c, disc):
             # names past the root, moves as that character
             other = None if mine["joints"][1:] == theirs["joints"][1:] else next(
                 (i for i in range(len(BASES)) if disc.joints(i)[1:] == mine["joints"][1:]), None)
+            c.other = other
             if other is not None:
                 n.append(("ok", f"skeleton is {BASES[other][1]}'s ({len(mine['joints'])} joints): it moves with "
                                 f"{BASES[other][1]}'s animations, its voice and stats stay {BASES[c.base][1]}'s"))
@@ -892,9 +907,97 @@ def export(chars, out):
             f.write(f"{c.name} (on {BASES[c.base][1]}): {c.author or 'unknown author'}{'  ' + c.source if c.source else ''}\n")
 
 
+def gc_files(c):
+    """a character's files where the GameCube disc keeps them (the MKDD Patcher's files/ layout):
+    {path under the mod folder: bytes}. The character replaces its base."""
+    d = BASES[c.base][2]
+    drv, faces = "/".join(("files",) + DRIVERS + (d,)), "/".join(("files",) + FACES)
+    menu = lambda lang: f"files/SceneData/{lang}/menu.arc/menu/timg/chaname_{BASES[c.base][5]}.bti"
+    out = {}
+
+    def tree(src, dest):
+        for dp, _, fs in os.walk(src):
+            for f in fs:
+                rel = os.path.relpath(os.path.join(dp, f), src).replace(os.sep, "/")
+                out[f"{dest}/{rel}"] = read(os.path.join(dp, f))
+
+    for name, src in c.files.items():
+        if name in ("voice", "audiores"):
+            for arc, wid, rate, v in getattr(c, "voice", []):  # the Patcher's audio_waves/, beside files/
+                out[f"audio_waves/{arc}/{wid}.wav"] = wav_bytes(rate, v)
+        elif name == "face.bti":
+            out[f"{faces}/{BASES[c.base][3]}.bti"] = read(src)
+        elif name == "map.bti":
+            out[f"{faces}/{BASES[c.base][4].lower()}_mapicon32.bti"] = read(src)  # the disc's names are lower case
+        elif name == "name.bti":
+            out[menu("English")] = read(src)
+        elif name == "names":
+            for f, p in (src.items() if isinstance(src, dict) else
+                         ((f, os.path.join(src, f)) for f in os.listdir(src))):
+                if f[:-4] in LANGS:
+                    out[menu(f[:-4])] = read(p)
+        elif name == "anims":
+            tree(src, "/".join(("files",) + ANIMS + (d,)))
+        elif name == "selectanm":
+            tree(src, "/".join(("files",) + SELECTANM + (d,)))
+        elif name == "kart":
+            tree(src, "/".join(("files",) + KARTS))
+        elif name == "item":
+            items = src if isinstance(src, dict) else {f: os.path.join(src, f) for f in os.listdir(src)}
+            for f, p in items.items():
+                race2d = f.lower().startswith("item_") and f.lower().endswith(".bti")
+                out[f"{faces if race2d else '/'.join(('files',) + ITEMS)}/{f}"] = read(p)
+        elif isinstance(src, str) and os.path.isfile(src):  # driver.bmd, driver_200.bmd, face animations
+            out[f"{drv}/{name}"] = read(src)
+    return out
+
+
+def export_gc(chars, out, as_zip=True):
+    """one MKDD Patcher mod (modinfo.ini + files/) per character in out, for the GameCube disc: <id>.zip,
+    or the folder <id>/ (as_zip False); -> warnings (what won't work on a GameCube)"""
+    os.makedirs(out, exist_ok=True)
+    warn, per_base = [], {}
+    for c, cid in zip(chars, folder_ids(chars)):
+        per_base.setdefault(c.base, []).append(c.name)
+        if c.other is not None:
+            warn.append(f"{c.name}: has {BASES[c.other][1]}'s skeleton; on the GameCube it plays "
+                        f"{BASES[c.base][1]}'s animations and will look twisted")
+        if ("voice" in c.files or "audiores" in c.files) and not getattr(c, "voice", None):
+            warn.append(f"{c.name}: its voice was left out (pick the disc image so it can be fitted to the game's)")
+        files = gc_files(c)
+        if "face.bti" not in c.files:
+            face = face_from_model(c)
+            if face:
+                files[f"files/{'/'.join(FACES)}/{BASES[c.base][3]}.bti"] = face
+        about = f"{c.name} replaces {BASES[c.base][1]}" + (f". {c.source}" if c.source else "")
+        modname = c.name if re.search(r"\b(over|replaces)\b", c.name, re.I) else f"{c.name} over {BASES[c.base][1]}"
+        files["modinfo.ini"] = (f"[Config]\nauthor = {c.author or 'unknown'}\nmodname = {modname}\n"
+                                f"description = {about}\n").encode("utf-8")
+        if not as_zip:
+            dest = os.path.join(out, cid)
+            if os.path.isdir(dest):
+                shutil.rmtree(dest)
+            for rel, data in files.items():
+                os.makedirs(os.path.dirname(os.path.join(dest, rel)), exist_ok=True)
+                with open(os.path.join(dest, rel), "wb") as f:
+                    f.write(data)
+            continue
+        dest = os.path.join(out, cid + ".zip")
+        with zipfile.ZipFile(dest + ".tmp", "w", zipfile.ZIP_DEFLATED) as z:
+            for rel, data in sorted(files.items()):
+                z.writestr(f"{cid}/{rel}", data)
+        os.replace(dest + ".tmp", dest)
+    for b, names in per_base.items():
+        if len(names) > 1:
+            warn.append(f"{', '.join(names)} all replace {BASES[b][1]}: the disc has one {BASES[b][1]}, "
+                        "so apply only one of them")
+    return warn
+
+
 # ---- command line ----
 def cli(args):
     iso = out = None
+    gc = as_folder = False
     folders = []
     it = iter(args)
     for a in it:
@@ -902,6 +1005,10 @@ def cli(args):
             iso = next(it)
         elif a == "--out":
             out = next(it)
+        elif a == "--gc":
+            gc = True
+        elif a == "--folder":
+            as_folder = True
         elif a != "--cli":
             folders.append(a)
     disc = Disc(iso) if iso else None
@@ -914,8 +1021,12 @@ def cli(args):
         print(f"REJECTED {what}: {why}")
     bad = len(rejected)
     if out:
-        export(chars, out)
-        print(f"exported {len(chars)} characters to {out}")
+        if gc:
+            for w in export_gc(chars, out, not as_folder):
+                print(f"WARNING {w}")
+        else:
+            export(chars, out)
+        print(f"exported {len(chars)} characters to {out}{' as MKDD Patcher mods' if gc else ''}")
     return 1 if bad else 0
 
 
@@ -985,9 +1096,16 @@ def gui(root=None):
     top = ttk.Frame(root, padding=8)
     top.pack(fill="x")
     iso_v, out_v = tk.StringVar(value=cfg.get("iso", "")), tk.StringVar(value=cfg.get("out", ""))
+    FORMATS = ("MKDD-NX (Switch)", "GameCube (MKDD Patcher mods)")
+    fmt_v = tk.StringVar(value=cfg.get("format") if cfg.get("format") in FORMATS else FORMATS[0])
+    pack_v = tk.StringVar(name=GC_PACK_VAR, value=cfg.get("gc_pack") if cfg.get("gc_pack") in GC_PACKS else GC_PACKS[0])
 
     def save_cfg():
-        cfg.update(iso=iso_v.get(), out=out_v.get())
+        try:  # the other tab's settings, as saved since this one opened
+            cfg.update(json.load(open(cfg_path)))
+        except (OSError, ValueError):
+            pass
+        cfg.update(iso=iso_v.get(), out=out_v.get(), format=fmt_v.get(), gc_pack=pack_v.get())
         try:
             json.dump(cfg, open(cfg_path, "w"))
         except OSError:
@@ -1024,6 +1142,25 @@ def gui(root=None):
         ttk.Label(top, text=label).grid(row=r, column=0, sticky="w")
         ttk.Entry(top, textvariable=var, width=90).grid(row=r, column=1, sticky="we", padx=4)
         ttk.Button(top, text="Browse…", command=cmd).grid(row=r, column=2)
+    ttk.Label(top, text="Output format:").grid(row=3, column=0, sticky="w")
+    fmt_row = ttk.Frame(top)
+    fmt_row.grid(row=3, column=1, sticky="w", padx=4)
+    fmt_box = ttk.Combobox(fmt_row, textvariable=fmt_v, values=FORMATS, state="readonly", width=32)
+    fmt_box.pack(side="left")
+    pack_label = ttk.Label(fmt_row, text="as")
+    pack_box = ttk.Combobox(fmt_row, textvariable=pack_v, values=GC_PACKS, state="readonly", width=8)
+
+    def fmt_changed(e=None):
+        if fmt_v.get() == FORMATS[1]:  # zip / folder: GameCube mods only
+            pack_label.pack(side="left", padx=(8, 4))
+            pack_box.pack(side="left")
+        else:
+            pack_label.pack_forget()
+            pack_box.pack_forget()
+        save_cfg()
+    fmt_box.bind("<<ComboboxSelected>>", fmt_changed)
+    pack_box.bind("<<ComboboxSelected>>", lambda e: save_cfg())
+    fmt_changed()
     top.columnconfigure(1, weight=1)
 
     bar = ttk.Frame(root, padding=(8, 0))
@@ -1151,13 +1288,19 @@ def gui(root=None):
         bad = [c.name for c in chars if status(c) == "error"]
         if bad and not messagebox.askyesno("Export", "These have errors and may not work:\n" + "\n".join(bad) + "\n\nExport anyway?"):
             return
+        gc = fmt_v.get() == FORMATS[1]
         try:
-            export(chars, out_v.get())
+            warn = export_gc(chars, out_v.get(), pack_v.get() == "zip") if gc else export(chars, out_v.get())
         except OSError as e:
             messagebox.showerror("Export", str(e))
             return
-        messagebox.showinfo("Export", f"{len(chars)} characters written to\n{out_v.get()}\n\n"
-                            "Copy those folders to the SD card's /switch/MKDD-NX/mods/characters/.")
+        if gc:
+            messagebox.showinfo("Export", f"{len(chars)} MKDD Patcher mods ({'.zip' if pack_v.get() == 'zip' else 'folders'}) written to\n{out_v.get()}\n\n"
+                                "Add them in the MKDD Patcher and patch a copy of your disc image."
+                                + ("\n\nOn the GameCube:\n" + "\n".join(warn) if warn else ""))
+        else:
+            messagebox.showinfo("Export", f"{len(chars)} characters written to\n{out_v.get()}\n\n"
+                                "Copy those folders to the SD card's /switch/MKDD-NX/mods/characters/.")
 
     for text, cmd in (("Add mod or folder of mods…", add), ("Remove", remove), ("Check again", recheck), ("Export…", do_export)):
         ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=(0, 6))
