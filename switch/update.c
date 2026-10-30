@@ -362,17 +362,16 @@ static void do_install(void) {
 
 static void worker(void *arg) {
     bool install = arg != NULL;
-    /* sockets only while the updater works: they hold transfer memory the game doesn't need */
-    Result rc = socketInitializeDefault();
-    if (R_FAILED(rc)) {
-        rt_log("update: socketInitializeDefault %#x", rc);
+    /* sockets only while the updater works (unless LAN play has them): they hold transfer memory */
+    if (!plat_net_up()) {
+        rt_log("update: no sockets");
         set_state(UPD_ERROR, "NETWORK UNAVAILABLE");
     } else {
         curl_global_init(CURL_GLOBAL_DEFAULT);
         if (install) do_install();
         else do_check();
         curl_global_cleanup();
-        socketExit();
+        plat_net_down();
     }
     pmutex_lock(&s_lock);
     s_busy = false;

@@ -25,9 +25,10 @@
 #include "../runtime/gx.h"
 #include "../runtime/charpack.h"
 
-enum { K_FACE, K_MAP, K_NAME, K_KINDS, K_MODEL = K_KINDS, K_DIM };
+enum { K_FACE, K_MAP, K_NAME, K_KINDS, K_MODEL = K_KINDS, K_DIM, K_HUD, K_ROW3 };
 #define MODEL_TEX 40 /* textures per model at most */
 #define ID_MODEL (GX_SUBST_CHARPACK + K_KINDS * CP_BASES)
+_Static_assert(CP_HUD_SUBST == ID_MODEL + CP_BASES * MODEL_TEX, "charpack.h's HUD copies come after the model textures");
 #define MAP_SIZE 32
 
 /* the MKDD Patcher layout's names for each character's pictures (charpack.c BASES order) */
@@ -278,16 +279,28 @@ static GLuint make(int v, int b, unsigned kind, unsigned i) {
      * another character's cell too */
     int vb = kind == K_DIM ? b : charpack_variant_base(v);
     if (vb < 0) vb = b;
-    if (kind == K_DIM) { /* the game's face at 45% */
+    if (kind == K_DIM) { /* no character here: an empty slot, a faint checkered flag in the face's shape */
         uint8_t *rgba = s_face[b] ? decode_bti(s_face[b], s_face_size[b], &w, &h) : NULL;
-        for (int k = 0; rgba && k < w * h; k++)
-            for (int c = 0; c < 3; c++) rgba[4 * k + c] = (uint8_t)(rgba[4 * k + c] * 45 / 100);
+        for (int y = 0; rgba && y < h; y++)
+            for (int x = 0; x < w; x++) {
+                uint8_t *px = rgba + 4 * (y * w + x);
+                /* the flag waves: its squares (w / 8 across) bend with a sine down the tile */
+                int sq = w / 8 > 0 ? w / 8 : 1, wave = (int)(sinf((float)y * 6.2832f / (float)h + (float)x * 0.08f) * sq * 0.35f);
+                bool dark = ((x / sq) + ((y + wave) / sq + 64)) & 1;
+                float dx = (x - w * 0.5f) / (w * 0.5f), dy = (y - h * 0.5f) / (h * 0.5f);
+                float shade = 1.0f - 0.35f * (dx * dx + dy * dy); /* darker towards the edges */
+                int g = (int)((dark ? 38 : 72) * shade);
+                px[0] = (uint8_t)g, px[1] = (uint8_t)g, px[2] = (uint8_t)(g + 10); /* a slate grey */
+                px[3] = (uint8_t)(px[3] * 85 / 100);
+            }
         GLuint tex = upload(rgba, w, h);
         free(rgba);
         return tex;
     }
     if (kind == K_FACE || kind == K_NAME) {
         uint8_t *rgba = read_picture(v, kind == K_FACE ? 'f' : 'n', kind == K_FACE ? FACE[vb] : NAME[vb], &w, &h);
+        /* no face of its own: its base's (not the game's picture of the cell it shows in) */
+        if (!rgba && kind == K_FACE && vb < CP_BASES && s_face[vb]) rgba = decode_bti(s_face[vb], s_face_size[vb], &w, &h);
         GLuint tex = rgba ? upload(rgba, w, h) : kind == K_NAME ? name_tag(charpack_name(v)) : 0;
         free(rgba);
         return tex;
@@ -320,10 +333,24 @@ unsigned charpack_art_texture(unsigned id) {
     unsigned rel = id - GX_SUBST_CHARPACK, kind, b, i = 0;
     if (rel < K_KINDS * CP_BASES) kind = rel / CP_BASES, b = rel % CP_BASES;
     else if ((rel -= K_KINDS * CP_BASES) < CP_BASES * MODEL_TEX) kind = K_MODEL, b = rel / MODEL_TEX, i = rel % MODEL_TEX;
+    else if (id >= CP_ROW3_SUBST && id < CP_ROW3_SUBST + CP_ROW) kind = K_ROW3;
+    else if (id >= CP_HUD_SUBST && id < CP_ROW3_SUBST) kind = K_HUD;
     else return 0;
     /* faces: what each cell shows (the grid; in a race, each character's); model textures and name
-     * tags: the variant standing in for that character (the one previewed or chosen) */
-    int v = kind == K_FACE || kind == K_MAP ? charpack_show((int)b) : charpack_model((int)b);
+     * tags: the variant standing in for that character (the one previewed or chosen); the race HUD's
+     * copies (native.c hud_face): their kart's driver of that character */
+    int v;
+    if (kind == K_ROW3) { /* the third row's cell: its variant on this page, else empty */
+        v = charpack_cell_variant(CP_BASES + (int)(id - CP_ROW3_SUBST));
+        kind = K_FACE, b = v >= 0 ? (unsigned)charpack_variant_base(v) : 0;
+        if (v < 0) v = CP_DIM;
+    } else if (kind == K_HUD) {
+        int hk, kart, slot, hb;
+        if (!charpack_hud_copy_info((int)(id - CP_HUD_SUBST), &hk, &kart, &slot, &hb)) return 0;
+        v = charpack_race_face(kart, slot, hb);
+        kind = hk == CP_HUD_MAP ? K_MAP : K_FACE, b = (unsigned)hb;
+        if (v == CP_RACE_NONE) v = charpack_show(hb);
+    } else v = kind == K_FACE || kind == K_MAP ? charpack_show((int)b) : charpack_model((int)b);
     if (v == CP_DIM && kind == K_FACE) kind = K_DIM, v = 0;
     else if (v == CP_DIM) return 0;
     else if (v < 0) return 0;

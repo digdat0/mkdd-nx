@@ -33,6 +33,9 @@ enum { MG_NONE, MG_PLACE, MG_ITEMS, MG_LAP, MG_TIME, MG_MAP, MG_ORDER, MG_SPEED,
        /* three and four players (p4_race.blo, quarters): each player's pieces (player p: + 3p), the map */
        MG4_PLACE1, MG4_ITEMS1, MG4_LAP1, MG4_MAP = MG4_PLACE1 + 12,
        MG_MAP_BATTLE, /* one player's battle: the map lower, below the Shine Thief's shine */
+       /* two players side by side (native.c g_vsplit): p2_race.blo's groups (MG2_* order) in the left /
+        * right columns, any HUD style */
+       MGV_PLACE1, MGV_ITEMS1, MGV_LAP1, MGV_TIME1, MGV_PLACE2, MGV_ITEMS2, MGV_LAP2, MGV_TIME2, MGV_MAP, MGV_ORDER,
        MG_COUNT };
 typedef struct { float ox, oy, nx, ny, s; uint32_t zone; } HudMove;
 extern const HudMove g_hud_move[MG_COUNT];
@@ -98,6 +101,7 @@ typedef struct Frame {
     float clear[4];
     float efb[2];
     uint32_t draws;
+    uint32_t vseam;        /* two players side by side (a MGV_ group drawn): render_gl blurs the middle */
     volatile int refs;
 } Frame;
 
@@ -127,6 +131,10 @@ typedef struct GxTexture {
 /* Textures the front end replaces (the pause screen's controller picture and button icons),
  * recognised by format, size and an FNV-1a hash of their bytes. Register before the game runs. */
 void gx_subst_register(unsigned id, uint32_t fmt, uint32_t w, uint32_t h, uint64_t hash);
+/* the texture at addr (a copy made for it) is substitute id, whatever it holds */
+void gx_subst_addr(uint32_t addr, unsigned id);
+/* the substitute id the texture at addr would be (by its contents), 0 none */
+unsigned gx_subst_at(uint32_t addr, uint32_t fmt, uint32_t w, uint32_t h);
 /* Ids from here are character pack pictures (charpack_art.c): drawn with the game's wrap and filter,
  * and as the game's own (HD textures included) while the front end has none for them. */
 #define GX_SUBST_CHARPACK 64
@@ -174,6 +182,9 @@ void gx_xf_eval(const uint32_t *xf, const GpuVertex *in, GpuVertex *out);
  * read it are redone. _all: everything (scene loads). g_gx_vcache: the vertex cache on (default). */
 void gx_mem_dirty(uint32_t addr, uint32_t len);
 void gx_drain(void); /* wait for the decoder to read all queued commands (before DMA into RAM) */
+/* gx_drain for a disc read of len bytes: skipped for small ones while a race draws (g_racing_ns) */
+void gx_drain_dma(uint32_t len);
+extern volatile uint64_t g_racing_ns, g_gx_drain_skips;
 void gx_mem_dirty_all(void);
 extern bool g_gx_vcache;
 extern bool g_gx_cpu_xform;

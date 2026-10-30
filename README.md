@@ -22,8 +22,15 @@ Note: This is an AI assisted project.
 - **Kart FPV and Driver FPV:** first person with the kart's front in view, or from the driver's eyes.
   The eye follows the driver's head, so every kart and character sits right; height, forward and
   tilt are adjustable. Per player, on the right stick click.
+- **LAN play over Wi-Fi:** the game's own LAN mode, between Switches on the same Wi-Fi network, with
+  no cables or adapters. Standard game only. See [LAN play](#lan-play).
+- **Two players side by side:** split screen left and right instead of top and bottom, with a
+  HUD laid out for it (Multiplayer > Split screen).
 - **Character packs:** extra characters from GameBanana and the MKDD wiki on more select screen
-  pages. See [Mods](#mods).
+  pages, with a third row (30 characters a page) when there are extra characters. A custom character
+  and the one it plays as can now race together. See [Mods](#mods).
+- **Mario Kart Wii drivers:** MKDD-NX Tools converts a Mario Kart Wii driver into a character. See
+  [Wii Characters](https://github.com/digdat0/mkdd-nx/wiki/Wii-Characters).
 - Camera options: rear view on Y, camera height and distance, and a free camera on the right stick
   that turns 360° around your kart.
 - Texture filtering: 2x, 4x, 8x or 16x anisotropic.
@@ -55,8 +62,12 @@ Note: This is an AI assisted project.
 - The [Mario Kart: Double Dash!! Plus](https://mkdd.org/wiki/Mario_Kart:_Double_Dash!!_Plus) mod (v3.3 NTSC):
   see [MKDD Plus](https://github.com/digdat0/mkdd-nx/wiki/MKDD-Plus).
 - The [Retro Track Grand Prix 2.1](https://gamebanana.com/mods/594415) mod: see [Retro Track Grand Prix](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix).
+- Its two alternate versions, [RTGP Baby Mode 1.4](https://gamebanana.com/mods/download/594415) (easier, for newcomers:
+  `rtgp_baby_mode_1_4.zip`) and [RTGP Classic 1.4](https://gamebanana.com/mods/download/594415) (with the classic
+  soundtrack: `mario_kart_double_dash_rtgp_classic_ost.zip`): see [Retro Track Grand Prix](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix#baby-mode-and-classic).
 - Custom characters from [GameBanana](https://gamebanana.com/games/6555) and the
   [MKDD wiki](https://mkdd.org/wiki/List_of_Custom_Characters/): see [Characters App](https://github.com/digdat0/mkdd-nx/wiki/Characters-App).
+- Mario Kart Wii drivers (`.szs`), converted into characters: see [Wii Characters](https://github.com/digdat0/mkdd-nx/wiki/Wii-Characters).
 
 ## Getting started
 
@@ -77,7 +88,7 @@ Note: This is an AI assisted project.
    `.gcm` first, then `.ciso`, then `.rvz`. Swapping an `.iso` for an `.rvz` (or back) is fine: saves,
    settings and HD textures carry over.
 4. Optional: HD textures in `mods/hd/`, the MKDD Plus mod in `mods/plus/`, the Retro Track Grand Prix
-   patch in `mods/`, extra characters in `mods/characters/` (see [Mods](#mods)).
+   patches (2.1, Baby Mode, Classic) in `mods/`, extra characters in `mods/characters/` (see [Mods](#mods)).
 5. Start it from the homebrew menu with **title takeover**: hold **R** while starting any game
    from the HOME menu, then pick MKDD-NX. (The album / applet mode has too little memory.)
 
@@ -88,6 +99,8 @@ sdmc:/switch/MKDD-NX/
     mods/hd/hd-textures.bin  (optional)
     mods/plus/files, sys     (optional: MKDD Plus)
     mods/MKDD RTGP 2.1 Update.xdelta   (optional: Retro Track Grand Prix, installed on the next start)
+    mods/Baby Mode 1_4.xdelta          (optional: RTGP Baby Mode, the same way)
+    mods/Mario Kart Double Dash RTGP Classic OST 1_4.xdelta   (optional: RTGP Classic, the same way)
     mods/characters/         (optional: character packs)
 ```
 
@@ -127,7 +140,8 @@ Rumble works on controllers with HD Rumble and on GameCube controllers.
 ### Options menu (-)
 
 Press **-** at any time for the options menu: **Game**, **Graphics**, **Camera**, **Controls**,
-**Mods**, **Cheats**, **Update** and **Debug**. The game pauses while it is open. Every option is
+**Multiplayer**, **Mods**, **Cheats**, **Update** and **Debug**. The game pauses while it is open
+(except in LAN play, where the game carries on behind it). Every option is
 described on the [Options Menu wiki page](https://github.com/digdat0/mkdd-nx/wiki/Options-Menu). Settings are saved to `config/settings.ini`.
 
 ## Battle mode
@@ -148,6 +162,25 @@ and 3 player battles, computer karts fill the empty places up to 4.
   [Route Editor wiki page](https://github.com/digdat0/mkdd-nx/wiki/Route-Editor), and [docs/BATTLE_ROUTES.md](docs/BATTLE_ROUTES.md) for the
   automatic route maker and the file format. The built-in routes are in the [routes](routes) folder.
 
+## LAN play
+
+The GameCube game has a LAN mode for consoles linked by Broadband Adapters and cables. MKDD-NX plays
+it over Wi-Fi instead: turn on **Multiplayer > LAN play** in the − menu on each Switch, choose
+**Restart now**, then pick **Wi-Fi mode** on the title screen. Every console needs this version of
+MKDD-NX, and all of them must be on the same Wi-Fi network.
+
+- **Standard game only:** level pack OFF. Retro Track Grand Prix and its Baby Mode / Classic can't
+  (their LAN mode runs code the app doesn't have), and MKDD Plus hasn't been tested.
+- From the first Wi-Fi mode screen until the app restarts, the port's gameplay changes (cheats,
+  laps, any kart, single player battle CPUs) are off on every console, so all of them play the
+  same race.
+- In a race, + opens a pause screen with **Continue** and **Quit**, but the race carries on behind
+  it. **Quit** leaves the session and goes back to the title screen.
+- Networks that block broadcasts (some guest or office Wi-Fi): set **LAN peer** to the other
+  console's address, which is shown on the same page.
+
+Setup and troubleshooting: [LAN Play wiki page](https://github.com/digdat0/mkdd-nx/wiki/LAN-Play).
+
 ## Mods
 
 None of these are included: get each one from its own page. They live in `mods/` next to the `.nro`,
@@ -156,16 +189,21 @@ and your disc image is never changed. Step-by-step instructions are on the wiki.
 | Mod | What you get | On the SD card | Instructions |
 |---|---|---|---|
 | [MKDD Plus](https://mkdd.org/wiki/Mario_Kart:_Double_Dash!!_Plus) 3.3 NTSC | extra cups, courses and 24 battle arenas | `mods/plus/files`, `sys` | [wiki: MKDD Plus](https://github.com/digdat0/mkdd-nx/wiki/MKDD-Plus) |
-| [Retro Track Grand Prix](https://gamebanana.com/mods/594415) 2.1 | retro cups and courses | `mods/<patch>.xdelta`, installed on the Switch at the next start | [wiki: Retro Track Grand Prix](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix) |
+| [Retro Track Grand Prix](https://gamebanana.com/mods/594415) 2.1 (`mario_kart_double_dash_rtgp_2_1.zip`) | retro cups and courses | `mods/MKDD RTGP 2.1 Update.xdelta`, installed on the Switch at the next start | [wiki: Retro Track Grand Prix](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix) |
+| [RTGP Baby Mode](https://gamebanana.com/mods/download/594415) 1.4 (`rtgp_baby_mode_1_4.zip`) | RTGP made easier, for newcomers | `mods/Baby Mode 1_4.xdelta`, installed the same way | [wiki: Baby Mode and Classic](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix#baby-mode-and-classic) |
+| [RTGP Classic](https://gamebanana.com/mods/download/594415) 1.4 (`mario_kart_double_dash_rtgp_classic_ost.zip`) | RTGP with the classic soundtrack | `mods/Mario Kart Double Dash RTGP Classic OST 1_4.xdelta`, installed the same way | [wiki: Baby Mode and Classic](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix#baby-mode-and-classic) |
 | [MKDD HD texture pack](https://sites.google.com/view/mkddhd/home-page) (English) | the game's textures in HD | `mods/hd/hd-textures.bin`, converted once on a computer | [wiki: HD Textures](https://github.com/digdat0/mkdd-nx/wiki/HD-Textures-App) |
 | Custom characters from [GameBanana](https://gamebanana.com/games/6555) and the [MKDD wiki](https://mkdd.org/wiki/List_of_Custom_Characters/) | up to 256 extra characters on more select screen pages | `mods/characters/` | [wiki: Characters App](https://github.com/digdat0/mkdd-nx/wiki/Characters-App) |
+| Mario Kart Wii drivers (`.szs`) | Wii characters, converted on a computer | `mods/characters/` | [wiki: Wii Characters](https://github.com/digdat0/mkdd-nx/wiki/Wii-Characters) |
 
-- **Level packs:** Plus and RTGP each keep their own saves (`save/plus/`, `save/rtgp/`). Pick one with
-  **Level pack** on the − menu's **Mods** page (OFF: the standard game), then **Restart now**.
+- **Level packs:** each keeps its own saves (`save/plus/`, `save/rtgp/`, `save/rtgpbaby/`,
+  `save/rtgpclassic/`). Pick one with **Level pack** on the − menu's **Mods** page (OFF: the standard
+  game), then **Restart now**.
 - **MKDD-NX Tools**, one app for Windows and Mac, from the [latest release](https://github.com/digdat0/mkdd-nx/releases/latest)
   (`MKDD-NX-Tools.exe`, or `MKDD-NX-Tools-arm64.dmg` / `-x86_64.dmg`), a tab for each tool:
-  **HD Textures** (converts the texture pack), **Characters** (prepares character mods) and
-  **Battle Routes** (edits the battle CPUs' routes).
+  **HD Textures** (converts the texture pack), **Export MKDD Characters** (prepares character mods),
+  **Convert WiiMK Characters** (beta: Mario Kart Wii drivers; drivers only, no karts, and Mii outfits
+  aren't supported) and **Battle Routes** (edits the battle CPUs' routes).
 
 ## Reporting bugs
 
@@ -200,7 +238,8 @@ come from the [doldecomp/mkdd](https://github.com/doldecomp/mkdd) decompilation 
   `tools/hdtex_pack.py` converts (not included here).
 - **That1loser4**, creator of [Mario Kart: Double Dash!! Plus](https://mkdd.org/wiki/Mario_Kart:_Double_Dash!!_Plus),
   and everyone who contributed courses to it. The mod is not included here: get it from its own release.
-- **Portable Productions**, creators of [Mario Kart: Double Dash!! Retro Track Grand Prix](https://gamebanana.com/mods/594415),
+- **Portable Productions**, creators of [Mario Kart: Double Dash!! Retro Track Grand Prix](https://gamebanana.com/mods/594415)
+  and its Baby Mode and Classic versions,
   with additional credits to **ShaneMGD**, **LMFinish**, **AdolescentSeagull**, **Tarsa**, **Yoshi2** and
   **Cristian64**. The mod is not included here: get it from its own page.
 - The creators of the custom characters on [GameBanana](https://gamebanana.com/games/6555) and the

@@ -60,6 +60,11 @@ extern uint32_t g_native_addr[NATIVE_COUNT];
 
 /* battle.c: once a frame, from the race camera (FUN_802b6bd4) */
 void bai_tick(Ctx *c, uint8_t *M);
+/* lanpause.c's natives */
+uint64_t i_tstPause__12PauseManagerFv(Ctx *c, uint8_t *M, ARGS);
+uint64_t i_getPauseChoice__12PauseManagerFv(Ctx *c, uint8_t *M, ARGS);
+uint64_t i___ct__7Pause2DFP7JKRHeap(Ctx *c, uint8_t *M, ARGS);
+uint64_t i_FUN_80115040(Ctx *c, uint8_t *M, ARGS);
 /* battle.c's natives */
 uint64_t i_FUN_8018c878(Ctx *c, uint8_t *M, ARGS);
 uint64_t i_loadCrsData__6CourseFb(Ctx *c, uint8_t *M, ARGS);

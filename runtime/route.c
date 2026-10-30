@@ -24,7 +24,15 @@ static FILE *route_open(char *path, size_t n) {
     for (int i = 0; route_builtin[i].key; i++)
         if (!strcmp(route_builtin[i].key, s_key) && route_builtin[i].end > route_builtin[i].start) {
             snprintf(path, n, "built-in %s", s_key);
-            return fmemopen((void *)route_builtin[i].start, (size_t)(route_builtin[i].end - route_builtin[i].start), "r");
+            size_t len = (size_t)(route_builtin[i].end - route_builtin[i].start);
+#ifdef _WIN32 /* no fmemopen (the PC harness): a temporary file with the same text */
+            FILE *t = tmpfile();
+            if (t && fwrite(route_builtin[i].start, 1, len, t) == len) { rewind(t); return t; }
+            if (t) fclose(t);
+            return NULL;
+#else
+            return fmemopen((void *)route_builtin[i].start, len, "r");
+#endif
         }
     return NULL;
 }

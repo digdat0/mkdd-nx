@@ -34,5 +34,9 @@ typedef struct {
 } ModInfo;
 extern const ModInfo MODS[];
 extern const unsigned MOD_COUNT;
+/* mod m's key (MODS[m - 1].key; g_mod, mods_pick), "" for none or out of range */
+const char *mod_key(unsigned m);
+/* Retro Track Grand Prix and its Baby Mode / Classic (keys rtgp, rtgpbaby, rtgpclassic) */
+#define MOD_IS_RTGP(m) (!strncmp(mod_key(m), "rtgp", 4))
 extern const NamedAddr NAMES[];   /* sorted by address */
 extern const unsigned NAME_COUNT;

@@ -13,9 +13,15 @@ void pmutex_init(PMutex *m);
 static inline void pmutex_lock(PMutex *m) { pthread_mutex_lock(m); }
 static inline void pmutex_unlock(PMutex *m) { pthread_mutex_unlock(m); }
 void pcond_init(PCond *c);
-static inline void pcond_wait(PCond *c, PMutex *m) { pthread_cond_wait(c, m); }
 /* Wait at most ns nanoseconds. */
 void pcond_wait_ns(PCond *c, PMutex *m, uint64_t ns);
+#ifdef __SWITCH__
+/* In slices, so that at exit (plat_pause_threads) a waiting thread ends itself: callers loop on
+ * their condition anyway. */
+static inline void pcond_wait(PCond *c, PMutex *m) { pcond_wait_ns(c, m, 100000000ull); }
+#else
+static inline void pcond_wait(PCond *c, PMutex *m) { pthread_cond_wait(c, m); }
+#endif
 static inline void pcond_broadcast(PCond *c) { pthread_cond_broadcast(c); }
 static inline void pcond_signal(PCond *c) { pthread_cond_signal(c); }
 
@@ -33,6 +39,11 @@ __attribute__((noreturn)) void plat_park_forever(void);
 #ifdef __SWITCH__
 void plat_pause_threads(void); /* stop every thread pthread_start made (exit) */
 #endif
+/* Sockets (Switch: socketInitializeDefault, counted: the last plat_net_down stops them; elsewhere
+ * nothing to do). false: no network. */
+bool plat_net_up(void);
+void plat_net_down(void);
+void plat_net_exit(void); /* at exit, the other threads paused: sockets closed whoever holds them */
 
 /* Whole-file helpers; plat_read_file returns malloc'd data (NULL on failure). */
 void *plat_read_file(const char *path, size_t *size);

@@ -20,4 +20,4 @@ bool pause_art_random_shown(void);
 /* The character select screen's "PRESS (Y) OR (X) FOR MORE CHARACTERS (page/pages)" (page from
  * 1; 0 without the game's font); w x h: the picture's size, twice the game's 640x480 units, as the
  * cup page draws it. */
-unsigned pause_art_char_hint(int page, int pages, int *w, int *h);
+unsigned pause_art_char_label(int side, int page, int pages, int *w, int *h, float *used);

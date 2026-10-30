@@ -124,7 +124,7 @@ static Frame *frame_new(void) {
         f->batches.len = f->vb.len = f->indices.len = f->copies.len = f->xf.len = 0;
         memset(f->clear, 0, sizeof f->clear);
         memset(f->efb, 0, sizeof f->efb);
-        f->draws = 0;
+        f->draws = f->vseam = 0;
     } else f = calloc(1, sizeof *f);
     f->refs = 1;
     return f;
@@ -562,6 +562,45 @@ static uint8_t movie_plane(uint32_t addr) {
     return 0;
 }
 
+/* textures drawn as a substitute by where they are (copies made for that, gx_subst_addr) */
+static struct { uint32_t addr; uint16_t id; } s_subst_at[64];
+static unsigned s_nsubst_at;
+void gx_subst_addr(uint32_t addr, unsigned id) {
+    addr &= 0x01FFFFFF;
+    for (unsigned i = 0; i < s_nsubst_at; i++)
+        if (s_subst_at[i].addr == addr) { s_subst_at[i].id = (uint16_t)id; return; }
+    if (s_nsubst_at < sizeof s_subst_at / sizeof s_subst_at[0]) s_subst_at[s_nsubst_at++] = (__typeof__(s_subst_at[0])){addr, (uint16_t)id};
+}
+static uint16_t subst_id(uint32_t fmt, uint32_t w, uint32_t h, const uint8_t *data, size_t size);
+/* native.c's hud_face asks every frame for each face on the HUD: answers are kept per picture and
+ * redone only when 64 words spread over its bytes, or the substitute list, change. */
+static struct { uint32_t addr, fmt, w, h; unsigned nsubst; uint64_t sample; uint16_t id; } s_at_memo[16];
+static unsigned s_at_next;
+static uint64_t sample_bytes(const uint8_t *d, size_t size) {
+    uint64_t h = FNV_INIT;
+    for (size_t i = 0; i < 64; i++) {
+        uint64_t v;
+        memcpy(&v, d + (size - 8) * i / 63, 8);
+        h = (h ^ v) * 0x100000001b3ull;
+    }
+    return h;
+}
+unsigned gx_subst_at(uint32_t addr, uint32_t fmt, uint32_t w, uint32_t h) {
+    addr &= 0x01FFFFFF;
+    size_t size = tex_size(fmt, w, h);
+    if (!size || addr + size > RAM_SIZE) return 0;
+    const uint8_t *data = g_ram + addr;
+    if (size < 1024) return subst_id(fmt, w, h, data, size);
+    uint64_t sample = sample_bytes(data, size);
+    unsigned n = sizeof s_at_memo / sizeof s_at_memo[0];
+    for (unsigned i = 0; i < n; i++)
+        if (s_at_memo[i].addr == addr && s_at_memo[i].fmt == fmt && s_at_memo[i].w == w && s_at_memo[i].h == h &&
+            s_at_memo[i].nsubst == s_nsubst && s_at_memo[i].sample == sample)
+            return s_at_memo[i].id;
+    uint16_t id = subst_id(fmt, w, h, data, size);
+    s_at_memo[s_at_next++ % n] = (__typeof__(s_at_memo[0])){addr, fmt, w, h, s_nsubst, sample, id};
+    return id;
+}
 static uint16_t subst_id(uint32_t fmt, uint32_t w, uint32_t h, const uint8_t *data, size_t size) {
     uint64_t hash = 0;
     for (unsigned i = 0; i < s_nsubst; i++) {
@@ -622,6 +661,8 @@ static uint64_t texture_inner(unsigned map) {
     memcpy(t->raw, data, size);
     t->raw_len = size;
     t->subst = subst_id(fmt, w, h, data, size);
+    for (unsigned i = 0; i < s_nsubst_at; i++)
+        if (s_subst_at[i].addr == addr) t->subst = s_subst_at[i].id;
     t->movie = fmt == 1 ? movie_plane(addr) : 0; /* I8 */
     static bool movie_logged;
     if (t->movie && !movie_logged) { movie_logged = true; rt_log("gx: movie frame planes drawn as textures (first: %ux%u), scaled by the renderer", w, h); }
@@ -929,6 +970,19 @@ const HudMove g_hud_move[MG_COUNT] = {
     [MG4_ITEMS1 + 9] = {589, 227, 600, 229, 0.7f, 6},
     [MG4_LAP1 + 9] = {587, 428, 600, 442, 0.7f, 6},
     [MG4_MAP] = {304, 225, 304, 225, 0.75f, 4},    /* 240-368 x 97-353, smaller about its middle */
+    /* two players side by side: columns 0-303 and 305-608; each player's place in its column's top
+     * left corner, the items beside it, the lap count under it, the timer in the top right corner;
+     * the map at the bottom between the columns, the race order bottom left */
+    [MGV_PLACE1] = {525, 48, 8, 8, 0.6f, 5},        /* 8-43 x 8-43 */
+    [MGV_ITEMS1] = {81, 17, 51.8f, 17.6f, 0.6f, 5}, /* 50-121 x 8-58 */
+    [MGV_LAP1] = {27, 44, 8, 52, 0.6f, 5},          /* 8-33 x 52-75 */
+    [MGV_TIME1] = {593, 22, 296, 8, 0.6f, 4},       /* 200-296 x 8-21 */
+    [MGV_PLACE2] = {525, 347, 313, 8, 0.6f, 4},
+    [MGV_ITEMS2] = {81, 383, 356.8f, 17.6f, 0.6f, 4},
+    [MGV_LAP2] = {28, 428, 313, 74.8f, 0.6f, 4},    /* the count's bottom left */
+    [MGV_TIME2] = {593, 427, 600, 21.2f, 0.6f, 6},  /* the digits' bottom right */
+    [MGV_MAP] = {587, 124, 335, 316, 0.6f, 4},      /* 273-335 x 316-440 */
+    [MGV_ORDER] = {19, 97, 8, 300, 0.5f, 5},
 };
 static void pixel_rect(float xoff, float yoff, uint32_t out[4]) {
     uint32_t tl = G.bp[0x20], br = G.bp[0x21];
@@ -2056,6 +2110,7 @@ static void draw(uint32_t cmd, const uint8_t *c) {
     const uint32_t *rect = S->rect;
     uint32_t mrect[4];
     unsigned mg = G.hud_zone >> 8;
+    if (hud && mg >= MGV_PLACE1 && mg <= MGV_ORDER) fr->vseam = 1;
     if (hud && mg && mg < MG_COUNT && modern_rect(S, mg, mrect)) rect = mrect;
     Batch *bt = batch_for(G.mat_key, &G.mat_tev, rect, hud ? 1 + side : 0, layout, start);
     if (!bt) return;
@@ -2242,6 +2297,20 @@ void gx_drain(void) {
         g_gx_drain_ns += plat_now_ns() - t0;
     }
     pmutex_unlock(&s_qlock);
+}
+
+/* While racing the game reads the disc about once a frame in small pieces (the music stream)
+ * into buffers the decoder never reads, and the race's models, textures and lists stay where they
+ * are until it ends. With two players' scenery queued each wait cost 7-18 ms of the game's frame,
+ * so small disc reads during a race (Race2D drew in the last 200 ms, native.c) don't wait. Scene
+ * loads (large, or outside a race) still do, and so does every ARAM-to-RAM DMA (hw.c aram_dma: what
+ * it brings may be pictures or models queued commands still read); a display list overwritten all
+ * the same is caught by dl_valid. */
+volatile uint64_t g_racing_ns, g_gx_drain_skips;
+void gx_drain_dma(uint32_t len) {
+    uint64_t r = g_racing_ns;
+    if (len <= 0x10000u && r && plat_now_ns() - r < 200000000ull) { g_gx_drain_skips++; return; }
+    gx_drain();
 }
 
 static void gpu_thread(void *arg) {

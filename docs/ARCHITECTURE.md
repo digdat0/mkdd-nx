@@ -59,6 +59,7 @@ Generated code is disposable: change the sheets or the generator and regenerate.
 | `memcard.c` | memory card at the CARD API level; saves are standard `.gci` files |
 | `native.c`, `native_impl.h` | native functions and their verifier |
 | `battle.c` | single player battle mode: the computer karts' routes, goals, items and steering (natives too) |
+| `lanpause.c` | the pause screen in LAN races (CONTINUE / QUIT): the race runs on behind it, QUIT is the game's soft reset (natives) |
 | `diag.c` | log (each distinct line once, repeats counted) and watchdog trace |
 | `plat.c` | threads, locks, time, files (PC and Switch) |
 

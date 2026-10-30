@@ -5,13 +5,17 @@ Each character becomes one folder, copied to the SD card's /switch/MKDD-NX/mods/
 
     <id>/character.ini   name, base, author, source; slot (optional: the cell it shows in)
     <id>/driver.bmd      the model (required); driver_200.bmd, *.btp face animations
-    <id>/face.bti        HUD and select screen face   (optional)
+    <id>/face.bti        HUD and select screen face   (rendered from the model when the mod has none)
     <id>/map.bti         map icon        (optional: the game makes one from the face)
     <id>/name.bti        select screen name tag (optional: the game writes the name)
     <id>/anims/          its own driving animations (the packs' are another character's,
                          Mario's, copied: the game plays that character's)
     <id>/voice/          its own voice (optional): <archive>/<wave>.wav (Voice/, SelectVoice/,
                          CommendationVoice/), played in place of its base's
+    <id>/selectanm/      its select screen poses (selectAnm.arc: enter/gut/wait .bck, .btp)
+    <id>/item/           a one-character mod's special item (item_*.bmd, race2d item_*.bti)
+    <id>/kart/           a one-character mod's karts (<kart>_all/*.bmd)
+    <id>/names/          its name tag in the other languages (<Language>.bti)
 
 Input: a mod folder as shipped for the MKDD Patcher (modinfo.ini + files/MRAM.arc/mram/driver/
 <character>/...), any number of characters, a folder made by this tool, or a folder with just one
@@ -87,6 +91,9 @@ KARTS = ("MRAM.arc", "mram", "kart")
 ANIMS = ("ARAM.arc", "aram", "driveranm")
 FACES = ("race2d.arc", "mram_race2d", "timg")
 NAMES = ("SceneData", "English", "menu.arc", "menu", "timg")
+SELECTANM = ("SceneData", "selectAnm.arc", "selectanm")
+ITEMS = ("MRAM.arc", "mram", "item")
+LANGS = ("French", "German", "Italian", "Japanese", "Spanish")
 
 
 def base_of_folder(d):
@@ -623,6 +630,22 @@ def scan(folder):
         a = anims and find_ci(anims, d)
         if a:
             cf["anims"] = a
+        sa = find_ci(files, *SELECTANM, d)
+        if sa:
+            cf["selectanm"] = sa
+        other = {f"{lang}.bti": p for lang in LANGS
+                 for p in [find_ci(files, "SceneData", lang, "menu.arc", "menu", "timg", "chaname_" + BASES[b][5] + ".bti")] if p}
+        if other:
+            cf["names"] = other
+        if len(found) == 1:  # whose the item and karts are: only a one-character mod's are known
+            itd = find_ci(files, *ITEMS)
+            item = {f: os.path.join(itd, f) for f in os.listdir(itd) if os.path.isfile(os.path.join(itd, f))} if itd else {}
+            if faces:
+                item.update({f: os.path.join(faces, f) for f in os.listdir(faces) if f.lower().startswith("item_")})
+            if item:
+                cf["item"] = item
+            if kd and karts:
+                cf["kart"] = kd
         if voice and len(found) == 1:
             cf["voice"] = voice
         elif audiores and len(found) == 1:
@@ -686,16 +709,21 @@ def check(c, disc):
                                   "builds its own model; only if that fails does it show its textures on the game's)"))
     else:
         n.append(("info", "no disc image given: skeleton and textures not checked"))
-    for f, what in (("face.bti", "no face: the game's face is used"),
+    for f, what in (("face.bti", "no face: one is rendered from the model"),
                     ("map.bti", "no map icon: the game makes one from the face"),
                     ("name.bti", "no name tag: the game writes the name")):
         if f not in c.files:
-            n.append(("info" if f != "face.bti" else "warn", what))
+            n.append(("info", what))
     if "voice" in c.files or "audiores" in c.files:
         voice_check(c, disc, n)
     if getattr(c, "karts", None):
-        n.append(("info", f"kart: the mod's kart{'s' if len(c.karts) > 1 else ''} ({', '.join(c.karts)}) not used yet: "
-                          "it drives the game's"))
+        n.append(("info", f"kart: the mod's kart{'s' if len(c.karts) > 1 else ''} ({', '.join(c.karts)}) "
+                          + ("kept (kart/), not used yet: " if "kart" in c.files else "not used yet (several characters: whose is unknown): ")
+                          + "it drives the game's"))
+    for f, what in (("selectanm", "select screen poses kept (selectanm/)"), ("item", "special item kept (item/), not used yet"),
+                    ("names", "name tags in other languages kept (names/)")):
+        if f in c.files:
+            n.append(("info", what))
 
 
 def folder_ids(chars):
@@ -813,6 +841,19 @@ def gather(paths, disc, have=()):
     return ok, bad
 
 
+def face_from_model(c):
+    """face.bti for a character whose mod has none: its head rendered from driver.bmd (as tools/wiichar.py
+    does for converted ones), or None (the game then shows its base's face)"""
+    try:
+        import wiichar
+        files = {"driver.bmd": read(c.files["driver.bmd"])}
+        if "kinoko_hair.bmd" in c.files:
+            files["kinoko_hair.bmd"] = read(c.files["kinoko_hair.bmd"])
+        return wiichar.bti(wiichar.face_render(files), 64)
+    except Exception:  # no Pillow, a model the renderer can't draw
+        return None
+
+
 def export(chars, out):
     """character folders in out, and CREDITS.txt"""
     os.makedirs(out, exist_ok=True)
@@ -826,11 +867,21 @@ def export(chars, out):
                 for arc, wid, rate, v in getattr(c, "voice", []):
                     os.makedirs(os.path.join(dest, "voice", arc), exist_ok=True)
                     write_wav(os.path.join(dest, "voice", arc, f"{wid}.wav"), rate, v)
+            elif isinstance(src, dict):  # gathered from several places: name -> source file
+                os.makedirs(os.path.join(dest, name), exist_ok=True)
+                for f, p in src.items():
+                    with open(os.path.join(dest, name, f), "wb") as fh:
+                        fh.write(read(p))
             elif os.path.isdir(src):
                 shutil.copytree(src, os.path.join(dest, name))
             else:
                 with open(os.path.join(dest, name), "wb") as f:
                     f.write(read(src))
+        if "face.bti" not in c.files:
+            face = face_from_model(c)
+            if face:
+                with open(os.path.join(dest, "face.bti"), "wb") as f:
+                    f.write(face)
         with open(os.path.join(dest, "character.ini"), "w", encoding="utf-8", newline="\n") as f:
             f.write(f"name={c.name}\nbase={BASE_IDS[c.base]}\nauthor={c.author}\nsource={c.source}\n")
             if c.slot is not None:
@@ -869,9 +920,10 @@ def cli(args):
 
 
 # ---- the window ----
-def enable_drop(root, on_drop):
+def enable_drop(root, on_drop, active=None):
     """folders dropped on the window (Windows: WM_DROPFILES; Tk has no drag and drop of its own).
-    Elsewhere, nothing: the Add button still works."""
+    Elsewhere, nothing: the Add button still works. active: whether this one takes a drop now (a
+    tab shown); when not, the drop goes to the window's earlier taker (another tab's)."""
     if sys.platform != "win32":
         return
     import ctypes
@@ -892,7 +944,7 @@ def enable_drop(root, on_drop):
     old = None
 
     def proc(h, msg, wp, lp):
-        if msg == WM_DROPFILES:
+        if msg == WM_DROPFILES and (active is None or active()):
             n = shell32.DragQueryFileW(wp, 0xFFFFFFFF, None, 0)
             paths = []
             for i in range(n):
@@ -963,7 +1015,12 @@ def gui(root=None):
             out_v.set(p)
             save_cfg()
 
-    for r, (label, var, cmd) in enumerate((("Disc image (to check against):", iso_v, pick_iso), ("Output folder:", out_v, pick_out))):
+    ttk.Label(top, text="Gets downloaded MKDD character mods ready for MKDD-NX. 1) Pick your disc image (only read, to "
+                        "check each mod against). 2) Add mod folders, or drop them on this window. 3) Pick which "
+                        "character each one plays as and its page and cell on the select screen. 4) Export, then copy the "
+                        "folders to the SD card's /switch/MKDD-NX/mods/characters/.",
+              wraplength=900, justify="left").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
+    for r, (label, var, cmd) in enumerate((("Disc image (to check against):", iso_v, pick_iso), ("Output folder:", out_v, pick_out)), start=1):
         ttk.Label(top, text=label).grid(row=r, column=0, sticky="w")
         ttk.Entry(top, textvariable=var, width=90).grid(row=r, column=1, sticky="we", padx=4)
         ttk.Button(top, text="Browse…", command=cmd).grid(row=r, column=2)
@@ -1107,7 +1164,7 @@ def gui(root=None):
     count_v = tk.StringVar(value="Drop mod folders (or a folder of them) on this window" if sys.platform == "win32"
                            else "Add mod folders (or a folder of them)")
     ttk.Label(bar, textvariable=count_v).pack(side="left", padx=12)
-    enable_drop(root.winfo_toplevel(), lambda paths: root.winfo_ismapped() and add_paths(paths))  # (in a tab: while shown)
+    enable_drop(root.winfo_toplevel(), add_paths, root.winfo_ismapped)  # (in a tab: while shown)
     tree.bind("<<TreeviewSelect>>", show)
     for v in (name_v, author_v, source_v):
         v.trace_add("write", lambda *_: None)

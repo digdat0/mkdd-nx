@@ -18,9 +18,15 @@
  * players' karts (while fewer than gRaceInfo +0x1c) fills the rest with computer karts, as it does
  * for a Grand Prix. */
 volatile uint32_t g_battle_cpus;
+/* A Wi-Fi (LAN) race: every console must run the game's own (rt.h g_lan_play), so no computer karts.
+ * After Wi-Fi mode was entered a race with one player on one console is still this console's own:
+ * single player battle mode stays on for those. Set by each setRace, read for the race. */
+static bool s_net;
+static bool battle_on(void) { return g_battle_cpus && !s_net; }
 uint64_t i_FUN_8018c878(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
-    if (g_battle_cpus && a1 >= 4 && a1 <= 7 && (int32_t)a2 < 4) {
+    s_net = g_lan_play && ((int32_t)a3 != 1 || (int32_t)a4 > 1);
+    if (battle_on() && a1 >= 4 && a1 <= 7 && (int32_t)a2 < 4) {
         rt_log("battle cpus: mode %u, %d players, 4 karts", (unsigned)a1, (int)(int32_t)a3);
         ctx_set_gpr(c, 5, 4);
     }
@@ -66,7 +72,7 @@ uint64_t i_loadCrsData__6CourseFb(Ctx *c, uint8_t *M, ARGS) {
         static uint32_t mem;
         int karts = (int16_t)ld16(c, M, RACE_INFO + 0x1c), players = (int16_t)ld16(c, M, RACE_INFO + 0x1e);
         int want = karts - players < 1 ? 1 : karts - players > ROUTE_NETS ? ROUTE_NETS : karts - players;
-        int n = g_battle_cpus && battle && ld16(c, M, bol + 0x1a) == 0 ? route_load(pts, grp, ROUTE_POINTS, want, s_net_start, &s_nets) : 0;
+        int n = battle_on() && battle && ld16(c, M, bol + 0x1a) == 0 ? route_load(pts, grp, ROUTE_POINTS, want, s_net_start, &s_nets) : 0;
         if (n && !mem) mem = charpack_reserve(0x80 + 0x20 * ROUTE_POINTS);
         if (n && mem) {
             s_cl_mem = mem, s_cl_n = n;
@@ -226,7 +232,7 @@ static float bai_rand(void);
 static void bai_state(Ctx *c, uint8_t *M, uint32_t mode, uint32_t rm, int karts, int players, uint32_t shine);
 void bai_tick(Ctx *c, uint8_t *M) {
     uint32_t mode = ld32(c, M, RACE_MODE), r13 = (uint32_t)ctx_gpr(c, 13);
-    if (!g_battle_cpus || mode < 4 || mode > 7) return;
+    if (!battle_on() || mode < 4 || mode > 7) return;
     uint32_t rm = ld32(c, M, r13 - 0x5c38), info = ram_ptr(rm) ? ld32(c, M, rm + 0x38) : 0;
     if (!ram_ptr(info)) return;
     int karts = (int16_t)ld16(c, M, info + 0x1c), players = (int16_t)ld16(c, M, info + 0x1e);
@@ -276,7 +282,7 @@ uint64_t i_calc__10GeoItemBoxFv(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     ctx_call_orig(c, g_native_addr[NAT_calc__10GeoItemBoxFv]);
     uint32_t box = (uint32_t)a0;
-    if (!g_battle_cpus || !ram_ptr(box)) return 0;
+    if (!battle_on() || !ram_ptr(box)) return 0;
     int i = 0;
     while (i < s_nbox && s_box[i].obj != box) i++;
     if (i == s_nbox) {
@@ -299,7 +305,7 @@ uint64_t i_FUN_80226f1c(Ctx *c, uint8_t *M, ARGS) {
     uint32_t lr = (uint32_t)RD(c, 0x1020, 4);
     ctx_call_orig(c, g_native_addr[NAT_FUN_80226f1c]);
     uint32_t r = (uint32_t)ctx_gpr(c, 3), pt = (uint32_t)a1;
-    if (!g_battle_cpus || !s_route_cpus || !lr_in(lr, 0x802462E4u, 88) || !ram_ptr(pt)) return r;
+    if (!battle_on() || !s_route_cpus || !lr_in(lr, 0x802462E4u, 88) || !ram_ptr(pt)) return r;
     uint32_t body = ld32(c, M, (uint32_t)a0 + 0x28), rival = ram_ptr(body) ? ld32(c, M, body + 4) : 0;
     int kart = ram_ptr(rival) ? (int)ld32(c, M, rival + 0x38) : -1, ways = 0;
     for (uint32_t i = 0; i < 4; i++) ways += ld32(c, M, pt + 0x18 + 4 * i) != 0;
@@ -583,7 +589,7 @@ static void bai_item(Ctx *c, uint8_t *M, uint32_t ctrl, int k) {
 uint64_t i_doItemCtrl__13RivalItemCtrlFv(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t ctrl = (uint32_t)a0, mode = ld32(c, M, RACE_MODE);
-    if (g_battle_cpus && s_route_cpus && mode >= 4 && mode <= 7 && ram_ptr(ctrl) && s_karts_now) {
+    if (battle_on() && s_route_cpus && mode >= 4 && mode <= 7 && ram_ptr(ctrl) && s_karts_now) {
         uint32_t rival = ld32(c, M, ctrl + 4);
         int k = ram_ptr(rival) ? (int)ld32(c, M, rival + 0x38) : -1;
         if (k >= s_players_now && k < s_karts_now && k < 8 && s_alive[k]) bai_item(c, M, ctrl, k);
@@ -738,7 +744,7 @@ uint64_t i_doSterrCtrl__13RivalBodyCtrlFv(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t bc = (uint32_t)a0, mode = ld32(c, M, RACE_MODE), rival = ram_ptr(bc) ? ld32(c, M, bc + 4) : 0;
     int k = ram_ptr(rival) ? (int)ld32(c, M, rival + 0x38) : -1;
-    bool can = g_battle_cpus && s_route_cpus && mode >= 4 && mode <= 7 && k >= s_players_now && k < s_karts_now && k < 8 && s_alive[k];
+    bool can = battle_on() && s_route_cpus && mode >= 4 && mode <= 7 && k >= s_players_now && k < s_karts_now && k < 8 && s_alive[k];
     if (can) {
         struct stuck *st = &s_stuck[k];
         if (st->escaping && (dist3(s_kpos[k], st->esc) < ESCAPE_NEAR || s_bai_frame - st->esc_at > ESCAPE_FRAMES)) bai_rejoin(c, M, bc, k);
@@ -992,7 +998,7 @@ uint64_t i_setRaceData__9SceneMenuFv(Ctx *c, uint8_t *M, ARGS) {
 uint64_t i_getCharSel__9SceneMenuFRiRi(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t m = (uint32_t)a0, mode = ld32(c, M, RACE_MODE);
-    if (!g_battle_cpus || mode < 4 || mode > 7 || !ram_ptr(m) || !ram_ptr((uint32_t)a1) || !ram_ptr((uint32_t)a2)) {
+    if (!battle_on() || mode < 4 || mode > 7 || !ram_ptr(m) || !ram_ptr((uint32_t)a1) || !ram_ptr((uint32_t)a2)) {
         ctx_call_orig(c, g_native_addr[NAT_getCharSel__9SceneMenuFRiRi]);
         return 0;
     }
@@ -1027,7 +1033,7 @@ uint64_t i_getCharSel__9SceneMenuFRiRi(Ctx *c, uint8_t *M, ARGS) {
 uint64_t i_FUN_801f1cf4(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t players = ld16(c, M, RACE_INFO + 0x1e), karts = ld16(c, M, RACE_INFO + 0x1c);
-    bool all = g_battle_cpus && ld32(c, M, RACE_MODE) == 4 && karts > players && karts <= 4;
+    bool all = battle_on() && ld32(c, M, RACE_MODE) == 4 && karts > players && karts <= 4;
     if (all) mst(c, M, RACE_INFO + 0x1e, 2, karts);
     ctx_call_orig(c, g_native_addr[NAT_FUN_801f1cf4]);
     if (all) mst(c, M, RACE_INFO + 0x1e, 2, players);

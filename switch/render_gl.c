@@ -452,6 +452,7 @@ static struct {
     /* title screen in 16:9: the 4:3 picture with a blurred copy beside it (render_present) */
     bool backdrop;
     Target bd[4];
+    Target seam[3]; /* seam_blur's halvings */
     unsigned draws_since_flush;
     uint64_t gpu_wait_ns; /* waiting for the GPU to finish the frame NSLOT frames back (render_take_gpu_wait) */
     U64Map progs;          /* tev_shader_key -> specialised program (0 = failed) */
@@ -1483,6 +1484,38 @@ static void bind_efb(void) {
     glViewport(0, 0, (GLsizei)R.efb_w, (GLsizei)R.efb_h);
 }
 
+/* Two players side by side (Frame.vseam): before the HUD, where the two 3D pictures meet is
+ * blurred (a 20-unit strip halved 3 times sideways, drawn back over the middle 10) with a thin light
+ * line down its middle, in place of a black gap. Blits only: the caller resets scissor and pipe state. */
+static void seam_blur(const Frame *f, float scale) {
+    GLint cx = (GLint)((float)f->efb[0] * scale * 0.5f + 0.5f), h = (GLint)((float)f->efb[1] * scale + 0.5f);
+    GLint src = (GLint)(10.0f * scale + 0.5f), band = (GLint)(5.0f * scale + 0.5f), line = scale >= 2.0f ? 2 : 1;
+    if (src < 8 || h <= 0 || cx - src < 0 || cx + src > (GLint)R.efb_w || h > (GLint)R.efb_h) return;
+    glDisable(GL_SCISSOR_TEST);
+    GLuint from = R.efb_color.fbo;
+    GLint fx = cx - src, fw = 2 * src;
+    for (int i = 0; i < 3; i++) {
+        uint32_t w = (uint32_t)fw / 2;
+        if (R.seam[i].w != w || R.seam[i].h != (uint32_t)h) target_init(&R.seam[i], w, (uint32_t)h);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, from);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, R.seam[i].fbo);
+        glBlitFramebuffer(fx, 0, fx + fw, h, 0, 0, (GLint)w, h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        from = R.seam[i].fbo, fx = 0, fw = (GLint)w;
+    }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, from);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, R.efb_color.fbo);
+    glBlitFramebuffer(0, 0, fw, h, cx - band, 0, cx + band, h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    GLfloat cc[4];
+    glGetFloatv(GL_COLOR_CLEAR_VALUE, cc);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(cx - line / 2, 0, line, h);
+    glClearColor(0.8f, 0.8f, 0.8f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glClearColor(cc[0], cc[1], cc[2], cc[3]);
+    R.pipe_valid = false;
+}
+
 static void tev_bytes(const TevState *t, uint8_t *b) {
     memcpy(b, t->stages, 256);
     memcpy(b + 256, t->regs, 64);
@@ -1592,8 +1625,16 @@ bool render_update(float scale_in) {
             if (R.sso && R.vs_squeeze >= 0 && sq != R.squeeze) { glProgramUniform1f(R.vs_prog, R.vs_squeeze, sq); R.squeeze = sq; }
             glEnable(GL_SCISSOR_TEST);
             uint32_t sc[4] = {~0u, ~0u, ~0u, ~0u}, cur_ub = ~0u;
+            bool seam = f->vseam && k < ncopies && copies[k].xfb;
             for (size_t i = next; i < end; i++) {
                 const Batch *b = &f->batches.data[i];
+                if (seam && b->hud) {
+                    seam = false;
+                    seam_blur(f, scale);
+                    bind_efb();
+                    glEnable(GL_SCISSOR_TEST);
+                    sc[0] = ~0u;
+                }
                 uint32_t x0 = efb_px(b->rect[0], scale), y0 = efb_px(b->rect[1], scale), x1 = efb_px(b->rect[2], scale), y1 = efb_px(b->rect[3], scale);
                 if (sq > 0 && b->hud) {
                     /* narrowed like the vertices, so 2D the game keeps beside the 4:3 screen stays hidden */

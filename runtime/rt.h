@@ -64,6 +64,7 @@ void sched_note_host(void);
 #define IRQ_SI 20
 #define IRQ_DI 21
 #define IRQ_VI 24
+#define IRQ_NET 31 /* not the hardware's: the emulated adapter's sends done (eth.c) */
 #define TB_HZ 40500000ull
 uint64_t sched_timebase(void);
 void sched_raise(int irq);
@@ -187,7 +188,7 @@ int charpack_pick(int kart, int drv, int base, bool human);
 int charpack_pages(void);                 /* the select screen's: 1 + the most variants of a character */
 int charpack_page(void);                  /* 0 the game's 20 */
 void charpack_page_step(int dir);
-void charpack_select_frame(const int cursor[4], const bool chosen[CP_BASES]);
+void charpack_select_frame(const int cursor[4], const int cells[4][2], const int owner[4][2]);
 bool charpack_select_active(void);
 void charpack_select_keep(void); /* the end of a select screen frame */
 bool charpack_hint(int player, char *out, size_t n);
@@ -229,6 +230,29 @@ void cheats_after_load(void);
 void memcard_set_path(const char *path);
 /* CARD API: returns true and sets *result if handled. */
 bool memcard_call(Ctx *c, const char *name, int32_t *result);
+/* ---- eth.c: the Broadband Adapter (LAN play), on while g_lan_on ---- */
+extern volatile uint32_t g_lan_on;
+/* Where the frames go: UDP port g_lan_port (0: ETH_PORT), to the other consoles found by broadcast,
+ * and to g_lan_peer ("a.b.c.d" or "a.b.c.d:port", "" none) too, for networks that drop broadcasts.
+ * Set before the game boots. */
+extern uint32_t g_lan_port;
+extern char g_lan_peer[64];
+extern char g_dol_sha1[41];
+/* Set at the first ETHInit (the game entered LAN MODE), for the rest of the run. Every console
+ * simulates every kart from the pads alone (lockstep), so the port's gameplay changes (cheats,
+ * laps, any kart) must be the game's own on all of them, or the races drift apart and the game
+ * stops with "Data could not be properly transferred". */
+extern volatile uint32_t g_lan_play;
+void eth_exit(void); /* at exit, after plat_pause_threads */
+/* The Wi-Fi link, for the - menu and the FPS counter (any thread). up: the tunnel is open (Wi-Fi
+ * mode was entered); consoles: the others known, silent: those that don't answer pings (an older
+ * build); rtt_ms, rtt_max_ms, loss_pct: the worst of the rest (loss_pct -1: not measured yet). */
+typedef struct { bool up; uint32_t seconds, consoles, silent, rtt_ms, rtt_max_ms; int loss_pct; } EthStatus;
+void eth_status(EthStatus *st);
+void eth_patch_text(void); /* after main.dol's load: the LAN dialogs say Wi-Fi mode and Switch */
+/* ETH API: returns true and sets *result if handled (false: the original runs). */
+bool eth_call(Ctx *c, const char *name, uint32_t *result);
+void eth_interrupt(Ctx *c);
 bool thp_decode(uint32_t file, const uint32_t dst[3]);
 extern volatile uint64_t g_thp_frames; /* movie frames decoded (the widescreen HUD keeps movies 4:3) */
 
@@ -249,6 +273,9 @@ extern volatile uint32_t g_hud_hide;
 /* Race HUD style, 1-4 players while racing (native.c MODERN): 0 the game's, 1 smaller, in the
  * corners and the top centre. g_speed_kmh: the speedometer in km/h (the US game's is mph). */
 extern volatile uint32_t g_hud_modern, g_speed_kmh;
+/* Two players side by side (native.c vsplit_sync): the screens left and right instead of top and
+ * bottom, from the next race. */
+extern volatile uint32_t g_vsplit;
 /* Diagnostics: the race HUD's pictures logged every 300 race frames from this one (0: never). */
 extern volatile uint32_t g_hud_log;
 /* First-person race camera, 1 to 4 players (native.c FUN_802b6bd4):

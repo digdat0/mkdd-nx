@@ -5,6 +5,7 @@ others are shown:
 
     HD Textures   tools/hdtex_app/hdtex_gui.py   the Dolphin HD texture pack -> hd-textures.bin
     Characters    tools/charpack.py              character mods -> MKDD-NX character folders
+    Wii Characters tools/wiichar.py              a Mario Kart Wii driver (.szs) -> a character folder
     Battle Routes tools/route_editor.py          the routes the computer karts drive in battles
 
     py -3 tools/mkddnx_tools.py                  the window (from source)
@@ -31,8 +32,10 @@ WIKI = "https://github.com/digdat0/mkdd-nx/wiki/"
 TOOLS = [
     ("HD Textures", "Convert the MKDD HD texture pack, made for Dolphin, into the one file MKDD-NX loads.",
      "HD-Textures-App", "hdtex"),
-    ("Characters", "Turn downloaded character mods into characters for the select screen's extra pages: "
+    ("Export MKDD Characters", "Turn downloaded character mods into characters for the select screen's extra pages: "
                    "checks each one and writes the folders for the SD card.", "Characters-App", "characters"),
+    ("Convert WiiMK Characters (beta)", "Convert a Mario Kart Wii driver (.szs) into a character: its model on the game's skeleton, "
+                       "with a preview. Drivers only, not karts.", "Wii-Characters", "wiichar"),
     ("Battle Routes", "Edit the routes the computer karts drive in single player battles, on the game's arena maps.",
      "Route-Editor", "routes"),
 ]
@@ -43,6 +46,9 @@ def make_tool(kind, frame):
     if kind == "characters":
         import charpack
         return charpack.gui(frame)
+    if kind == "wiichar":
+        import wiichar
+        return wiichar.gui(frame)
     if kind == "hdtex":
         import hdtex_gui
         return hdtex_gui.App(frame)

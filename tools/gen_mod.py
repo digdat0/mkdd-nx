@@ -32,8 +32,10 @@ gen_c.py those call sites (the "bl" words of the mod's main.dol that differ from
 replaced something other than a "bl") as --keep-regs, or the C loses those values (Retro Track
 Grand Prix 2.1 hung loading a course: a loop count in r0). The hooks themselves hand back every
 register they set, non-volatile ones too (RTGP's do the replaced "mr r0,r3" / "mr r31,r3").
-Retro Track Grand Prix 2.1:
-  py -3 tools/gen_c.py <rtgp sheets> <mod gen dir> --keep-regs=""" + ",".join(f"{a:#x}" for a in RTGP_KEEP) + """
+Retro Track Grand Prix 2.1 (and its Baby Mode / Classic 1.4, the same hooks) rewrites the first 16 of
+Plus's "li" immediates when it changes the cup page (X / Y; its table at 0x803e2ad4 + 0x1f4, 1.4's at
+0x803e2a74 + 0x1f4): give it the first 16 --dyn-imm addresses above too, else the page never changes:
+  py -3 tools/gen_c.py <rtgp sheets> <mod gen dir> --dyn-imm=<the first 16> --keep-regs=""" + ",".join(f"{a:#x}" for a in RTGP_KEEP) + """
 """)
 import re
 import shutil

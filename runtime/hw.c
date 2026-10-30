@@ -241,7 +241,7 @@ static void di_command(void) {
         uint32_t len = get32(DI_LEN);
         if (len > RAM_SIZE - dst) len = RAM_SIZE - dst;
         hw_gx_flush();
-        gx_drain();
+        gx_drain_dma(len);
         disc_read(off, g_ram + dst, len);
         gx_mem_dirty(dst, len);
         if (len >= (256u << 10)) gx_mem_dirty_all();

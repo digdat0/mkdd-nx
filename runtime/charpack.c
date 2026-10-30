@@ -15,16 +15,16 @@
  * (voice/, or a one-character pack's audio_waves/: charvoice.c), else its base's.
  *
  * The game never sees them. The character select screen (native.c SceneMenu::character) shows pages:
- * page 1 the game's 20, page k the k-th variant placed in each cell (dimmed where there is none); Y
- * and X turn them. Placement (layout): every character's variants in its own cell up to an even
- * share (ceil(variants / 20) a cell), the rest in the cells with the fewest, so the pages stay few;
- * character.ini's slot= pins a variant to a cell. A variant in another character's cell plays as its
- * base: hovered, the cell previews the base's model; picked, the select screen chooses the base's
- * cell (native.c), so the race, its partner and the computer players are the base's. A cell chosen
- * there picks the variant shown; while a DriverModel
- * is built for a player's driver, its loads of "Driver/<base>/<file>" from MRAM.arc come from the
- * variant's file when it has one. A race never has the same character twice, so the pictures follow
- * the character: Mario's are the variant's when the Mario of this race (or of the select screen) is one.
+ * page 1 the game's 20, then the variants 20 a page in folder name order (layout; the last page's
+ * empty cells checkered); Y and X turn them. A variant plays as its base: picked, the select
+ * screen chooses the base's cell (native.c), so the race, its partner and the computer players are
+ * the base's. Each pick is a character of its own: the picks are kept per team and driver (the
+ * game's chosen cells, the base's), and only the very pick shown in a cell makes it taken there
+ * (charpack_cell_taken), so Mario, Metal Mario and Mario's other variants can all race together.
+ * While a DriverModel is built for a player's driver, its loads of "Driver/<base>/<file>" from
+ * MRAM.arc come from that team and driver's pick when it is a variant. The pictures and the voice
+ * follow the character: Mario's are the variant's when the Mario loaded last (or shown on the select
+ * screen) is one.
  *
  * The files are read once each from the SD card into MEM1 above the game's 24 MiB (gc_core.h
  * RAM_SIZE): the models the game builds from them point into them. They stay until a select
@@ -76,7 +76,7 @@ typedef struct {
     char dir[160];   /* character.ini layout: its folder; else the pack's files/ folder */
     char folder[24]; /* MKDD Patcher layout: its driver folder's name as on the SD card ("" otherwise) */
     char name[32], author[32];
-    uint8_t base, cell; /* cell: where the select screen shows it (layout) */
+    uint8_t base, cell, page; /* where the select screen shows it (layout) */
     bool pinned;        /* character.ini slot= */
     int8_t anim;        /* the character whose animations move it (its skeleton's), -1 its base's */
     char voice;         /* its sounds (charvoice.c): 'v' in dir/voice, 'a' in the pack's audio_waves, 0 none */
@@ -89,16 +89,16 @@ static Loaded s_file[FILE_MAX];
 static unsigned s_nfile;
 static uint32_t s_pool = POOL_LO, s_pool_top = POOL_HI; /* files from the bottom, reserved blocks from the top */
 
-/* Per character: the variant the players chose on the select screen (-1 the game's own) and the
- * cell it was chosen in; per cell the one shown now (select screen; in a race per character, the
- * loaded driver's; CP_DIM the game's, dimmed); per character the one its model and name tag show
- * (charpack_model), a pick made in another character's cell, waiting for the game to choose the
- * base (charpack_pending), and the cell its choice shows in on this page (charpack_moved). */
-static int s_pick[CP_BASES], s_pick_cell[CP_BASES], s_show[CP_BASES], s_model[CP_BASES], s_pending[CP_BASES];
-static int s_pending_cell[CP_BASES], s_moved[CP_BASES];
+/* Per team and driver, the pick: the game's chosen cell (the base's; -1 none), the variant (-1 the
+ * game's own) and the cell it was picked in. Per cell the one shown now (select screen; in a race per
+ * character, the loaded driver's; CP_DIM the game's, dimmed); per character the one its model and
+ * name tag show (charpack_model: native.c's choice of the select screen's model blocks); per player
+ * a pick made in another character's cell, waiting for the game to choose the base (charpack_pending). */
+typedef struct { int cell, v, at; } Pick;
+#define NO_PICK {-1, -1, -1}
+static Pick s_slot[4][2] = {{NO_PICK, NO_PICK}, {NO_PICK, NO_PICK}, {NO_PICK, NO_PICK}, {NO_PICK, NO_PICK}};
 #define NO_PENDING (-9) /* s_pending: nothing (-1: the game's own, chosen on purpose) */
-static uint32_t s_rnd = 0x9E3779B9u;
-static bool s_chosen[CP_BASES];
+static int s_show[CP_BASES], s_model[CP_BASES], s_pending[4] = {NO_PENDING, NO_PENDING, NO_PENDING, NO_PENDING}, s_pending_cell[4];
 static int s_cursor[4] = {-1, -1, -1, -1};
 static int s_page, s_pages = 1;
 static uint64_t s_select_gx; /* the game frame (gx_frame_count) of the select screen's last frame */
@@ -347,34 +347,21 @@ static void scan_pack(const char *pack) {
     }
 }
 
-/* Cells for the variants: pinned ones where character.ini says; the others in their own
- * character's cell up to an even share, ceil(variants / 20) (or the most pinned in one cell), the
- * rest each in the cell with the fewest (the first such), so pages = 1 + that share. */
+/* Cells for the variants: in folder name order, the first page's third row (cells 20-29: the game's
+ * 20 above), then page after page all 30 cells, whatever character they play as: a cell is only a
+ * place to pick one (the hint names its base). Only the last page has empty cells. character.ini's
+ * slot= is not used. */
 static void layout(void) {
-    int count[CP_BASES] = {0}, share = (int)(s_nvar + CP_BASES - 1) / CP_BASES;
-    for (unsigned i = 0; i < s_nvar; i++)
-        if (s_var[i].pinned && ++count[s_var[i].cell] > share) share = count[s_var[i].cell];
     for (unsigned i = 0; i < s_nvar; i++) {
-        Variant *v = &s_var[i];
-        if (v->pinned) continue;
-        if (count[v->base] < share) v->cell = v->base, count[v->base]++;
-        else v->cell = 0xFF; /* placed below */
-    }
-    for (unsigned i = 0; i < s_nvar; i++) {
-        Variant *v = &s_var[i];
-        if (v->cell != 0xFF) continue;
-        int best = 0;
-        for (int c = 1; c < CP_BASES; c++)
-            if (count[c] < count[best]) best = c;
-        v->cell = (uint8_t)best, count[best]++;
-        rt_log("charpack: %s (on %s) shown in %s's cell", v->name, BASE_NAMES[v->base], BASE_NAMES[best]);
+        unsigned j = i < CP_ROW ? i + CP_BASES : i - CP_ROW;
+        s_var[i].page = (uint8_t)(i < CP_ROW ? 0 : 1 + j / CP_CELLS), s_var[i].cell = (uint8_t)(i < CP_ROW ? j : j % CP_CELLS);
     }
 }
 
 void charpack_scan(const char *dir) {
     s_nvar = 0;
     for (int b = 0; b < CP_BASES; b++)
-        s_pick[b] = s_show[b] = s_model[b] = s_moved[b] = -1, s_pending[b] = NO_PENDING, s_pick_cell[b] = b, s_chosen[b] = false;
+        s_show[b] = s_model[b] = -1;
     scan_pack(dir); /* mods/characters/files */
     DIR *d = opendir(dir);
     static char subs[VAR_MAX][64];
@@ -397,13 +384,7 @@ void charpack_scan(const char *dir) {
         else scan_pack(sub);
     }
     layout();
-    /* pages: 1 + the most variants in a cell */
-    s_pages = 1;
-    for (int c = 0; c < CP_BASES; c++) {
-        int k = 1;
-        for (unsigned i = 0; i < s_nvar; i++) k += s_var[i].cell == c;
-        if (k > s_pages) s_pages = k;
-    }
+    s_pages = s_nvar ? s_var[s_nvar - 1].page + 1 : 1;
     rt_log("charpack: %u variants in %s, %d pages", s_nvar, dir, s_pages);
 }
 
@@ -437,41 +418,53 @@ bool charpack_path(int v, char kind, const char *game, char *out, size_t n) {
     return true;
 }
 
-/* the k-th variant (k >= 1) shown in cell c, or -1 */
-static int variant_at(int c, int k) {
-    for (unsigned i = 0; i < s_nvar && k > 0; i++)
-        if (s_var[i].cell == c && --k == 0) return (int)i;
+int charpack_cell_variant(int c) {
+    for (unsigned i = 0; c >= 0 && c < CP_CELLS && i < s_nvar; i++)
+        if (s_var[i].page == s_page && s_var[i].cell == c) return (int)i;
     return -1;
 }
-int charpack_cell_variant(int c) { return c >= 0 && c < CP_BASES && s_page ? variant_at(c, s_page) : -1; }
 int charpack_real_base(int c) {
     int v = charpack_cell_variant(c);
-    return v >= 0 ? s_var[v].base : c;
+    return v >= 0 ? s_var[v].base : c < CP_BASES ? c : -1;
 }
-void charpack_pending(int b, int v, int cell) {
-    if (b >= 0 && b < CP_BASES) s_pending[b] = v, s_pending_cell[b] = cell;
+void charpack_pending(int player, int v, int cell) {
+    if (player >= 0 && player < 4) s_pending[player] = v, s_pending_cell[player] = cell;
 }
-int charpack_random(int b, int *cell) {
-    int n = 1;
-    for (unsigned i = 0; i < s_nvar; i++) n += s_var[i].base == b;
-    s_rnd ^= s_rnd << 13, s_rnd ^= s_rnd >> 17, s_rnd ^= s_rnd << 5;
-    int k = (int)((s_rnd ^ g_vi_count) % (uint32_t)n);
-    *cell = b;
-    for (unsigned i = 0; i < s_nvar && k > 0; i++)
-        if (s_var[i].base == b && --k == 0) return *cell = s_var[i].cell, (int)i;
-    return -1;
-}
-int charpack_moved(int b) { return b >= 0 && b < CP_BASES ? s_moved[b] : -1; }
 void charpack_borrow(int b, int v) {
     if (b >= 0 && b < CP_BASES) s_model[b] = v;
 }
+int charpack_slot(int t, int k, int *v) {
+    if (t < 0 || t >= 4 || k < 0 || k >= 2 || s_slot[t][k].cell < 0) return *v = -1, -1;
+    return *v = s_slot[t][k].v, s_slot[t][k].cell;
+}
+int charpack_slot_shown(int t, int k) {
+    if (t < 0 || t >= 4 || k < 0 || k >= 2) return -1;
+    const Pick *x = &s_slot[t][k];
+    return x->cell >= 0 && x->v >= 0 && x->at != x->cell && x->at >= 0 && x->at < CP_BASES && charpack_cell_variant(x->at) == x->v ? x->at : -1;
+}
+bool charpack_variant_taken(int v) {
+    for (int t = 0; t < 4; t++)
+        for (int k = 0; k < 2; k++)
+            if (s_slot[t][k].cell >= 0 && s_slot[t][k].v == v) return true;
+    return false;
+}
+bool charpack_cell_taken(int c) {
+    if (c < 0 || c >= CP_CELLS) return false;
+    int v = charpack_cell_variant(c);
+    for (int t = 0; t < 4; t++)
+        for (int k = 0; k < 2; k++) {
+            const Pick *x = &s_slot[t][k];
+            if (x->cell >= 0 && (v >= 0 ? x->v == v : x->v < 0 && x->cell == c)) return true;
+        }
+    return false;
+}
 
-/* The variant kart k's driver d (0 or 1) drives in place of base character b, or -1: the select
- * screen's choice for a player's driver. */
+/* The variant kart k's driver d (0 or 1) drives in place of base character b, or -1: that team
+ * and driver's pick (the players' karts are the teams, in order), else the other driver's of b. */
 int charpack_pick(int kart, int drv, int b, bool human) {
-    (void)kart, (void)drv;
-    if (b < 0 || b >= CP_BASES) return -1;
-    return human ? s_pick[b] : -1;
+    if (b < 0 || b >= CP_BASES || !human || kart < 0 || kart >= 4 || drv < 0 || drv >= 2) return -1;
+    if (s_slot[kart][drv].cell == b) return s_slot[kart][drv].v;
+    return s_slot[kart][!drv].cell == b ? s_slot[kart][!drv].v : -1;
 }
 
 int charpack_pages(void) { return s_pages; }
@@ -483,54 +476,55 @@ void charpack_page_step(int dir) {
 }
 
 /* Each frame of the character select screen: the players' cursor cells (-1 none, or not choosing
- * drivers) and the cells the teams have chosen (the characters' own cells: a pick in another
- * character's cell chooses the base's, native.c). A newly chosen cell picks the variant a player
- * chose in another cell for it (by A or the random pick, native.c), else the one of the page shown
- * when it is that character's. A choice made in another character's cell shows there (its
- * picture, native.c the highlight) while the page shows it there; its own cell is dimmed then
- * (taken). */
-void charpack_select_frame(const int cursor[4], const bool chosen[CP_BASES]) {
+ * drivers), each team's chosen cells (the characters' own: a pick in another character's cell
+ * chooses the base's, native.c) and who chose them. A newly chosen cell picks what its player chose
+ * in another cell for it (by A or the random pick, native.c), else the variant this page shows there
+ * when it is that character's, else the game's own. A pick made in another character's cell shows
+ * there (its picture, native.c the highlight) while the page shows it there. The models are
+ * native.c's to choose each frame (charpack_borrow), then charvoice_update. */
+/* A race's drivers, per kart and driver: the character (-1 not built) and the variant it is (-1 the
+ * game's own); the HUD's faces and map icons follow them per kart (charpack_race_face). */
+static int s_race_b[8][2], s_race_v[8][2];
+/* per kart, its driver in front now (the one driving), and the one in front when its HUD first drew
+ * it (the race order's first head stays that driver's: the heads trade places on Z; -1 not yet) */
+static int s_front[8], s_front0[8];
+/* per character, 2 + the variant of its driver who spoke last in the race (1 the game's own), 0 none
+ * yet; s_race_on: s_race_b / s_race_v were set (a race began, or the select screen cleared them) */
+static int s_speak[CP_BASES];
+static bool s_race_on;
+void charpack_select_frame(const int cursor[4], const int cells[4][2], const int owner[4][2]) {
     for (int p = 0; p < 4; p++) s_cursor[p] = cursor[p];
-    for (int b = 0; b < CP_BASES; b++) {
-        if (chosen[b] && !s_chosen[b]) {
-            int on_page = charpack_cell_variant(b);
-            bool set = s_pending[b] != NO_PENDING;
-            s_pick[b] = set ? s_pending[b] : on_page >= 0 && s_var[on_page].base == b ? on_page : -1;
-            s_pick_cell[b] = set && s_pending[b] >= 0 ? s_pending_cell[b] : b;
-            rt_log("charpack: %s chosen as %s", BASE_NAMES[b], s_pick[b] < 0 ? "the game's own" : s_var[s_pick[b]].name);
-        } else if (!chosen[b] && s_chosen[b]) s_pick[b] = -1, s_pick_cell[b] = b;
-        s_pending[b] = NO_PENDING;
-        s_chosen[b] = chosen[b];
-    }
+    for (int b = 0; b < CP_BASES; b++) s_speak[b] = 0;
+    s_race_on = true;
+    for (int k = 0; k < 8; k++) s_race_b[k][0] = s_race_b[k][1] = s_race_v[k][0] = s_race_v[k][1] = -1;
+    for (int t = 0; t < 4; t++)
+        for (int k = 0; k < 2; k++) {
+            Pick *x = &s_slot[t][k];
+            int cell = cells[t][k], p = owner[t][k];
+            if (cell == x->cell) continue;
+            if (cell < 0 || cell >= CP_BASES) { /* (the game's: one of the 20) */
+                *x = (Pick)NO_PICK;
+                continue;
+            }
+            int on_page = charpack_cell_variant(cell);
+            if (p >= 0 && p < 4 && s_pending[p] != NO_PENDING && (s_pending[p] < 0 || s_var[s_pending[p]].base == cell))
+                *x = (Pick){cell, s_pending[p], s_pending[p] < 0 ? cell : s_pending_cell[p]};
+            else *x = (Pick){cell, on_page >= 0 && s_var[on_page].base == cell ? on_page : -1, cell};
+            rt_log("charpack: team %d driver %d: %s as %s", t + 1, k + 1, BASE_NAMES[cell], x->v < 0 ? "the game's own" : s_var[x->v].name);
+        }
+    for (int p = 0; p < 4; p++) s_pending[p] = NO_PENDING;
     for (int c = 0; c < CP_BASES; c++) {
         int on_page = charpack_cell_variant(c);
-        s_show[c] = chosen[c] ? s_pick[c] : s_page && on_page < 0 ? CP_DIM : on_page;
+        s_show[c] = s_page && on_page < 0 ? CP_DIM : on_page;
+        s_model[c] = -1;
     }
-    for (int b = 0; b < CP_BASES; b++) {
-        int vc = s_pick_cell[b];
-        bool free = chosen[b] && s_pick[b] >= 0 && vc != b && vc >= 0 && vc < CP_BASES && !chosen[vc] &&
-                    charpack_cell_variant(vc) == s_pick[b];
-        s_moved[b] = free ? vc : -1;
-        if (free) s_show[vc] = s_pick[b], s_show[b] = CP_DIM;
-    }
-    /* the models: a chosen character's pick, else a variant of it under a cursor, else the one in
-     * its own cell on this page */
-    for (int b = 0; b < CP_BASES; b++) {
-        int m = -1;
-        if (chosen[b]) m = s_pick[b];
-        else {
-            for (int p = 0; p < 4 && m < 0; p++) {
-                int v = charpack_cell_variant(cursor[p]);
-                if (v >= 0 && s_var[v].base == b) m = v;
-            }
-            int own = charpack_cell_variant(b);
-            if (m < 0 && own >= 0 && s_var[own].base == b) m = own;
+    for (int t = 0; t < 4; t++)
+        for (int k = 0; k < 2; k++) {
+            int vc = charpack_slot_shown(t, k);
+            if (vc >= 0) s_show[vc] = s_slot[t][k].v;
         }
-        s_model[b] = m;
-    }
     s_select_gx = gx_frame_count();
     s_select_seen = true;
-    charvoice_update();
 }
 /* counted in game frames, not time: one slow frame is still the same screen */
 bool charpack_select_active(void) { return s_select_seen && gx_frame_count() - s_select_gx <= 3; }
@@ -544,7 +538,7 @@ void charpack_select_keep(void) {
  * ("P1  METAL MARIO", "P1  ROBO MARIO  (AS MARIO)"). */
 bool charpack_hint(int p, char *out, size_t n) {
     int b = p >= 0 && p < 4 ? s_cursor[p] : -1;
-    int v = b >= 0 && b < CP_BASES ? s_show[b] : -1;
+    int v = b >= 0 && b < CP_BASES ? s_show[b] : charpack_cell_variant(b);
     if (v < 0) return false;
     char as[40] = "";
     if (s_var[v].base != b) snprintf(as, sizeof as, "  (AS %s)", BASE_NAMES[s_var[v].base]);
@@ -552,14 +546,92 @@ bool charpack_hint(int p, char *out, size_t n) {
     return true;
 }
 
+/* the HUD pictures' own copies of a face (native.c hud_face): per kind, kart and slot one place in
+ * the pool, with the character it holds now */
+typedef struct { uint32_t addr, size; int kind, kart, slot, b; } HudCopy;
+static HudCopy s_hud[64];
+static unsigned s_nhud;
+
 /* A race's drivers are about to be built: nothing is shown as a variant until one is loaded. */
 void charpack_race_begin(void) {
+    for (int k = 0; k < 8; k++) s_race_b[k][0] = s_race_b[k][1] = s_race_v[k][0] = s_race_v[k][1] = -1;
+    for (int k = 0; k < 8; k++) s_front[k] = 1, s_front0[k] = -1;
+    for (int b = 0; b < CP_BASES; b++) s_speak[b] = 0;
+    s_race_on = true;
     for (int b = 0; b < CP_BASES; b++) s_show[b] = s_model[b] = -1;
     charvoice_update();
 }
+/* The variant's own driver.bmd was loaded: its faces show for b. Not its model textures: the model
+ * has its own, and another driver of b (the game's own) keeps the game's. */
 void charpack_loaded(int b, int v) {
-    if (b >= 0 && b < CP_BASES) s_show[b] = s_model[b] = v;
+    if (b >= 0 && b < CP_BASES) s_show[b] = v;
     charvoice_update();
+}
+
+void charpack_race_driver(int kart, int drv, int b, int v) {
+    if (kart < 0 || kart >= 8 || drv < 0 || drv > 1 || b < 0 || b >= CP_BASES) return;
+    s_race_b[kart][drv] = b, s_race_v[kart][drv] = v;
+    charvoice_update();
+}
+void charpack_voice_speak(int kart, int drv) {
+    if (kart < 0 || kart >= 8 || drv < 0 || drv > 1) return;
+    int b = s_race_b[kart][drv];
+    if (b >= 0 && b < CP_BASES) s_speak[b] = s_race_v[kart][drv] + 2;
+}
+/* the variant whose voice plays for b now: the race's driver of b who spoke last (before any did,
+ * the first one racing as a variant), else the select screen's (charpack_model) */
+static int voice_want(int b) {
+    if (s_speak[b]) return s_speak[b] - 2;
+    for (int k = 0; k < 8 && s_race_on; k++)
+        for (int d = 0; d < 2; d++)
+            if (s_race_b[k][d] == b && s_race_v[k][d] >= 0) return s_race_v[k][d];
+    return s_model[b];
+}
+bool charpack_voice_on(int v) {
+    for (int b = 0; b < CP_BASES; b++)
+        if (v >= 0 && voice_want(b) == v) return true;
+    return false;
+}
+unsigned charpack_voice_variants(int *out, unsigned max) {
+    unsigned n = 0;
+    for (int i = 0; i < CP_BASES + (s_race_on ? 16 : 0); i++) {
+        int v = i < CP_BASES ? s_model[i] : s_race_v[(i - CP_BASES) / 2][(i - CP_BASES) % 2];
+        bool dup = v < 0;
+        for (unsigned j = 0; j < n && !dup; j++) dup = out[j] == v;
+        if (!dup && n < max) out[n++] = v;
+    }
+    return n;
+}
+void charpack_race_front(int kart, int front, bool sure) {
+    if (kart < 0 || kart >= 8) return;
+    s_front[kart] = front & 1;
+    if (sure && s_front0[kart] < 0) s_front0[kart] = front & 1;
+}
+int charpack_race_face(int kart, int slot, int b) {
+    if (kart < 0 || kart >= 8 || b < 0 || b >= CP_BASES) return CP_RACE_NONE;
+    bool d0 = s_race_b[kart][0] == b, d1 = s_race_b[kart][1] == b;
+    if (!d0 && !d1) return CP_RACE_NONE;
+    int f0 = s_front0[kart] >= 0 ? s_front0[kart] : s_front[kart];
+    return s_race_v[kart][!(d0 && d1) ? d1 : slot < 0 ? s_front[kart] : slot == 0 ? f0 : !f0];
+}
+int charpack_hud_copy(int kind, int kart, int slot, int b, uint32_t size, uint32_t *addr) {
+    unsigned i = 0;
+    for (; i < s_nhud; i++)
+        if (s_hud[i].kind == kind && s_hud[i].kart == kart && s_hud[i].slot == slot) break;
+    if (i < s_nhud && s_hud[i].size < size) return -1; /* a bigger picture than before: never (faces are one size) */
+    if (i == s_nhud) {
+        uint32_t a = i < sizeof s_hud / sizeof s_hud[0] ? charpack_reserve(size) : 0;
+        if (!a) return -1;
+        s_hud[s_nhud++] = (HudCopy){a, size, kind, kart, slot, b};
+    }
+    s_hud[i].b = b;
+    *addr = s_hud[i].addr;
+    return (int)i;
+}
+bool charpack_hud_copy_info(int i, int *kind, int *kart, int *slot, int *b) {
+    if (i < 0 || (unsigned)i >= s_nhud) return false;
+    *kind = s_hud[i].kind, *kart = s_hud[i].kart, *slot = s_hud[i].slot, *b = s_hud[i].b;
+    return true;
 }
 
 bool charpack_voice_dir(int v, char *out, size_t n) {
@@ -604,6 +676,22 @@ uint32_t charpack_folder_file(int v, const char *folder, const char *file, uint3
     for (; folder[n]; n++) low[n] = (char)tolower((unsigned char)folder[n]); /* the packs' folders are lower case */
     low[n] = 0;
     snprintf(path, sizeof path, "%s/" CP_DRIVERS "/%s/%s", s_var[v].dir, low, file);
+    return load_file(path, size);
+}
+/* a variant's own select screen pose (selectAnm.arc's enter.bck, wait.bck, gut.bck, gut.btp): its
+ * selectanm/ (tools/charpack.py), or the MKDD Patcher layout's SceneData/selectAnm.arc/selectanm/<its
+ * driver folder>/; 0 none */
+uint32_t charpack_select_file(int v, const char *file, uint32_t *size) {
+    char path[224];
+    if (v < 0 || (unsigned)v >= s_nvar || strchr(file, '/') || strlen(file) > 48) return 0;
+    if (!s_var[v].folder[0]) snprintf(path, sizeof path, "%s/selectanm/%s", s_var[v].dir, file);
+    else {
+        char low[sizeof s_var[v].folder];
+        unsigned n = 0;
+        for (; s_var[v].folder[n] && n + 1 < sizeof low; n++) low[n] = (char)tolower((unsigned char)s_var[v].folder[n]);
+        low[n] = 0;
+        snprintf(path, sizeof path, "%s/SceneData/selectAnm.arc/selectanm/%s/%s", s_var[v].dir, low, file);
+    }
     return load_file(path, size);
 }
 static uint32_t load_file(const char *path, uint32_t *size) {

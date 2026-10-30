@@ -30,5 +30,5 @@ done
 rm -f $OUT/gen_mem.o  # the memory image is loaded from the disc's main.dol now
 echo "${#jobs[@]} files to compile"
 printf '%s\n' "${jobs[@]}" | xargs -P "$JOBS" -I{} sh -c '{} || exit 255'
-gcc -o $OUT/mkdd_pc.exe $OUT/*.o -l:libzstd.a -lm -lpthread -lwinmm -lpsapi
+gcc -o $OUT/mkdd_pc.exe $OUT/*.o -l:libzstd.a -lm -lpthread -lwinmm -lpsapi -lws2_32
 echo "built $OUT/mkdd_pc.exe"

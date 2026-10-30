@@ -145,12 +145,15 @@ static void defaults(void) {
     g_set.hud_hide = 0;
     g_set.hud_style = 1; /* modern */
     g_set.speed_kmh = false;
+    g_set.vsplit = false;
     g_set.camera = 0;
     g_set.drv_up = DRV_UP, g_set.drv_forward = DRV_FWD, g_set.drv_tilt = DRV_TILT;
     g_set.kart_up = KART_UP, g_set.kart_forward = KART_FWD, g_set.kart_tilt = KART_TILT;
     g_set.docked_res = DOCKED_AUTO;
     g_set.handheld_res = HANDHELD_AUTO;
     g_set.profiler = false;
+    g_set.lan = false;
+    g_set.lan_peer[0] = 0;
     memcpy(g_set.map, MAP_DRIVE_DEFAULT, sizeof g_set.map);
 }
 
@@ -212,6 +215,7 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "hud_hide")) g_set.hud_hide = (unsigned)atoi(v) & HUD_ALL;
         else if (!strcmp(k, "hud_style")) g_set.hud_style = atoi(v) == 1;
         else if (!strcmp(k, "speed_kmh")) g_set.speed_kmh = atoi(v) != 0;
+        else if (!strcmp(k, "split_side_by_side")) g_set.vsplit = atoi(v) != 0;
         else if (!strcmp(k, "camera_view")) g_set.camera = atoi(v) < 0 || atoi(v) > 2 ? 0 : atoi(v), view_seen = true;
         else if (!strcmp(k, "camera")) old_view = atoi(v);
         else if (!strcmp(k, "driver_eye_up")) g_set.drv_up = atoi(v);
@@ -221,6 +225,8 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "kart_eye_forward")) g_set.kart_forward = atoi(v);
         else if (!strcmp(k, "kart_tilt")) g_set.kart_tilt = atoi(v);
         else if (!strcmp(k, "profiler")) g_set.profiler = atoi(v) != 0;
+        else if (!strcmp(k, "lan")) g_set.lan = atoi(v) != 0;
+        else if (!strcmp(k, "lan_peer")) snprintf(g_set.lan_peer, sizeof g_set.lan_peer, "%s", v);
         else if (!strcmp(k, "handheld_res")) g_set.handheld_res = atoi(v) >= 0 && atoi(v) <= HANDHELD_AUTO ? atoi(v) : HANDHELD_AUTO;
         else if (!strcmp(k, "docked_res")) g_set.docked_res = atoi(v) >= 0 && atoi(v) <= DOCKED_AUTO ? atoi(v) : DOCKED_AUTO;
         else
@@ -262,6 +268,8 @@ void settings_save(void) {
     fprintf(f, "mt_sweeps=%d\nmt_speed=%d\nmt_length=%d\njump=%d\nlaps=%d\nfree_camera=%d\ncamera_height=%d\ncamera_distance=%d\n", g_set.mt_sweeps, g_set.mt_speed,
             g_set.mt_length, g_set.jump, g_set.laps, g_set.free_cam, g_set.cam_height, g_set.cam_dist);
     fprintf(f, "characters=%d\n", g_set.characters);
+    fprintf(f, "split_side_by_side=%d\n", g_set.vsplit);
+    fprintf(f, "lan=%d\nlan_peer=%s\n", g_set.lan, g_set.lan_peer);
     fprintf(f, "special_items=%d\nspecial=", g_set.special_mode);
     for (int i = 0; i < 20; i++) fputc('0' + g_set.special[i] % 10, f);
     fputc('\n', f);
@@ -324,11 +332,15 @@ void color_adjust(float adj[3]) {
 
 /* ---- menu state ---- */
 /* Pages by what they change: graphics (the picture), controls (pads, buttons, rumble), game
- * (unlock all), mods (MKDD Plus, HD textures), debugging (diagnostics), update. */
-enum { PAGE_MAIN, PAGE_MAP, PAGE_EXIT, PAGE_COLOR, PAGE_DEBUG, PAGE_GFX, PAGE_UPDATE, PAGE_CTRL, PAGE_GAME, PAGE_MODS, PAGE_HUD, PAGE_CHEATS, PAGE_SPECIAL, PAGE_CAM, PAGE_KART, PAGE_COUNT };
+ * (unlock all), multiplayer (LAN play), mods (MKDD Plus, HD textures), debugging (diagnostics), update. */
+enum { PAGE_MAIN, PAGE_MAP, PAGE_EXIT, PAGE_COLOR, PAGE_DEBUG, PAGE_GFX, PAGE_UPDATE, PAGE_CTRL, PAGE_GAME, PAGE_MODS, PAGE_HUD, PAGE_CHEATS, PAGE_SPECIAL, PAGE_CAM, PAGE_KART,
+       PAGE_MULTI, PAGE_LAN, PAGE_COUNT };
 /* the main page's rows; UPDATE and DEBUG sit on EXIT GAME's row, at its right (LEFT/RIGHT there) */
-enum { M_GAME, M_GFX, M_CAM, M_CTRL, M_MODS, M_CHEATS, M_EXIT, M_UPDATE, M_DEBUG, M_COUNT };
+enum { M_GAME, M_GFX, M_CAM, M_CTRL, M_MULTI, M_MODS, M_CHEATS, M_EXIT, M_UPDATE, M_DEBUG, M_COUNT };
 enum { MD_MOD, MD_HD, MD_CHARS, MD_BATTLE, MD_RESTART, MD_BACK, MD_COUNT };
+enum { MP_SPLIT, MP_LAN, MP_BACK, MP_COUNT };
+/* LAN PLAY's page (A on MULTIPLAYER's LAN PLAY): RESTART NOW only while a change waits for one (lan_rows) */
+enum { LN_LAN, LN_PEER, LN_LINK, LN_RESTART, LN_BACK, LN_COUNT };
 static unsigned s_mods_found, s_mod_running;
 void menu_set_mods(unsigned found, unsigned running) { s_mods_found = found; s_mod_running = running; }
 unsigned mods_pick(unsigned found) {
@@ -342,7 +354,60 @@ unsigned mods_pick(unsigned found) {
 static bool s_chars_found, s_chars_running;
 void menu_set_chars(bool found, bool running) { s_chars_found = found, s_chars_running = running; }
 static bool chars_pending(void) { return s_chars_found && g_set.characters != s_chars_running; }
-static bool mod_pending(void) { return mods_pick(s_mods_found) != s_mod_running || chars_pending(); }
+/* LAN PLAY and LAN PEER: eth.c reads g_lan_on when the game looks for the adapter at start-up, and
+ * g_lan_peer when the tunnel opens, so a change waits for a restart too */
+static bool lan_pending(void) { return g_set.lan != (g_lan_on != 0) || (g_set.lan && strcmp(g_set.lan_peer, g_lan_peer)); }
+static int lan_rows(void) { return lan_pending() ? LN_COUNT : LN_COUNT - 1; }
+static int lan_item(int row) { return !lan_pending() && row >= LN_RESTART ? row + 1 : row; } /* row -> LN_ */
+/* MODS' own changes; mod_pending: anything RESTART NOW (on either page) applies */
+static bool mods_changed(void) { return mods_pick(s_mods_found) != s_mod_running || chars_pending(); }
+static bool mod_pending(void) { return mods_changed() || lan_pending(); }
+static bool s_restart_manual; /* installed, but the loader can't relaunch: the player restarts */
+/* RESTART NOW (MODS and MULTIPLAYER): the loader starts this .nro again as soon as it exits */
+static void restart_now(bool *quit) {
+    if (!mod_pending()) return;
+    if (update_relaunch()) *quit = true;
+    else s_restart_manual = true;
+}
+/* MULTIPLAYER's CONNECTION row (value) and its hint, from eth_status. */
+static void link_text(char *val, size_t vn, char *hint, size_t hn) {
+    EthStatus st;
+    eth_status(&st);
+    if (!st.up || !g_lan_play) { /* the adapter opens at start-up; LAN mode starts with its first send */
+        snprintf(val, vn, g_lan_on ? "NOT STARTED" : "OFF");
+        snprintf(hint, hn, g_lan_on ? "STARTS WITH WI-FI MODE ON THE TITLE SCREEN" : "LAN PLAY IS OFF");
+    } else if (!st.consoles) {
+        snprintf(val, vn, "LOOKING...");
+        snprintf(hint, hn, st.seconds < 10 ? "LOOKING FOR OTHER CONSOLES ON THIS NETWORK"
+                                           : "NONE FOUND: NOT ON A GUEST NETWORK? ELSE SET LAN PEER");
+    } else if (st.silent == st.consoles) {
+        snprintf(val, vn, "%u FOUND", st.consoles);
+        snprintf(hint, hn, "NO TIMES: THE OTHER CONSOLE HAS AN OLDER BUILD");
+    } else {
+        snprintf(val, vn, "%u FOUND, %u MS", st.consoles, st.rtt_ms);
+        if (st.loss_pct < 0) snprintf(hint, hn, "ROUND TRIP %u MS, UP TO %u. MEASURING LOSS...", st.rtt_ms, st.rtt_max_ms);
+        else snprintf(hint, hn, "ROUND TRIP %u MS, UP TO %u. %d%% LOST%s", st.rtt_ms, st.rtt_max_ms, st.loss_pct,
+                      st.rtt_max_ms > 50 || st.loss_pct > 5 ? ": TRY 5 GHZ, NEARER THE ROUTER" : "");
+    }
+}
+static const char *restart_hint(void) {
+    return !mod_pending() ? "NOTHING TO APPLY" : s_restart_manual ? "CLOSE THE GAME AND START IT AGAIN"
+                                                                : "A: RESTART THE GAME (UNSAVED RACE PROGRESS IS LOST)";
+}
+/* This console's address on the network (nifm), for the other console's LAN PEER; looked up every 2 s */
+static const char *own_ip(void) {
+    static char s[20] = "NOT CONNECTED";
+    static u64 next;
+    static bool nifm;
+    u64 now = armGetSystemTick();
+    if (now < next) return s;
+    next = now + armNsToTicks(2000000000ull);
+    if (!nifm) nifm = R_SUCCEEDED(nifmInitialize(NifmServiceType_User));
+    u32 ip = 0;
+    if (!nifm || R_FAILED(nifmGetCurrentIpAddress(&ip)) || !ip) snprintf(s, sizeof s, "NOT CONNECTED");
+    else snprintf(s, sizeof s, "%u.%u.%u.%u", ip & 0xff, ip >> 8 & 0xff, ip >> 16 & 0xff, ip >> 24); /* network order */
+    return s;
+}
 /* LEFT/RIGHT on LEVEL PACK: OFF, then each mod found, in MODS order. */
 static void mod_step(int dir) {
     unsigned cur = mods_pick(s_mods_found), n = cur;
@@ -394,6 +459,14 @@ static const char *SPECIAL_NAMES[10] = {"FIREBALLS", "HEART", "EGG", "CHAIN CHOM
 /* the item kinds of SPECIAL_NAMES 0-8 (runtime g_special) */
 static const uint8_t SPECIAL_KIND[9] = {7, 0x11, 0xe, 0x15, 8, 0xb, 4, 1, 0xc};
 void cheats_apply(void) {
+    if (g_lan_play) { /* the game's own on every console (rt.h) */
+        g_mt_sweeps = 3, g_mt_speed = 1.3f, g_mt_length = 1.0f, g_mt_cpu = 0;
+        g_perfect_start = 0;
+        g_battle_cpus = g_set.battle_cpus; /* battle.c keeps Wi-Fi races the game's own */
+        g_jump_power = 0;
+        memset((void *)g_special, 0, sizeof g_special);
+        return;
+    }
     g_mt_sweeps = (uint32_t)g_set.mt_sweeps;
     g_mt_speed = MT_SPEEDS[g_set.mt_speed % MT_N_SPEEDS].v;
     g_mt_length = MT_LENGTHS[g_set.mt_length % MT_N_LENGTHS].v;
@@ -404,6 +477,7 @@ void cheats_apply(void) {
     special_apply();
 }
 void special_apply(void) {
+    if (g_lan_play) return; /* cheats_apply's stock values */
     for (int i = 0; i < 20; i++) {
         int s = g_set.special[i] % 10;
         g_special[i + 1] = g_set.special_mode == 0 ? 0 : g_set.special_mode == 1 || s == 9 ? SPECIAL_ANY : SPECIAL_KIND[s];
@@ -411,7 +485,6 @@ void special_apply(void) {
 }
 static const char *CAMERA_NAMES[3] = {"NORMAL", "DRIVER FPV", "KART FPV"};
 enum { U_THIS, U_LATEST, U_ACTION, U_BACK, U_COUNT };
-static bool s_restart_manual; /* installed, but the loader can't relaunch: the player restarts */
 enum { G_WIDE, G_BORDER, G_DOCKED, G_HANDHELD, G_ANISO, G_COLOR, G_BACK, G_COUNT };
 /* HUD ASSETS page: one row per element (HUD_* bit 1 << row), single player races */
 enum { HU_PLACE, HU_ITEMS, HU_LAPS, HU_MAP, HU_SPEED, HU_ORDER, HU_TIME, HU_BACK, HU_COUNT };
@@ -424,6 +497,7 @@ enum { D_FPS, D_LOG, D_PROF, D_BACK, D_COUNT };
 static const char *FPS_NAMES[3] = {"OFF", "FPS", "FPS + TIMES"};
 static const char *RUMBLE_NAMES[3] = {"OFF", "LOW", "HIGH"};
 static bool s_want_controllers;
+static bool s_want_peer; /* LAN PEER: the keyboard (main_switch.c) */
 enum { P_RESET = N_SW, P_BACK, P_COUNT };
 enum { K_MODE, K_BRIGHT, K_CONTRAST, K_SAT, K_RESET, K_BACK, K_COUNT };
 static bool s_open;
@@ -481,6 +555,8 @@ static int page_rows(int page) {
     case PAGE_CHEATS: return CH_COUNT;
     case PAGE_SPECIAL: return SP_COUNT;
     case PAGE_MODS: return MD_COUNT;
+    case PAGE_MULTI: return MP_COUNT;
+    case PAGE_LAN: return LN_COUNT; /* the most it shows */
     case PAGE_UPDATE: return U_COUNT;
     case PAGE_CTRL: return C_COUNT;
     case PAGE_HUD: return HU_COUNT;
@@ -492,7 +568,7 @@ static int page_rows(int page) {
  * everything else to the main page. */
 static int page_parent(int page) {
     return page == PAGE_COLOR ? PAGE_GFX : page == PAGE_MAP ? PAGE_CTRL : page == PAGE_HUD ? PAGE_GAME
-           : page == PAGE_SPECIAL ? PAGE_CHEATS : page == PAGE_KART ? PAGE_CAM : PAGE_MAIN;
+           : page == PAGE_SPECIAL ? PAGE_CHEATS : page == PAGE_KART ? PAGE_CAM : page == PAGE_LAN ? PAGE_MULTI : PAGE_MAIN;
 }
 
 void menu_open(const char *notice) {
@@ -510,8 +586,9 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
     s_pressed |= down;
     const uint64_t UP = HidNpadButton_Up | HidNpadButton_StickLUp, DOWN = HidNpadButton_Down | HidNpadButton_StickLDown;
     const uint64_t SIDE = HidNpadButton_Left | HidNpadButton_Right | HidNpadButton_StickLLeft | HidNpadButton_StickLRight;
-    int count = page_rows(s_page);
+    int count = s_page == PAGE_LAN ? lan_rows() : page_rows(s_page);
     int *sel = &s_sel[s_page];
+    if (s_page == PAGE_LAN && *sel >= count) *sel = count - 1; /* RESTART NOW gone */
     if (s_page == PAGE_MAIN && *sel > M_EXIT && (down & (UP | DOWN))) *sel = M_EXIT; /* UPDATE, DEBUG: on EXIT GAME's row */
     if (down & UP) *sel = (*sel + count - 1) % count;
     if (down & DOWN) *sel = (*sel + 1) % count;
@@ -608,14 +685,31 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         case MD_HD: g_set.hd_textures = !g_set.hd_textures; settings_save(); break;
         case MD_CHARS: if (s_chars_found) { g_set.characters = !g_set.characters; settings_save(); } break;
         case MD_BATTLE: g_set.battle_cpus = !g_set.battle_cpus; cheats_apply(); settings_save(); break;
-        case MD_RESTART:
-            /* the loader starts this .nro again as soon as it exits */
-            if (ok && mod_pending()) {
-                if (update_relaunch()) *quit = true;
-                else s_restart_manual = true;
-            }
-            break;
+        case MD_RESTART: if (ok) restart_now(quit); break;
         case MD_BACK: if (ok) s_page = PAGE_MAIN; break;
+        }
+        return true;
+    }
+    if (s_page == PAGE_MULTI && (ok || side)) {
+        switch (*sel) {
+        case MP_SPLIT: g_set.vsplit = !g_set.vsplit; settings_save(); break;
+        case MP_LAN:
+            if (ok) { s_page = PAGE_LAN; s_sel[PAGE_LAN] = 0; }
+            else { g_set.lan = !g_set.lan; settings_save(); }
+            break;
+        case MP_BACK: if (ok) s_page = PAGE_MAIN; break;
+        }
+        return true;
+    }
+    if (s_page == PAGE_LAN && (ok || side)) {
+        switch (lan_item(*sel)) {
+        case LN_LAN: g_set.lan = !g_set.lan; settings_save(); break;
+        case LN_PEER:
+            if (ok) { s_want_peer = true; s_block = s_pressed & held; }
+            else { g_set.lan_peer[0] = 0; settings_save(); } /* LEFT/RIGHT: none */
+            break;
+        case LN_RESTART: if (ok) restart_now(quit); break;
+        case LN_BACK: if (ok) s_page = PAGE_MULTI; break;
         }
         return true;
     }
@@ -701,6 +795,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         case M_GAME: s_page = PAGE_GAME; s_sel[PAGE_GAME] = 0; break;
         case M_CHEATS: s_page = PAGE_CHEATS; s_sel[PAGE_CHEATS] = 0; break;
         case M_MODS: s_page = PAGE_MODS; s_sel[PAGE_MODS] = 0; break;
+        case M_MULTI: s_page = PAGE_MULTI; s_sel[PAGE_MULTI] = 0; break;
         case M_DEBUG: s_page = PAGE_DEBUG; s_sel[PAGE_DEBUG] = 0; break;
         case M_UPDATE: s_page = PAGE_UPDATE; s_sel[PAGE_UPDATE] = U_ACTION; break;
         case M_EXIT: s_page = PAGE_EXIT; break;
@@ -1050,6 +1145,11 @@ bool menu_take_controllers(void) {
     s_want_controllers = false;
     return r;
 }
+bool menu_take_peer(void) {
+    bool r = s_want_peer;
+    s_want_peer = false;
+    return r;
+}
 
 static void begin(int w, int h) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -1087,11 +1187,24 @@ void menu_draw(int w, int h, float fps, const char *perf) {
         snprintf(s, sizeof s, "%.0f FPS", (double)fps);
         float px = 3 * k, lh = 7 * px + 4 * px;
         bool times = g_set.show_fps == 2 && perf && perf[0];
+        /* Wi-Fi mode: the link under it (eth_status) */
+        EthStatus st;
+        eth_status(&st);
+        st.up = st.up && g_lan_play; /* the game opens the adapter at start-up: only once LAN mode sends */
+        char net[48] = "";
+        if (st.up && !st.consoles) snprintf(net, sizeof net, "WI-FI: LOOKING");
+        else if (st.up && st.silent == st.consoles) snprintf(net, sizeof net, "WI-FI: %u FOUND", st.consoles);
+        else if (st.up && st.loss_pct >= 0) snprintf(net, sizeof net, "WI-FI %u MS (UP TO %u) %d%% LOST", st.rtt_ms, st.rtt_max_ms, st.loss_pct);
+        else if (st.up) snprintf(net, sizeof net, "WI-FI %u MS", st.rtt_ms);
+        float sp = px * 0.6f, lines = (times ? 1.0f : 0.0f) + (net[0] ? 1.0f : 0.0f);
         float bw = text_w(s, px);
-        if (times && text_w(perf, px * 0.6f) > bw) bw = text_w(perf, px * 0.6f);
-        rect(8 * k, 8 * k, bw + 6 * px, times ? lh + 7 * px * 0.6f + 2 * px : lh, 0x000000A0u);
+        if (times && text_w(perf, sp) > bw) bw = text_w(perf, sp);
+        if (net[0] && text_w(net, sp) > bw) bw = text_w(net, sp);
+        rect(8 * k, 8 * k, bw + 6 * px, lh + lines * (7 * sp + 2 * px), 0x000000A0u);
         text(8 * k + 3 * px, 8 * k + 2 * px, px, fps >= 55 ? 0x80FF80FFu : fps >= 40 ? 0xFFE060FFu : 0xFF7060FFu, s);
-        if (times) text(8 * k + 3 * px, 8 * k + lh, px * 0.6f, 0xE0E0E0FFu, perf);
+        float ly = 8 * k + lh;
+        if (times) text(8 * k + 3 * px, ly, sp, 0xE0E0E0FFu, perf), ly += 7 * sp + 2 * px;
+        if (net[0]) text(8 * k + 3 * px, ly, sp, st.loss_pct > 5 || st.rtt_max_ms > 50 ? 0xFFE060FFu : 0xE0E0E0FFu, net);
     }
     if (s_open && !s_preview) {
         /* every page in the same box: sized for the longest page (at least 10 rows), except button
@@ -1108,7 +1221,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                             : s_page == PAGE_COLOR ? "COLOR" : s_page == PAGE_DEBUG ? "DEBUG"
                             : s_page == PAGE_GFX ? "GRAPHICS" : s_page == PAGE_UPDATE ? "UPDATE"
                             : s_page == PAGE_CTRL ? "CONTROLS" : s_page == PAGE_GAME ? "GAME" : s_page == PAGE_CAM ? "CAMERA" : s_page == PAGE_KART ? (g_set.camera == 2 ? "KART FPV" : "DRIVER FPV")
-                            : s_page == PAGE_MODS ? "MODS" : s_page == PAGE_HUD ? "HUD ASSETS" : s_page == PAGE_CHEATS ? "CHEATS" : s_page == PAGE_SPECIAL ? "SPECIAL ITEMS" : "OPTIONS";
+                            : s_page == PAGE_MODS ? "MODS" : s_page == PAGE_MULTI ? "MULTIPLAYER" : s_page == PAGE_LAN ? "LAN PLAY" : s_page == PAGE_HUD ? "HUD ASSETS" : s_page == PAGE_CHEATS ? "CHEATS" : s_page == PAGE_SPECIAL ? "SPECIAL ITEMS" : "OPTIONS";
         panel(x, y, pw, ph, k, title);
         {
             /* "Oct 15 2026 14:08:52" -> "BUILD 1408" (the name of the build's saved .elf), in the
@@ -1125,12 +1238,13 @@ void menu_draw(int w, int h, float fps, const char *perf) {
 #define ROW_Y(i, n) ((i) == (n) - 1 ? yb : ry)
         const char *hint = NULL;
         if (s_page == PAGE_MAIN) {
-            static const char *labels[M_EXIT] = {"GAME", "GRAPHICS", "CAMERA", "CONTROLS", "MODS", "CHEATS"};
+            static const char *labels[M_EXIT] = {"GAME", "GRAPHICS", "CAMERA", "CONTROLS", "MULTIPLAYER", "MODS", "CHEATS"};
             UpdateStatus us;
             update_status(&us);
             const int msel = s_sel[PAGE_MAIN];
             for (int i = 0; i < M_EXIT; i++, ry += rh)
-                mrow(x, ry, pw, rh, k, msel == i, labels[i], i == M_MODS && mod_pending() ? "RESTART" : NULL, true);
+                mrow(x, ry, pw, rh, k, msel == i, labels[i],
+                     (i == M_MODS && mods_changed()) || (i == M_MULTI && lan_pending()) ? "RESTART" : NULL, true);
             {
                 /* the bottom row: EXIT GAME, then small UPDATE and DEBUG buttons at the right (an
                  * available or downloaded update shows on its button) */
@@ -1159,6 +1273,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s_sel[PAGE_MAIN] == M_GFX    ? "WIDESCREEN, RESOLUTION, FILTERING, COLOR"
                    : s_sel[PAGE_MAIN] == M_CAM    ? "VIEW, HEIGHT, DISTANCE, FIELD OF VIEW, FREE CAMERA"
                    : s_sel[PAGE_MAIN] == M_MODS   ? "GAME MODS, HD TEXTURES"
+                   : s_sel[PAGE_MAIN] == M_MULTI  ? "LAN PLAY OVER WI-FI WITH OTHER CONSOLES"
                    : s_sel[PAGE_MAIN] == M_CTRL   ? "BUTTON MAPPING, SYNC CONTROLLERS"
                    : s_sel[PAGE_MAIN] == M_GAME   ? "RACE HUD, SPEED, HUD ASSETS, JUMP, RUMBLE"
                    : s_sel[PAGE_MAIN] == M_CHEATS ? "UNLOCK ALL, NO WEIGHT CLASSES, SPECIAL ITEMS, MINI-TURBO, LAPS"
@@ -1206,17 +1321,45 @@ void menu_draw(int w, int h, float fps, const char *perf) {
             else snprintf(hd_hint, sizeof hd_hint, "COMMUNITY HD TEXTURE PACK: %u IN USE", render_hd_in_use());
             const int s = s_sel[PAGE_MODS];
             hint = s == MD_MOD && !s_mods_found     ? "PUT A MOD IN THE MODS FOLDER (SEE README)"
-                   : s == MD_MOD && mod_pending()    ? "CHANGES AFTER A RESTART: SEE RESTART NOW"
+                   : s == MD_MOD && mods_changed()   ? "CHANGES AFTER A RESTART: SEE RESTART NOW"
                    : s == MD_MOD                     ? mod_hint
                    : s == MD_HD                      ? hd_hint
                    : s == MD_CHARS && !s_chars_found ? "PUT CHARACTERS IN MODS/CHARACTERS (SEE README)"
                    : s == MD_CHARS && chars_pending() ? "CHANGES AFTER A RESTART: SEE RESTART NOW"
                    : s == MD_CHARS                   ? "MORE CHARACTERS ON THE CHARACTER SELECT SCREEN"
                    : s == MD_BATTLE                  ? "CPUS FILL BATTLES TO 4 KARTS. 1 PLAYER: BATTLE ON THE MODE PAGE"
-                   : s == MD_RESTART && !mod_pending() ? "NOTHING TO APPLY"
-                   : s == MD_RESTART && s_restart_manual ? "CLOSE THE GAME AND START IT AGAIN"
-                   : s == MD_RESTART                 ? "A: RESTART THE GAME (UNSAVED RACE PROGRESS IS LOST)"
+                   : s == MD_RESTART                 ? restart_hint()
                                                      : "B: BACK";
+        } else if (s_page == PAGE_MULTI) {
+            static const char *labels[MP_COUNT] = {"SPLIT SCREEN", "LAN PLAY", "BACK"};
+            const char *values[MP_COUNT] = {g_set.vsplit ? "SIDE BY SIDE" : "TOP AND BOTTOM", g_set.lan ? "ON" : "OFF", NULL};
+            static const bool more[MP_COUNT] = {false, true, false};
+            for (int i = 0; i < MP_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, MP_COUNT), pw, rh, k, s_sel[PAGE_MULTI] == i, labels[i], values[i], more[i]);
+            const int s = s_sel[PAGE_MULTI];
+            hint = s == MP_SPLIT                  ? "2 PLAYERS: THE SCREENS LEFT AND RIGHT OR TOP AND BOTTOM"
+                   : s == MP_LAN && lan_pending() ? "A: LAN SETTINGS. CHANGES AFTER A RESTART: SEE RESTART NOW THERE"
+                   : s == MP_LAN                  ? "A: LAN SETTINGS AND CONNECTION   LEFT/RIGHT: ON, OFF"
+                                                  : "B: BACK";
+        } else if (s_page == PAGE_LAN) {
+            static const char *labels[LN_COUNT] = {"LAN PLAY", "LAN PEER", "CONNECTION", "RESTART NOW", "BACK"};
+            static char link_val[32], link_hint[96];
+            link_text(link_val, sizeof link_val, link_hint, sizeof link_hint);
+            const char *values[LN_COUNT] = {g_set.lan ? "ON" : "OFF", g_set.lan_peer[0] ? g_set.lan_peer : "ANY", link_val, NULL, NULL};
+            const int n = lan_rows();
+            for (int i = 0; i < n; i++, ry += rh) mrow(x, ROW_Y(i, n), pw, rh, k, s_sel[PAGE_LAN] == i, labels[lan_item(i)], values[lan_item(i)], false);
+            const int s = lan_item(s_sel[PAGE_LAN] < n ? s_sel[PAGE_LAN] : n - 1);
+            static char lan_hint[96];
+            snprintf(lan_hint, sizeof lan_hint, "THIS CONSOLE: %s. A: TYPE THE OTHER'S. LEFT/RIGHT: ANY", own_ip());
+            unsigned pick = mods_pick(s_mods_found);
+            bool rtgp = MOD_IS_RTGP(pick); /* and its Baby / Classic */
+            hint = s == LN_LAN && lan_pending()  ? "CHANGES AFTER A RESTART: SEE RESTART NOW"
+                   : s == LN_LAN && rtgp           ? "NOT WITH RETRO TRACK GRAND PRIX: ITS LAN MODE DOESN'T RUN"
+                   : s == LN_LAN                   ? "LAN MODE ON THE TITLE SCREEN, OVER WI-FI. SAME MOD ON EVERY CONSOLE"
+                   : s == LN_PEER && lan_pending() ? "CHANGES AFTER A RESTART: SEE RESTART NOW"
+                   : s == LN_PEER                  ? lan_hint
+                   : s == LN_LINK                  ? link_hint
+                   : s == LN_RESTART               ? restart_hint()
+                                                   : "B: BACK";
         } else if (s_page == PAGE_GAME) {
             static const char *labels[GM_COUNT] = {"RACE HUD", "SPEED", "HUD ASSETS", "JUMP HEIGHT", "RUMBLE STRENGTH", "BACK"};
             const char *values[GM_COUNT] = {HUD_STYLES[g_set.hud_style & 1], g_set.speed_kmh ? "KM/H" : "MPH", hud_value(),
@@ -1273,7 +1416,9 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                                             g_set.perfect_start ? "ON" : "OFF", LAP_NAMES[g_set.laps & 7], NULL};
             for (int i = 0; i < CH_COUNT; i++, ry += rh)
                 mrow(x, ROW_Y(i, CH_COUNT), pw, rh, k, s_sel[PAGE_CHEATS] == i, labels[i], values[i], i == CH_SPECIAL && g_set.special_mode == 2);
-            hint = s_sel[PAGE_CHEATS] == CH_UNLOCK  ? "ALL CHARACTERS, KARTS, CUPS: NEVER WRITTEN TO YOUR SAVE"
+            hint = g_lan_play && s_sel[PAGE_CHEATS] != CH_UNLOCK && s_sel[PAGE_CHEATS] != CH_BACK
+                       ? "OFF AFTER LAN MODE UNTIL A RESTART: EVERY CONSOLE MUST PLAY THE SAME GAME"
+                   : s_sel[PAGE_CHEATS] == CH_UNLOCK  ? "ALL CHARACTERS, KARTS, CUPS: NEVER WRITTEN TO YOUR SAVE"
                    : s_sel[PAGE_CHEATS] == CH_KARTS ? "ANY UNLOCKED KART FOR ANY DRIVERS, WHATEVER THEIR WEIGHT"
                    : s_sel[PAGE_CHEATS] == CH_SPECIAL ? (g_set.special_mode == 2 ? "A: PICK A SPECIAL PER CHARACTER. FROM THE NEXT RACE"
                                                        : "NORMAL, ANY (ALL OF THEM, LIKE PETEY), CUSTOM. NEXT RACE")
@@ -1380,36 +1525,30 @@ void menu_draw(int w, int h, float fps, const char *perf) {
     end();
 }
 
-/* Character select with character packs: the page above the grid (centred under the title), and a
- * line per player whose cursor is on a variant, right aligned at the bottom of the 4:3 picture
- * (beside the game's RANDOM). */
+/* Character select with character packs: in the title banner's corners, "PAGE 1/3" on the left
+ * and "(Y) / (X) MORE CHARACTERS" on the right (pause_art_char_label), white, at the screen's
+ * edges; the banner's middle at BANNER_MID (the game raises it there, native.c). */
+#define BANNER_MID 40.0f
 void menu_char_hint(int w, int h) {
-    char lines[4][80];
-    int n = 0, pages = charpack_pages();
-    for (int p = 0; p < 4; p++) n += charpack_hint(p, lines[n], sizeof lines[0]);
-    if ((!n && pages < 2) || !init_gl()) return;
+    int pages = charpack_pages();
+    if (pages < 2 || !init_gl()) return;
     begin(w, h);
-    float k = (float)h / 720.0f, px = 1.6f * k, lh = 7 * px + 10 * k;
-    int tw, th;
-    unsigned t = pages > 1 ? pause_art_char_hint(charpack_page() + 1, pages, &tw, &th) : 0;
-    if (t) {
-        /* between the rows of faces and the P1 box (a gap below the faces; the box's P1 tab is
-         * to the left of the words), the cup page's size (the picture is twice the game's 640x480
-         * units); its letters' middle 38/64 down the picture */
-        const float par[4] = {0, 0, 1, 1};
-        float s = (float)h / 960.0f, iw = (float)tw * s, ih = (float)th * s;
+    /* in 4:3 inside the picture (its side bars beside it) */
+    float k = (float)h / 720.0f, s = (float)h / 960.0f * 0.8f, bar = g_set.wide ? 0 : ((float)w - (float)h * 4.0f / 3.0f) / 2;
+    float edge = 14 * k + (bar > 0 ? bar : 0);
+    const float par[4] = {0, 0, 1, 1};
+    for (int side = 0; side < 2; side++) {
+        int tw, th;
+        float used;
+        unsigned t = pause_art_char_label(side, charpack_page() + 1, pages, &tw, &th, &used);
+        if (!t) continue;
+        float iw = (float)tw * s, ih = (float)th * s, x = side ? (float)w - edge - used * s : edge;
         flush();
         glBindTexture(GL_TEXTURE_2D, t);
-        quad(((float)w - iw) / 2, 325 * k - ih * 38 / 64, iw, ih, 0xFFFFFFFFu, 0xFFFFFFFFu, SH_IMAGE, 0, 0, par);
+        quad(x, BANNER_MID * k - ih / 2, iw, ih, 0xFFFFFFFFu, 0xFFFFFFFFu, SH_IMAGE, 0, 0, par);
         flush();
-        glBindTexture(GL_TEXTURE_2D, s_font ? uifont_texture() : 0);
     }
-    float right = ((float)w + (float)h * 4.0f / 3.0f) / 2 - 28 * k, y = (float)h - 30 * k - lh * (float)n;
-    for (int i = 0; i < n; i++, y += lh) {
-        float tw = text_w(lines[i], px);
-        round_box(right - tw - 16 * k, y, tw + 16 * k, lh - 2 * k, 6 * k, 0x000000B8u);
-        text(right - tw - 8 * k, y + 4 * k, px, 0xFFFFFFFFu, lines[i]);
-    }
+    glBindTexture(GL_TEXTURE_2D, s_font ? uifont_texture() : 0);
     end();
 }
 

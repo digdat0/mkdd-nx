@@ -627,6 +627,12 @@ static void update_pads(void) {
                 map_full(pad, b, map, &s);
                 if (b & resume) s.button |= PAD_START;
             }
+            /* RTGP Baby Mode / Classic 1.4 turn the cup page with the GameCube D-pad's down / up (raw
+             * PADStatus bits) while their title bar shows X / Y, as 2.1 uses: X = D-pad down (next
+             * page), Y = D-pad up (previous), whatever the controller. Not on the character select with
+             * character packs, where X / Y turn their pages (g_char_cycle) and the D-pad moves the cursor. */
+            if (MOD_IS_RTGP(g_mod) && mod_key(g_mod)[4] && !charpack_select_active())
+                s.button |= (s.button & PAD_X ? PAD_DOWN : 0) | (s.button & PAD_Y ? PAD_UP : 0);
             /* Start pressed: the pause screen shows this controller's buttons (pause_art.c) */
             static bool start_was[4];
             bool start = s.button & PAD_START;
@@ -721,6 +727,7 @@ static void game_thread(void *arg) {
  * heap / code / unmapped, logged. The loader (hbl) takes the heap back after we exit and aborts
  * with 2001-0106 when any of it is still mapped elsewhere, borrowed or attributed (thread stack
  * mirrors, transfer memory, GPU-mapped buffers): this names what is left. */
+extern int g_plat_quit_count; /* plat.c */
 static void exit_memory_report(void) {
     u64 addr = 0;
     unsigned n = 0, odd = 0;
@@ -899,6 +906,8 @@ int main(int argc, char **argv) {
     diag_set_log_file(LOG_DIR "/mkdd.log");
     memcard_set_path(SAVE_DIR "/slotA.bin");
     settings_load(CFG_DIR "/settings.ini");
+    g_lan_on = g_set.lan; /* LAN MODE on the title menu (eth.c): before the game boots */
+    snprintf(g_lan_peer, sizeof g_lan_peer, "%s", g_set.lan_peer);
     color_load(CFG_DIR "/color.ini");
     if (hosversionAtLeast(7, 0, 0)) appletSetCpuBoostMode(ApmCpuBoostMode_FastLoad);
 
@@ -1056,9 +1065,41 @@ int main(int argc, char **argv) {
         }
         update_pads();
         if (s_quit) break;
+        /* Wi-Fi mode: the game runs on behind the menu (its pads neutral, update_pads), or this
+         * console stops sending its frames and the others give up after ~20 s */
         bool paused = menu_is_open();
-        g_pad_hold = paused;
+        g_pad_hold = paused && !g_lan_play;
         rumble_update(paused);
+        if (menu_take_peer()) {
+            /* LAN PEER: the other console's address, "a.b.c.d" or "a.b.c.d:port"; empty: none */
+            g_pad_hold = true;
+            rumble_update(true);
+            SwkbdConfig kbd;
+            char text[64] = "";
+            Result rc = swkbdCreate(&kbd, 0);
+            if (R_SUCCEEDED(rc)) {
+                swkbdConfigMakePresetDefault(&kbd);
+                swkbdConfigSetType(&kbd, SwkbdType_NumPad);
+                swkbdConfigSetLeftOptionalSymbolKey(&kbd, ".");
+                swkbdConfigSetRightOptionalSymbolKey(&kbd, ":");
+                swkbdConfigSetStringLenMax(&kbd, 21);
+                swkbdConfigSetHeaderText(&kbd, "The other console's address");
+                swkbdConfigSetGuideText(&kbd, "e.g. 192.168.1.20 (empty: find it by itself)");
+                swkbdConfigSetInitialText(&kbd, g_set.lan_peer);
+                rc = swkbdShow(&kbd, text, sizeof text);
+                swkbdClose(&kbd);
+            }
+            unsigned a, b, c4, d, port = 0;
+            int n = 0;
+            bool valid = !text[0] || (sscanf(text, "%u.%u.%u.%u%n", &a, &b, &c4, &d, &n) == 4 && a < 256 && b < 256 && c4 < 256 && d < 256 &&
+                                      (!text[n] || (sscanf(text + n, ":%u", &port) == 1 && port > 0 && port < 65536 && !strchr(text + n + 1, ':'))));
+            if (R_SUCCEEDED(rc) && valid) {
+                snprintf(g_set.lan_peer, sizeof g_set.lan_peer, "%s", text);
+                settings_save();
+            }
+            rt_log("lan: peer keyboard closed (%#x): \"%s\"%s", rc, text, R_SUCCEEDED(rc) && !valid ? ", not an address: kept the old one" : "");
+            s_pad_quiet = 60;
+        }
         if (menu_take_controllers()) {
             /* the system's controller screen (pairing, player order, single Joy-Cons) */
             g_pad_hold = true;
@@ -1082,8 +1123,9 @@ int main(int argc, char **argv) {
         g_hud_hide = g_set.hud_hide;
         g_hud_modern = g_set.hud_style == 1;
         g_speed_kmh = g_set.speed_kmh;
-        g_any_kart = g_set.any_kart;
-        g_laps = (uint32_t)g_set.laps;
+        g_vsplit = g_set.vsplit;
+        g_any_kart = g_lan_play ? 0 : g_set.any_kart; /* LAN play: the game's own (rt.h) */
+        g_laps = g_lan_play ? 0 : (uint32_t)g_set.laps;
         {
             static const float HEIGHTS[4] = {0.45f, 0.7f, 1.0f, 1.5f};
             static const float DISTS[5] = {0.55f, 0.75f, 1.0f, 1.3f, 1.6f};
@@ -1092,11 +1134,16 @@ int main(int argc, char **argv) {
         }
         cheats_apply();
         g_hud_log = g_set.logging ? 600 : 0; /* the race HUD in the log too (bug reports) */
-        int cv = g_set.camera % 3; /* CAMERA VIEW: NORMAL, DRIVER FPV, KART FPV */
-        if (cv) __atomic_or_fetch(&g_first_person, 1u, __ATOMIC_RELAXED);
-        else __atomic_and_fetch(&g_first_person, ~1u, __ATOMIC_RELAXED);
-        if (cv == 2) __atomic_or_fetch(&g_fp_kart, 1u, __ATOMIC_RELAXED);
-        else __atomic_and_fetch(&g_fp_kart, ~1u, __ATOMIC_RELAXED);
+        /* CAMERA VIEW: NORMAL, DRIVER FPV, KART FPV. Player 1's; when it changes (menu or player 1's
+         * button) every player's view follows, players 2-4 can then switch their own again */
+        int cv = g_set.camera % 3;
+        static int s_cv_last = -1;
+        uint32_t cbits = cv == s_cv_last ? 1u : 0xFu;
+        s_cv_last = cv;
+        if (cv) __atomic_or_fetch(&g_first_person, cbits, __ATOMIC_RELAXED);
+        else __atomic_and_fetch(&g_first_person, ~cbits, __ATOMIC_RELAXED);
+        if (cv == 2) __atomic_or_fetch(&g_fp_kart, cbits, __ATOMIC_RELAXED);
+        else __atomic_and_fetch(&g_fp_kart, ~cbits, __ATOMIC_RELAXED);
         g_fp_up = (float)g_set.drv_up, g_fp_fwd = (float)g_set.drv_forward;
         g_fp_tilt = (float)(g_set.drv_tilt < -45 ? -45 : g_set.drv_tilt > 45 ? 45 : g_set.drv_tilt) * 0.017453293f;
         g_kart_up = (float)g_set.kart_up, g_kart_fwd = (float)g_set.kart_forward;
@@ -1235,7 +1282,11 @@ out:
     diag_flush();
     SDL_Quit();
     /* The game, guest and decoder threads would keep running on memory the loader takes back. */
-    plat_pause_threads();
+    plat_pause_threads(); /* waiting threads end themselves, the rest pause (hbmenu needs threads) */
+    rt_log("exit: %d threads ended, the rest paused", g_plat_quit_count);
+    eth_exit();
+    plat_net_exit();
     exit_memory_report();
+    diag_flush();
     _Exit(0);
 }

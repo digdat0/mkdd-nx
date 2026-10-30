@@ -85,6 +85,24 @@ enum { RND_PLUS = BAR_FIRST + BAR_COUNT, RND_WORD, RND_END };
 #define SNAP_ARC "SceneData/English/mapselect.arc"
 #define SNAP_SETS 8
 enum { SNAP_FIRST = RND_END, SNAP_END = SNAP_FIRST + SNAP_SETS };
+/* The title screen's "LAN MODE" and LAN play's "QUIT LAN MODE" (352x40 IA4): the word LAN redrawn
+ * as WI-FI in the game's MarioFont letters (the hyphen drawn in their style: the font has none) at the picture's letter height, the other words the
+ * game's own (word_build). title2.arc has the same "LAN MODE" (the same hash: one registration). */
+enum { WORD_FIRST = SNAP_END, WORD_COUNT = 2, WORD_END = WORD_FIRST + WORD_COUNT };
+/* The character select's title bar (titleline.arc selectcharacter.bti, 512x32 IA4), while there are
+ * character packs (three rows of faces under it): "CHARACTERS", smaller, in yellow. */
+enum { CHAR_TITLE = WORD_END };
+#define CHAR_TITLE_TEXT "CHARACTERS"
+static bool s_char_title;
+static const struct { const char *arc, *file; int word, words; } WORDS[WORD_COUNT] = {
+    {"SceneData/English/title.arc", "ttl_mozi_lanplay.bti", 0, 2},
+    {"SceneData/English/LANPlay.arc", "ttl_mozi_endlan01.bti", 1, 3},
+};
+#define WORD_NEW "WI-FI"
+static uint8_t *s_word[WORD_COUNT]; /* the game's picture, RGBA, until word_build replaces it */
+static int s_word_w[WORD_COUNT], s_word_h[WORD_COUNT];
+static bool s_word_done[WORD_COUNT];
+static GLuint s_word_tex[WORD_COUNT];
 static uint8_t *s_snap[SNAP_SETS];
 static int s_snap_w[SNAP_SETS], s_snap_h[SNAP_SETS], s_snaps;
 static GLuint s_snap_tex[SNAP_SETS];
@@ -532,9 +550,36 @@ void pause_art_init(void) {
         free(b);
     }
     rt_log("pause art: %u of %d pictures recognised", n, S_COUNT - 1);
+    for (int i = 0; i < WORD_COUNT; i++) {
+        uint64_t off;
+        uint32_t size;
+        uint8_t *b = NULL;
+        if (!arc_locate(WORDS[i].arc, WORDS[i].file, &off, &size) || size > (1u << 20) || !(b = malloc(size))) continue;
+        disc_read(off, b, size);
+        uint32_t fmt = b[0], w = (uint32_t)(b[2] << 8 | b[3]), h = (uint32_t)(b[4] << 8 | b[5]), doff = be32(b + 0x1C);
+        size_t bytes = gx_tex_size(fmt, w, h);
+        if (fmt == 2 && w <= 1024 && h <= 128 && bytes && doff + bytes <= size && (s_word[i] = malloc((size_t)w * h * 4))) {
+            GxTexture tx = {0};
+            tx.width = w; tx.height = h; tx.fmt = fmt; tx.raw = b + doff; tx.raw_len = bytes;
+            gx_texture_decode(&tx, s_word[i]);
+            s_word_w[i] = (int)w, s_word_h[i] = (int)h;
+            gx_subst_register(WORD_FIRST + i, fmt, w, h, fnv_bytes(FNV_INIT, b + doff, bytes));
+        }
+        free(b);
+    }
     bars_init();
     snaps_init();
     kf_init();
+    uint64_t off;
+    uint32_t size;
+    uint8_t *b = NULL;
+    if (arc_locate(BAR_ARC, "selectcharacter.bti", &off, &size) && size <= (1u << 20) && (b = malloc(size))) {
+        disc_read(off, b, size);
+        uint32_t fmt = b[0], w = (uint32_t)(b[2] << 8 | b[3]), h = (uint32_t)(b[4] << 8 | b[5]), doff = be32(b + 0x1C);
+        size_t bytes = gx_tex_size(fmt, w, h);
+        if (bytes && doff + bytes <= size) gx_subst_register(CHAR_TITLE, fmt, w, h, fnv_bytes(FNV_INIT, b + doff, bytes)), s_char_title = true;
+        free(b);
+    }
 }
 
 /* The Switch buttons (badges) that give the GameCube button gc on the pausing controller, up to max. */
@@ -946,6 +991,123 @@ static GLuint upload_rgba(GLuint tex, int w, int h, const uint8_t *rgba) {
     return tex;
 }
 
+/* A hyphen texel in MarioFont's look (as ui_font.c's brackets: a white stroke ~5 texels thick, a
+ * black edge 2 wide, rounded ends), rows 11-20 of the 32 px cell: intensity, alpha into px. */
+static const uint8_t *hyphen_px(int x, int y, uint8_t px[2]) {
+    const float x0 = 12, x1 = 19, cy = 15.5f, core = 2.6f, edge = 4.6f;
+    float fx = (float)x + 0.5f, dx = fx < x0 ? x0 - fx : fx > x1 ? fx - x1 : 0, dy = (float)y + 0.5f - cy;
+    float d = sqrtf(dx * dx + dy * dy), al = edge + 0.5f - d, in = core + 0.5f - d;
+    px[0] = (uint8_t)(255 * (in < 0 ? 0 : in > 1 ? 1 : in));
+    px[1] = (uint8_t)(255 * (al < 0 ? 0 : al > 1 ? 1 : al));
+    return px;
+}
+
+/* WORDS[i]'s picture with its LAN word redrawn as WORD_NEW. The words are runs of columns split by
+ * gaps of 6 px or more (the letters touch or nearly); the new word takes the old one's letter
+ * height and the line is centred where it was, squeezed only if it would not fit. False: the
+ * picture is not as expected (the game's is drawn) or the letters aren't loaded yet. */
+static bool word_build(int i) {
+    int w = s_word_w[i], h = s_word_h[i], aw, ah;
+    uint8_t *src = s_word[i];
+    const uint8_t *atlas = uifont_atlas(&aw, &ah);
+    if (!atlas) return false;
+    int l[8], r[8], nw = 0, last = -100;
+    for (int x = 0; x <= w; x++) {
+        bool on = false;
+        for (int y = 0; x < w && y < h && !on; y++) on = src[((size_t)y * w + x) * 4 + 3] > 40;
+        if (on) {
+            if (x - last >= 6) {
+                if (nw == 8) return false;
+                l[nw++] = x;
+            }
+            last = x;
+            r[nw - 1] = x + 1;
+        }
+    }
+    if (nw != WORDS[i].words) return false;
+    int t = WORDS[i].word, top = h, bot = -1;
+    for (int y = 0; y < h; y++)
+        for (int x = l[t]; x < r[t]; x++)
+            if (src[((size_t)y * w + x) * 4 + 3] > 40) { if (y < top) top = y; bot = y; }
+    if (bot < top) return false;
+    /* the glyphs' rows: MarioFont's letters fill rows g0..g1 of their 32 px cell */
+    float uv[4], gx0[8], gx1[8], gu[8], gv[8];
+    int n = (int)strlen(WORD_NEW), g0 = 32, g1 = -1;
+    for (int k = 0; k < n; k++) {
+        if (WORD_NEW[k] == '-') { gx0[k] = 7, gx1[k] = 24, gu[k] = -1; continue; } /* hyphen_px */
+        if (!uifont_glyph(WORD_NEW[k], uv, &gx0[k], &gx1[k])) return false;
+        gu[k] = uv[0] * (float)aw, gv[k] = uv[1] * (float)ah;
+        for (int y = 0; y < 32; y++)
+            for (int x = 0; x < 32; x++)
+                if (atlas[((size_t)(gv[k] + y) * aw + (size_t)(gu[k] + x)) * 2 + 1] > 40) { if (y < g0) g0 = y; if (y > g1) g1 = y; }
+    }
+    if (g1 < g0) return false;
+    float s = (float)(bot - top + 1) / (float)(g1 - g0 + 1), neww = 0;
+    for (int k = 0; k < n; k++) neww += (gx1[k] - gx0[k]) * s - (k ? 1.0f : 0.0f);
+    /* the line: old words kept, the new one in place of word t, the old gaps */
+    float tot = 0;
+    for (int k = 0; k < nw; k++) tot += (k == t ? neww : (float)(r[k] - l[k])) + (k ? (float)(l[k] - r[k - 1]) : 0);
+    float fit = tot > (float)(w - 4) ? (float)(w - 4) / tot : 1.0f;
+    float x = (float)(l[0] + r[nw - 1]) / 2 - tot * fit / 2;
+    if (x < 2) x = 2;
+    uint8_t *dst = calloc((size_t)w * h, 4);
+    if (!dst) return false;
+    for (int k = 0; k < nw; k++) {
+        if (k) x += (float)(l[k] - r[k - 1]) * fit;
+        if (k != t) { /* the game's word, moved (and squeezed with the line) */
+            float ww = (float)(r[k] - l[k]) * fit;
+            for (int dx = 0; dx < (int)ww + 1; dx++) {
+                int sx = l[k] + (int)((float)dx / fit), ox = (int)x + dx;
+                if (sx >= r[k] || ox < 0 || ox >= w) continue;
+                for (int y = 0; y < h; y++) memcpy(dst + ((size_t)y * w + ox) * 4, src + ((size_t)y * w + sx) * 4, 4);
+            }
+            x += ww;
+            continue;
+        }
+        for (int c = 0; c < n; c++) { /* a letter, bilinear from the atlas, over what is there */
+            float lw = (gx1[c] - gx0[c]) * s * fit;
+            if (c) x -= 1.0f * fit;
+            for (int oy = top; oy <= bot; oy++)
+                for (int ox = (int)x; ox < (int)(x + lw) + 1 && ox < w; ox++) {
+                    if (ox < 0) continue;
+                    float fx = gx0[c] + ((float)ox + 0.5f - x) / (s * fit) - 0.5f, fy = (float)g0 + ((float)(oy - top) + 0.5f) / s - 0.5f;
+                    if (fx < gx0[c] - 0.5f || fx > gx1[c] - 0.5f) continue;
+                    int ix = (int)floorf(fx), iy = (int)floorf(fy);
+                    float ax = fx - (float)ix, ay = fy - (float)iy, I = 0, A = 0;
+                    for (int q = 0; q < 4; q++) {
+                        int cx = ix + (q & 1), cy = iy + (q >> 1);
+                        float wq = ((q & 1) ? ax : 1 - ax) * ((q >> 1) ? ay : 1 - ay);
+                        if (cx < 0 || cy < 0 || cx > 31 || cy > 31) continue;
+                        uint8_t hp[2];
+                        const uint8_t *p = gu[c] < 0 ? hyphen_px(cx, cy, hp) : atlas + ((size_t)(gv[c] + cy) * aw + (size_t)(gu[c] + cx)) * 2;
+                        I += wq * p[0] * p[1] / 255.0f, A += wq * p[1];
+                    }
+                    if (A < 1) continue;
+                    uint8_t *o = dst + ((size_t)oy * w + ox) * 4;
+                    float a = A / 255.0f, ia = I / A, da = o[3] / 255.0f, oa = a + da * (1 - a);
+                    float v = (ia * a * 255.0f + o[0] * da * (1 - a)) / oa;
+                    o[0] = o[1] = o[2] = (uint8_t)(v > 255 ? 255 : v);
+                    o[3] = (uint8_t)(oa * 255.0f + 0.5f);
+                }
+            x += lw;
+        }
+    }
+    free(s_word[i]);
+    s_word[i] = dst;
+    return true;
+}
+
+static unsigned word_texture(int i) {
+    if (!s_word[i]) return 0;
+    if (!s_word_done[i]) {
+        if (!word_build(i)) return 0;
+        s_word_done[i] = true;
+        rt_log("pause art: %s: LAN drawn as " WORD_NEW, WORDS[i].file);
+    }
+    if (!s_word_tex[i]) s_word_tex[i] = upload_rgba(0, s_word_w[i], s_word_h[i], s_word[i]);
+    return s_word_tex[i];
+}
+
 static unsigned bar_texture(int i) {
     if (!s_bar_tex[i]) s_bar_tex[i] = upload_rgba(0, BAR_W, BAR_H, s_bar[i]);
     return s_bar_tex[i];
@@ -995,34 +1157,50 @@ static unsigned hint_texture(int i) {
     return s_hint_tex[i];
 }
 
-/* The character select screen's page hint (menu.c menu_char_hint): "PRESS (Y) OR (X) FOR MORE
- * CHARACTERS (1/3)" (page of pages, from 1) as the cup page draws its line, centred in a HINT_W x
- * HINT_H picture; redrawn when the page changes. */
-unsigned pause_art_char_hint(int page, int pages, int *w, int *h) {
-    static GLuint tex;
-    static int key = -1;
-    *w = HINT_W;
-    *h = HINT_H;
-    int aw, ah;
-    if ((tex && key == page * 1000 + pages) || !uifont_atlas(&aw, &ah)) return tex;
+/* The character select screen's corners (menu.c menu_char_hint), in white: side 0 "1/3" (page
+ * of pages, from 1), side 1 "(Y)/(X) MORE" with the buttons' badges; drawn from the
+ * left of a HINT_W x HINT_H picture, *used its width. Redrawn when the page changes. */
+static float label_line(uint8_t *dst, int side, int page, int pages, bool draw) {
+    const int size = 32, badge = 48, step = 40, y = (HINT_H - size) / 2;
+    float x = 0;
+    if (!side) {
+        char t[32];
+        snprintf(t, sizeof t, "%d/%d", page, pages);
+        return font_text(dst, HINT_W, HINT_H, t, x, y, size, 0xFFFFFFu, draw);
+    }
+    const char *parts[4] = {NULL, "/", NULL, " MORE"};
+    const int badges[4] = {B_Y, 0, B_X, 0};
+    for (int k = 0; k < 4; k++) {
+        if (!parts[k]) {
+            if (draw) put_badge(dst, HINT_W, (int)(x + 0.5f) - (badge - step) / 2, (HINT_H - badge) / 2, badge, badges[k]);
+            x += step;
+        } else x += font_text(dst, HINT_W, HINT_H, parts[k], x, y, size, 0xFFFFFFu, draw);
+    }
+    return x;
+}
+unsigned pause_art_char_label(int side, int page, int pages, int *w, int *h, float *used) {
+    static GLuint tex[2];
+    static int key[2] = {-1, -1};
+    static float width[2];
+    side = side ? 1 : 0;
+    *w = HINT_W, *h = HINT_H, *used = width[side];
+    int aw, ah, k = side ? 0 : page * 1000 + pages;
+    if ((tex[side] && key[side] == k) || !uifont_atlas(&aw, &ah)) return tex[side];
     uint8_t *px = calloc((size_t)HINT_W * HINT_H, 4);
-    if (!px) return tex;
-    char more[32];
-    snprintf(more, sizeof more, "CHARACTERS (%d/%d)", page, pages);
-    float lw = hint_line(px, more, 0, B_Y, B_X, false), x = (HINT_W - lw) / 2;
-    hint_line(px, more, x < 0 ? 0 : x, B_Y, B_X, true);
-    tex = upload_rgba(tex, HINT_W, HINT_H, px);
-    key = page * 1000 + pages;
+    if (!px) return tex[side];
+    width[side] = *used = label_line(px, side, page, pages, true);
+    tex[side] = upload_rgba(tex[side], HINT_W, HINT_H, px);
+    key[side] = k;
     free(px);
     /* drawn by the menu overlay without a sampler: no mipmaps, so a plain filter (the default
      * mipmapped one makes it incomplete: black) */
-    glBindTexture(GL_TEXTURE_2D, tex);
+    glBindTexture(GL_TEXTURE_2D, tex[side]);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
-    return tex;
+    return tex[side];
 }
 
 unsigned pause_art_below(unsigned id) {
@@ -1042,7 +1220,23 @@ bool pause_art_random_shown(void) {
     return t && armTicksToNs(armGetSystemTick() - t) < 200000000ull;
 }
 
+/* the character select's title (CHAR_TITLE): its letters 5/8 of the bar's height, centred */
+static unsigned char_title_texture(void) {
+    static GLuint tex;
+    int aw, ah;
+    if (tex || !uifont_atlas(&aw, &ah)) return tex;
+    uint8_t *px = calloc((size_t)HINT_W * HINT_H, 4);
+    if (!px) return 0;
+    const int size = HINT_H * 5 / 8;
+    float tw = font_text(px, HINT_W, HINT_H, CHAR_TITLE_TEXT, 0, 0, size, 0, false);
+    font_text(px, HINT_W, HINT_H, CHAR_TITLE_TEXT, (HINT_W - tw) / 2, (HINT_H - size) / 2, size, 0xFFE040u, true);
+    tex = upload_rgba(0, HINT_W, HINT_H, px);
+    free(px);
+    return tex;
+}
+
 unsigned pause_art_texture(unsigned id) {
+    if (id == CHAR_TITLE) return s_char_title && charpack_count() ? char_title_texture() : 0;
     if (id >= SNAP_FIRST && id < SNAP_END) {
         int s = (int)(id - SNAP_FIRST);
         if (!s_snap[s]) return 0;
@@ -1050,6 +1244,7 @@ unsigned pause_art_texture(unsigned id) {
         if (!s_snap_tex[s]) s_snap_tex[s] = upload_rgba(0, s_snap_w[s], s_snap_h[s], s_snap[s]);
         return s_snap_tex[s];
     }
+    if (id >= WORD_FIRST && id < WORD_END) return word_texture((int)(id - WORD_FIRST));
     if (id >= BAR_FIRST && id < BAR_FIRST + BAR_COUNT) return s_bar[id - BAR_FIRST] ? bar_texture((int)(id - BAR_FIRST)) : 0;
     int kind = g_pause_kind;
     if (id == S_MENUPAD) {

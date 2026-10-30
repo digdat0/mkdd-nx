@@ -21,7 +21,7 @@ def build(name, file, script, work, bundle_id, extra=()):
     icon = work / "icon.png"
     Image.open(ROOT / "switch" / "icon.jpg").save(icon)  # PyInstaller makes the .ico / .icns from it
     mac = sys.platform == "darwin"
-    cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed",
+    cmd = [sys.executable, str(Path(__file__).with_name("pyi_run.py")), "--noconfirm", "--clean", "--windowed",
            "--name", name if mac else file, "--icon", str(icon), "--workpath", str(work / "pyi"),
            "--specpath", str(work), "--distpath", str(work / "dist"), "--onedir" if mac else "--onefile", *extra]
     if mac:

@@ -31,7 +31,7 @@ enum {
     H_HID2,
     H_THP_DECODE, H_OS_REPORT, H_OS_PANIC, H_RESET_IGNORED, H_PPC_HALT,
     H_SYS_FETCH, H_SYS_STORE, H_CARD, H_GX_DRAW_DONE, H_SET_PRIORITY,
-    H_MT_CHECK, H_MT_RELEASE, H_MT_DASH, H_JUMP,
+    H_MT_CHECK, H_MT_RELEASE, H_MT_DASH, H_JUMP, H_ETH,
 };
 
 static const struct { const char *name; int id; } BIND[] = {
@@ -65,6 +65,9 @@ static const struct { const char *name; int id; } BIND[] = {
     {"GXDrawDone", H_GX_DRAW_DONE},
     {"FUN_802ab538", H_MT_CHECK}, {"FUN_802ab8a4", H_MT_RELEASE}, {"FUN_802a9354", H_MT_DASH},
     {"FUN_802ad9d0", H_JUMP},
+    {"ETHInit", H_ETH}, {"ETHSendAsync", H_ETH}, {"ETHGetMACAddr", H_ETH}, {"ETHSetRecvCallback", H_ETH},
+    {"ETHGetLinkStateAsync", H_ETH}, {"ETHSetProtoType", H_ETH}, {"ETHAddMulticastAddress", H_ETH},
+    {"ETHClearMulticastAddresses", H_ETH}, {"EXIGetID", H_ETH},
 };
 
 typedef struct { uint32_t addr; int id; const char *name; } Hook;
@@ -230,7 +233,7 @@ static void dvd_read(uint64_t off, uint32_t dst, uint32_t len) {
     if (o < 0) return;
     if (len > RAM_SIZE - (uint64_t)o) len = (uint32_t)(RAM_SIZE - (uint64_t)o);
     hw_gx_flush();
-    gx_drain();
+    gx_drain_dma(len);
     disc_read(off, g_ram + o, len);
     gx_mem_dirty((uint32_t)o, len);
     if (len >= (256u << 10)) gx_mem_dirty_all(); /* a scene load: see gx_mem_dirty_all */
@@ -285,7 +288,7 @@ static void format_guest(Ctx *c, uint32_t fmt_addr, unsigned arg, char *out, siz
  * change, to explain where the game went when a race transition stalls. */
 #define W_SCENE 0x803C9CE0u      /* SequenceApp::msScene, msNextScene at +4 */
 #define W_RESET 0x803CBE80u      /* ResetAgent::msState; msForceMenu +8, msInvalid +9 */
-#define W_PAUSE 0x803CB6E4u      /* PauseManager::mPauseChoice */
+#define W_PAUSE 0x803CB6E4u      /* PauseManager::mPauseChoice; mIsPause -8 */
 #define W_RACEMGR 0x803CB7E8u    /* RaceMgr::sRaceManager; +0x18 RaceDirector: phase +0xc, next +0x10 */
 #define W_SEQAPP 0x803CBE20u     /* SequenceApp::mspSequenceApp: requested scenes +0x38, loaded +0x3c, state +0x44 */
 /* RaceDirector's phase (1: the course flyover before the countdown), 0 outside a race. */
@@ -306,7 +309,9 @@ static void read_race_phase(void) {
         bool replay = m_read_be(mgr + 0x2c, 2) & 1;
         bool demo = (info & 0xFE000000u) != 0x80000000u || m_read_be(info + 0x28, 4) != 0 ||
                     m_read_be(info + 8, 4) == 8 || m_read_be(info + 8, 4) == 9;
-        if (!replay && !demo) drive = m_read_be(dir + 0x28, 1) ? 1 : 2; /* mFrameRenewal: off while paused */
+        /* mFrameRenewal: off while paused; a LAN race runs on behind its pause screen (lanpause.c),
+         * so PauseManager::mIsPause too */
+        if (!replay && !demo) drive = m_read_be(dir + 0x28, 1) && !m_read_be(W_PAUSE - 8, 1) /* mIsPause */ ? 1 : 2;
     }
     g_race_drive = drive;
 }
@@ -679,6 +684,12 @@ bool rt_hle(Ctx *c, uint32_t addr) {
     }
     case H_MT_CHECK: case H_MT_RELEASE: case H_MT_DASH: return mini_turbo(c, h->id, addr);
     case H_JUMP: return jump(c, addr);
+    case H_ETH: {
+        uint32_t r;
+        if (!eth_call(c, h->name, &r)) return false;
+        ctx_set_gpr(c, 3, r);
+        break;
+    }
     default: return false;
     }
     return true;

@@ -167,7 +167,20 @@
     X(loadAnimation__16DriverAnimBufMgrFii, "rrr", 'r', 1) \
     X(character__9SceneMenuFv, "r", '-', 1) \
     X(characterAnm__9SceneMenuFv, "r", '-', 1) \
+    X(setCharacterFlag__9SceneMenuFv, "r", '-', 1) \
+    X(FUN_8015639c, "rrr", 'r', 1) \
+    X(calc__13MenuTitleLineFv, "r", '-', 1) \
+    X(selectUp__9SceneMenuFi, "rr", '-', 1) \
+    X(selectDown__9SceneMenuFi, "rr", '-', 1) \
+    X(selectLeft__9SceneMenuFi, "rr", '-', 1) \
+    X(selectRight__9SceneMenuFi, "rr", '-', 1) \
+    X(__ct__Q29GameAudio17CharacterSoundMgrFP3VecP7JKRHeapUc7ECharID, "rrrrr", 'r', 1) \
+    X(setVoice__Q29GameAudio17CharacterSoundMgrFUc, "rr", '-', 1) \
     X(getPtr__6ResMgrFQ26ResMgr9ArchiveIdPCc, "rr", 'r', 1) \
+    X(tstPause__12PauseManagerFv, "", 'r', 1) \
+    X(getPauseChoice__12PauseManagerFv, "", 'r', 1) \
+    X(__ct__7Pause2DFP7JKRHeap, "rr", 'r', 1) \
+    X(FUN_80115040, "rr", '-', 1) \
     X(drawCourse__6Race2DFv, "r", '-', 4)     X(__GXSetDirtyState, "", '-', 4)     X(GXLoadTexObj, "rr", '-', 4)     X(FUN_80023828, "rr", '-', 4)     X(FUN_8007ce10, "rr", '-', 4)     X(FUN_8007c198, "rr", '-', 4)     X(FUN_8007c260, "rr", '-', 4)     X(FUN_8007de24, "rr", '-', 4)     X(FUN_8007d304, "rr", '-', 4)     X(FUN_8007d3e8, "rr", '-', 4)     X(GXSetTevDirect, "r", '-', 3)     X(GXSetTevColorOp, "rrrrrr", '-', 3)     X(GXSetTevAlphaOp, "rrrrrr", '-', 3)     X(__GXSetMatrixIndex, "r", '-', 3)     X(GXSetTexCoordGen2, "rrrrrr", '-', 3)     X(GXSetChanCtrl, "rrrrrrr", '-', 3)     X(GXSetVtxDesc, "rr", '-', 0)     X(GXBegin, "rrr", '-', 4)     X(IsHitSphere__12ObjColSphereFQ29JGeometry8TVec3_f_Q29JGeometry8TVec3_f_f, "rrrf", 'r', 0)     X(IsHitKart__12GeographyObjFRCQ29JGeometry8TVec3_f_fPQ29JGeometry8TVec3_f_, "rrfr", 'r', 1)     X(calc__13ShadowManagerFv, "r", '-', 1)     X(frameWorkAll__Q29GameAudio38SoundMgr_Q29GameAudio14ObjectSoundMgr_Fv, "", '-', 1)     X(setCurrentViewNo__19GeographyObjManagerFUl, "rr", '-', 1)     X(calc__11J3DMaterialFPA4_Cf, "rr", '-', 1)     X(calcMaterial__8J3DModelFv, "r", '-', 1)     X(beginDiff__12J3DMatPacketFv, "r", '-', 2)     X(viewCalc__19GeographyObjManagerFUl, "rr", '-', 1)     X(calc__8J3DModelFv, "r", '-', 1)     X(Collide_norm__19GeographyObjManagerFRC31JSUListIterator_12GeographyObj_RCiRCQ29JGeometry8TVec3_f_RCf, "rrrrr", '-', 1)     X(drawEachParticle__14stParticleDrawFR29JSUListIterator_10stParticle_, "rr", '-', 1)     X(FUN_800724d0, "rr", '-', 1)     X(drawK2D__10K2DPictureFffffb, "rffffr", '-', 4)     X(FUN_80093294, "rrrr", '-', 1)     X(FUN_800505bc, "r", '-', 4)     X(FUN_80182d74, "rr", '-', 1)     X(drawParentBillBoardCommon__14stParticleDrawFR29JSUListIterator_10stParticle_PA4_f, "rrr", '-', 4)     X(draw__13ShadowManagerFUlRQ27JGadget60TList_P11ShadowModel_Q27JGadget26TAllocator_P11ShadowModel__, "rrr", '-', 4)     X(FUN_80085f48, "rr", 'r', 1)     X(Calc_norm__19GeographyObjManagerFRC31JSUListIterator_12GeographyObj_, "rr", '-', 1)     X(viewCalc__13ShadowManagerFUl, "rr", '-', 1)     X(prepareShapePackets__8J3DModelFv, "r", '-', 0)     X(calc__12J3DJointTreeFP12J3DMtxBufferRC3VecRA3_A4_Cf, "rrrr", '-', 1)
 
 #define NATIVE_DECL(name, args, ret, guest) \

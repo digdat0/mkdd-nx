@@ -490,6 +490,9 @@ static int take_due_alarms(uint32_t out[][2], int max) {
             while (a->fire <= now) a->fire += a->period;
             i++;
         } else {
+            /* the alarm's handler is cleared before it runs, as OSAlarm does: code waiting on one
+             * tells it fired by that (SOPoll's timeout) */
+            m_write_be(a->ptr, 4, 0);
             *a = s_alarms[--s_nalarms];
         }
     }
@@ -572,6 +575,10 @@ void rt_deliver(Ctx *c) {
             if (us > g_ai_lat_max_us) g_ai_lat_max_us = us;
             static int logged; /* AI interrupts taken more than half a period late (first 80) */
             if (us > 8000 && logged++ < 80) rt_log("AI late %llu us: delivered by %#x, last fn %s", (unsigned long long)us, c->thread, m_name(g_last_fn));
+        }
+        if (irq == IRQ_NET) { /* no hardware interrupt: the emulated adapter's (eth.c) */
+            eth_interrupt(c);
+            continue;
         }
         hw_before_interrupt(c, irq);
         uint32_t handler = (uint32_t)m_read_be(INTERRUPT_TABLE + 4 * irq, 4);

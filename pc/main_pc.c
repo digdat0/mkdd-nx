@@ -3,7 +3,9 @@
  *
  * Usage: mkdd_pc <disc image> [seconds] [pad script]
  *   pad script: "frames:hexmask,..." holds buttons on port 0 for that many 1/60 s steps
- *   (e.g. "300:0,10:1000,120:0,10:100" = wait 5 s, Start, wait 2 s, A). */
+ *   (e.g. "300:0,10:1000,120:0,10:100" = wait 5 s, Start, wait 2 s, A); bits above the buttons
+ *   push the main stick: 0x10000 up, 0x20000 down, 0x40000 left, 0x80000 right.
+ * MKDD_CHARS=<folder>: driver variants (character folders), as the Switch's mods/characters. */
 #include <stdlib.h>
 #include <string.h>
 #include "../runtime/gx.h"
@@ -36,6 +38,8 @@ int main(int argc, char **argv) {
     g_log_boot = false; /* logs everything anyway; no write-through per line */
     /* MKDD_MOD=<folder>: play a mod (machine_boot), with its own saves */
     memcard_set_path(getenv("MKDD_MOD") ? "memcard_mod/slotA.bin" : "memcard/slotA.bin");
+    /* MKDD_CHARS=<folder>: driver variants from it, as the Switch's mods/characters */
+    if (getenv("MKDD_CHARS")) charpack_scan(getenv("MKDD_CHARS"));
     char err[512];
     if (!machine_boot(argv[1], &s_boot, err, sizeof err)) {
         fprintf(stderr, "boot failed: %s\n", err);
@@ -51,6 +55,10 @@ int main(int argc, char **argv) {
     }
     if (getenv("MKDD_HUD_MODERN")) g_hud_modern = 1;
     if (getenv("MKDD_KMH")) g_speed_kmh = 1;
+    if (getenv("MKDD_VSPLIT")) g_vsplit = 1;
+    if (getenv("MKDD_LAN")) g_lan_on = 1; /* a Broadband Adapter (eth.c) */
+    if (getenv("MKDD_LAN_PORT")) g_lan_port = (uint32_t)atoi(getenv("MKDD_LAN_PORT")); /* two on one PC: one each */
+    if (getenv("MKDD_LAN_PEER")) snprintf(g_lan_peer, sizeof g_lan_peer, "%s", getenv("MKDD_LAN_PEER"));
     if (getenv("MKDD_HUD_LOG")) { extern volatile uint32_t g_hud_log; g_hud_log = (uint32_t)atoi(getenv("MKDD_HUD_LOG")); }
     if (getenv("MKDD_LOOK_BACK")) g_look_back = 1; /* the race camera turned around throughout */
     PadStatus pad = {0};
@@ -81,8 +89,21 @@ int main(int argc, char **argv) {
         }
         if (seg_left > 0) seg_left--;
         else seg_mask = 0;
+        /* X / Y pressed: the select screen's next / previous page of characters, as the Switch's front end */
+        if (seg_mask & ~pad.button & 0x0400) __atomic_or_fetch(&g_char_cycle, 1u, __ATOMIC_RELEASE);
+        if (seg_mask & ~pad.button & 0x0800) __atomic_or_fetch(&g_char_cycle, 1u << 4, __ATOMIC_RELEASE);
         pad.button = (uint16_t)seg_mask;
+        pad.stick_y = seg_mask & 0x10000 ? 100 : seg_mask & 0x20000 ? -100 : 0;
+        pad.stick_x = seg_mask & 0x80000 ? 100 : seg_mask & 0x40000 ? -100 : 0;
         pad_set(0, &pad);
+        /* LAN play's state each second (retail singletons: AppMgr's apps, NetGateApp, NetGameMgr, BBAMgr) */
+        if (g_lan_on && step % 60 == 0) {
+            uint32_t gate = (uint32_t)m_read_be(0x803CBE28, 4), net = (uint32_t)m_read_be(0x803CBE18, 4), bba = (uint32_t)m_read_be(0x803CBE68, 4);
+            rt_log("lan: app %u next %u, gate %#x state %d menu %d, net %#x state %d, bba %#x state %d/%d", (unsigned)m_read_be(0x803CBDA0, 4),
+                   (unsigned)m_read_be(0x803CBDA4, 4), gate, gate ? (int)m_read_be(gate + 0x10, 4) : -1, gate ? (int)m_read_be(gate + 0x14, 4) : -1,
+                   net, net ? (int)m_read_be(net + 0x96C, 4) : -1, bba, bba ? (int)m_read_be(bba, 4) : -1, bba ? (int)m_read_be(bba + 4, 4) : -1);
+            rt_log("lan: ssdp state %d queue %#x", (int)m_read_be(0x803CB5A0, 4), (unsigned)m_read_be(0x803CB5A4, 4));
+        }
         if (getenv("MKDD_PAD2")) pad_set(1, &pad); /* a second pad pressing the same buttons (two players) */
         /* MKDD_DUMP_TEV=dir: write the specialised shader of every TEV configuration seen */
         static U64Map seen;

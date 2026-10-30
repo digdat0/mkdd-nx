@@ -923,7 +923,10 @@ def ask_folders(root):
         last = {}
     ok = lambda k, test: last.get(k) if last.get(k) and test(last[k]) else None
     routes, disc, mod = ok("routes", os.path.isdir), ok("disc", os.path.isfile), ok("mod", lambda p: os.path.isdir(os.path.join(p, "files")))
-    if routes and messagebox.askyesno("MKDD-NX Battle Routes", f"Routes folder: {routes}\nDisc image: {disc or 'none'}\nMKDD Plus folder: {mod or 'none'}\n\nUse these again?"):
+    again = messagebox.askyesnocancel("MKDD-NX Battle Routes", f"Routes folder: {routes}\nDisc image: {disc or 'none'}\nMKDD Plus folder: {mod or 'none'}\n\nUse these again?") if routes else False
+    if again is None:  # Cancel: back to where it was opened from
+        return None, None, None
+    if again:
         return routes, disc, mod
     messagebox.showinfo("MKDD-NX Battle Routes", "Pick the routes folder to edit: switch/MKDD-NX/routes on the SD card (create it if "
                         "there is none), or the repository's routes. Arenas without a file there start from the built-in route.")

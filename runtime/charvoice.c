@@ -15,9 +15,10 @@
  * The game keeps 36 clips twice or three times (a line in Voice_0.aw and SelectVoice_0.aw, same
  * bytes and rate): replacing one replaces its copies too, the same line wherever it plays.
  *
- * The replacements apply while their variant stands in for its base (charpack_model: the select
- * screen's previewed or chosen one, the race's loaded one). A race never has a character twice, so
- * the base's own voice is never needed at the same time. A variant's files are read from the SD card
+ * The replacements apply while their variant stands in for its base: the select screen's previewed
+ * or chosen one (charpack_model), in a race the driver of that character who last started a voice
+ * line (charpack_voice_on: two drivers of one character, as a variant and the game's own or two
+ * variants, each speak as their own). A variant's files are read from the SD card
  * the first time it is active and kept (host memory, VOICE_BUDGET at most in all).
  *
  * Wave tables: GCKart.baa holds a WSYS per wave archive: +0x10 WINF, +0x14 WBCT (offsets from the
@@ -74,11 +75,14 @@ static size_t s_used;
 typedef struct {
     unsigned n;
     Rep *r[TABLE_MAX];
+    int v[TABLE_MAX]; /* the variant r[i] is of */
 } Table;
 static Table s_tab[2];
 static Table *volatile s_cur;
 volatile unsigned g_charvoice_on;
-static int s_active[CP_BASES]; /* the variants s_cur was made for */
+#define ACTIVE_MAX 36
+static int s_active[ACTIVE_MAX]; /* the variants s_cur was made for */
+static unsigned s_nactive;
 
 static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
 static uint32_t le32(const uint8_t *p) { return (uint32_t)p[3] << 24 | (uint32_t)p[2] << 16 | (uint32_t)p[1] << 8 | p[0]; }
@@ -259,21 +263,21 @@ static VarVoice *load(int v) {
 
 void charvoice_update(void) {
     if (!charpack_count()) return;
-    bool same = s_cur != NULL;
-    int m[CP_BASES];
-    for (int b = 0; b < CP_BASES; b++) {
-        m[b] = charpack_model(b);
-        if (m[b] >= 0 && !charpack_voice_dir(m[b], NULL, 0)) m[b] = -1;
-        same = same && m[b] == s_active[b];
-    }
+    int m[ACTIVE_MAX], all[ACTIVE_MAX];
+    unsigned na = charpack_voice_variants(all, ACTIVE_MAX), n = 0;
+    for (unsigned i = 0; i < na; i++)
+        if (charpack_voice_dir(all[i], NULL, 0)) m[n++] = all[i];
+    bool same = s_cur != NULL && n == s_nactive;
+    for (unsigned i = 0; same && i < n; i++) same = m[i] == s_active[i];
     if (same) return;
     Table *t = s_cur == &s_tab[0] ? &s_tab[1] : &s_tab[0];
     t->n = 0;
-    for (int b = 0; b < CP_BASES; b++) {
-        s_active[b] = m[b];
-        VarVoice *vv = m[b] >= 0 ? load(m[b]) : NULL;
-        for (unsigned i = 0; vv && i < vv->n && t->n < TABLE_MAX; i++) t->r[t->n++] = &vv->r[i];
-        if (vv && vv->n) rt_log("charvoice: %s's voice for %s", charpack_name(m[b]), charpack_base_name(b));
+    s_nactive = n;
+    for (unsigned j = 0; j < n; j++) {
+        s_active[j] = m[j];
+        VarVoice *vv = load(m[j]);
+        for (unsigned i = 0; vv && i < vv->n && t->n < TABLE_MAX; i++) t->v[t->n] = m[j], t->r[t->n++] = &vv->r[i];
+        if (vv && vv->n) rt_log("charvoice: %s's voice ready", charpack_name(m[j]));
     }
     __atomic_store_n(&s_cur, t, __ATOMIC_RELEASE);
     g_charvoice_on = t->n;
@@ -286,6 +290,7 @@ bool charvoice_match(uint32_t wave, CharVoiceSound *out) {
     for (unsigned i = 0; i < t->n; i++) {
         Rep *r = t->r[i];
         if (memcmp(p, r->head, MATCH) || (uint64_t)wave + r->bytes > ARAM_SIZE || memcmp(p + r->bytes - MATCH, r->tail, MATCH)) continue;
+        if (!charpack_voice_on(t->v[i])) continue; /* another driver of the character speaks */
         if (!r->said) r->said = true, rt_log("charvoice: %s plays the character's own", r->what);
         *out = r->snd;
         return true;

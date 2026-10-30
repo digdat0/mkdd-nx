@@ -10,6 +10,9 @@
 
 uint8_t *g_ram, *g_aram;
 unsigned g_mod; /* the mod whose code is running: 0 = none, n = MODS[n - 1] */
+char g_dol_sha1[41]; /* the running main.dol's SHA-1 (hex) */
+
+const char *mod_key(unsigned m) { return m && m <= MOD_COUNT && MODS[m - 1].key ? MODS[m - 1].key : ""; }
 
 void core_build_dispatch(void);
 bool core_dispatch(Ctx *c, uint32_t addr);
@@ -159,6 +162,7 @@ static bool load_dol(const char *disc_path, char *err, size_t errlen) {
     disc_read(dol_off, dol, dol_size);
     char sha[41];
     sha1_hex(dol, dol_size, sha);
+    snprintf(g_dol_sha1, sizeof g_dol_sha1, "%s", sha);
     /* a mod (disc_overlay) brings its own main.dol: the one its code was generated from */
     const char *mod = disc_overlay_name();
     if (mod) {
@@ -227,6 +231,7 @@ bool machine_boot(const char *disc_path, Ctx *boot, char *err, size_t errlen) {
         return false;
     }
     if (!load_dol(disc_path, err, errlen)) return false;
+    eth_patch_text();
     core_build_dispatch(); /* after load_dol: a mod's functions join the table */
 
     uint8_t header[0x20];

@@ -38,10 +38,13 @@ typedef struct {
     unsigned hud_hide; /* race HUD elements turned off, single player: HUD_* bits (runtime/rt.h) */
     int hud_style;     /* race HUD, single player: 0 classic (the game's), 1 modern (runtime native.c MODERN, the default) */
     bool speed_kmh;    /* speedometer in km/h; mph (the US game's) when false */
+    bool vsplit;       /* two players side by side (MULTIPLAYER > SPLIT SCREEN); top and bottom (the game's) when false */
     int camera;        /* race camera (CAMERA VIEW): 0 the game's, 1 DRIVER FPV, 2 KART FPV (first person, the kart's front in view) */
     int drv_up, drv_forward, drv_tilt; /* DRIVER FPV: eye above and ahead of the driver's head, degrees down */
     int kart_up, kart_forward, kart_tilt; /* KART view: eye above and ahead of the driver's head, degrees down (settings.ini only) */
     bool profiler;     /* sampling profiler (logs/mkdd_prof.bin), from the next start */
+    bool lan;          /* LAN play over Wi-Fi: a Broadband Adapter (eth.c), from the next start (MULTIPLAYER > LAN PLAY) */
+    char lan_peer[64]; /* "a.b.c.d[:port]": the other console's address, for networks that drop broadcasts ("" none; MULTIPLAYER > LAN PEER) */
     int docked_res;    /* docked (TV), 1080p output: DOCKED_NATIVE (the game's 640x480-ish frame), _2X, _1_5X or
                         * _AUTO (2x, stepping down while the GPU can't keep up). Values kept from when it was on/off. */
     int handheld_res;  /* handheld, 1280x720 screen: HANDHELD_NATIVE (640x480-ish), _1_25X, _1_5X (960x720, the
@@ -84,6 +87,7 @@ uint64_t menu_blocked(void);
 bool menu_is_open(void);
 /* Player chose CONTROLLERS: returns true once, the caller shows the system controller screen. */
 bool menu_take_controllers(void);
+bool menu_take_peer(void); /* LAN PEER picked: show the keyboard */
 /* Draw the overlay (menu if open, FPS and perf line if enabled) over the default framebuffer. */
 void menu_draw(int w, int h, float fps, const char *perf);
 /* Read the MarioFont letters from the (opened) disc; later calls do nothing. */

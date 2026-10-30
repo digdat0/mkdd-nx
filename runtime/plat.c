@@ -19,6 +19,10 @@ volatile int g_plat_nthreads;
 /* The threads started here (NULL once they returned), paused at exit (plat_pause_threads). */
 static Thread *s_threads[128];
 static int s_nthreads;
+/* plat_pause_threads: 1 while threads started here end themselves at their next wait (t_slot:
+ * their s_threads entry, -1 on threads not started here, which carry on) */
+static volatile int s_quitting;
+static __thread int t_slot = -1;
 /* Every started thread's stack mapping, kept after it returns: a detached thread that finished
  * (the updater's worker) can leave its mirror mapped too. */
 static struct { void *mirror, *mem; size_t size; } s_stacks[128];
@@ -31,8 +35,19 @@ static struct { void *mirror, *mem; size_t size; } s_stacks[128];
 int g_plat_stacks, g_plat_unmap_ok, g_plat_unmap_fail, g_plat_unmap_gone;
 unsigned g_plat_unmap_rc;
 uint64_t g_plat_unmap_addr[3];
+int g_plat_quit_count; /* threads that ended themselves at the last plat_pause_threads */
 void plat_pause_threads(void) {
-    int n = __atomic_load_n(&s_nthreads, __ATOMIC_ACQUIRE);
+    /* threads waiting on a condition end themselves (pcond_wait_ns); then the rest are paused */
+    int before = 0, after = 0, n = __atomic_load_n(&s_nthreads, __ATOMIC_ACQUIRE);
+    if (n > 128) n = 128;
+    for (int i = 0; i < n; i++) before += __atomic_load_n(&s_threads[i], __ATOMIC_ACQUIRE) != NULL;
+    s_quitting = 1;
+    svcSleepThread(250000000);
+    s_quitting = 2; /* from here a thread that wakes just carries on until it's paused */
+    svcSleepThread(1000000);
+    for (int i = 0; i < n; i++) after += __atomic_load_n(&s_threads[i], __ATOMIC_ACQUIRE) != NULL;
+    g_plat_quit_count = before - after;
+    n = __atomic_load_n(&s_nthreads, __ATOMIC_ACQUIRE);
     if (n > 128) n = 128;
     for (int i = 0; i < n; i++) {
         Thread *t = __atomic_load_n(&s_threads[i], __ATOMIC_ACQUIRE);
@@ -75,6 +90,16 @@ void pcond_wait_ns(PCond *c, PMutex *m, uint64_t ns) {
     ts.tv_sec = (time_t)(t / 1000000000ull);
     ts.tv_nsec = (long)(t % 1000000000ull);
     pthread_cond_timedwait(c, m, &ts);
+#ifdef __SWITCH__
+    /* A paused thread still counts against the process's thread limit after we hand back to the
+     * loader, and hbmenu then couldn't start its own (2001-0132, LimitReached; more threads since
+     * the LAN mode's). Ending it gives its thread back. */
+    if (__builtin_expect(s_quitting == 1, 0) && t_slot >= 0) {
+        if (t_slot < 128) __atomic_store_n(&s_threads[t_slot], NULL, __ATOMIC_RELEASE);
+        pthread_mutex_unlock(m);
+        pthread_exit(NULL);
+    }
+#endif
 }
 
 typedef struct { ThreadFn fn; void *arg; int core; int prio_bias; const char *name; } Start;
@@ -91,6 +116,7 @@ static void *thread_main(void *p) {
 #endif
 #ifdef __SWITCH__
     int slot = __atomic_fetch_add(&s_nthreads, 1, __ATOMIC_ACQ_REL);
+    t_slot = slot;
     if (slot < 128) {
         Thread *self = threadGetSelf();
         s_stacks[slot].mem = self->stack_mem;
@@ -297,3 +323,37 @@ void u64map_clear(U64Map *m) {
     if (m->cap) memset(m->used, 0, m->cap);
     m->len = 0;
 }
+
+/* The Switch's sockets, shared by whoever needs them (the updater, the LAN adapter, eth.c): the
+ * first plat_net_up starts them, the last plat_net_down stops them (they hold transfer memory). */
+#ifdef __SWITCH__
+static PMutex s_net_lock = PTHREAD_MUTEX_INITIALIZER;
+static int s_net_users;
+
+bool plat_net_up(void) {
+    pmutex_lock(&s_net_lock);
+    Result rc = s_net_users ? 0 : socketInitializeDefault();
+    if (R_SUCCEEDED(rc)) s_net_users++;
+    pmutex_unlock(&s_net_lock);
+    if (R_FAILED(rc)) fprintf(stderr, "net: socketInitializeDefault %#x\n", rc);
+    return R_SUCCEEDED(rc);
+}
+
+void plat_net_down(void) {
+    pmutex_lock(&s_net_lock);
+    if (s_net_users > 0 && --s_net_users == 0) socketExit();
+    pmutex_unlock(&s_net_lock);
+}
+
+/* At exit, after plat_pause_threads: the sockets' transfer memory locks ~2 MB of heap, which the
+ * loader takes back for the next .nro; RESTART NOW's 50 MB one ran into it (2001-0106). Without
+ * the lock: a paused user (the updater's worker) may hold it. */
+void plat_net_exit(void) {
+    if (s_net_users > 0) socketExit();
+    s_net_users = 0;
+}
+#else
+bool plat_net_up(void) { return true; }
+void plat_net_down(void) {}
+void plat_net_exit(void) {}
+#endif

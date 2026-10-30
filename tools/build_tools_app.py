@@ -1,5 +1,5 @@
-"""Packages MKDD-NX Tools (tools/mkddnx_tools.py: the Characters, HD Textures and Battle Routes apps in
-one window): Windows -> dist/MKDD-NX-Tools.exe (one file, no console), macOS ->
+"""Packages MKDD-NX Tools (tools/mkddnx_tools.py: the Characters, Wii Characters, HD Textures and Battle Routes
+apps in one window): Windows -> dist/MKDD-NX-Tools.exe (one file, no console), macOS ->
 dist/MKDD-NX-Tools-<arch>.dmg (the .app inside). Python, Pillow, zstandard (for .rvz images), the
 BC7 encoder and the repository's routes/ (the ones built into the .nro, the route editor's start)
 are bundled, so it needs nothing installed. Run on the platform being built for:
@@ -32,10 +32,13 @@ def main():
     lib = WORK / hdtex_pack.LIB.name
     hdtex_pack.build_encoder(lib, native=False)  # any CPU of this architecture, not just this one
     extra = ["--paths", a.zstd_from] if a.zstd_from else []
-    hidden = ["charpack", "route_editor", "battle_routes", "build_from_iso", "rvz", "zstandard", "hdtex_gui", "hdtex_pack"]
+    hidden = ["charpack", "wiichar", "route_editor", "battle_routes", "build_from_iso", "rvz", "zstandard", "hdtex_gui", "hdtex_pack"]
+    # optional imports of Pillow and the standard library the tools never use (numpy alone was ~30 MB)
+    unused = ["numpy", "clr", "clr_loader", "pythonnet", "pyreadline3", "pydoc", "pydoc_data", "unittest", "doctest"]
     pyi_app.build("MKDD-NX Tools", "MKDD-NX-Tools", ROOT / "tools" / "mkddnx_tools.py", WORK, "io.github.digdat0.mkddnx.tools",
                   ["--paths", str(ROOT / "tools"), "--paths", str(ROOT / "tools" / "hdtex_app"), *extra,
                    *[x for h in hidden for x in ("--hidden-import", h)],
+                   *[x for m in unused for x in ("--exclude-module", m)],
                    "--add-binary", f"{lib}{os.pathsep}.",
                    "--add-data", f"{ROOT / 'routes' / '*.txt'}{os.pathsep}routes"])
 
