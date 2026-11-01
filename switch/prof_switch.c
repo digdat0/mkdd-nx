@@ -23,7 +23,7 @@ static size_t s_n;
 static volatile bool s_stop;
 static PMutex s_flock;
 static u64 s_samples[6];
-static Handle s_render; /* the main thread (GL rendering, present) */
+static Handle s_render; /* the main thread (rendering, present) */
 
 static void flush_locked(void) {
     if (s_f && s_n) {

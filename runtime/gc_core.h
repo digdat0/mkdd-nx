@@ -17,10 +17,11 @@
 #endif
 
 #define GAME_RAM_SIZE 0x01800000u /* 24 MiB of MEM1: what the game is told it has */
-/* MEM1 as the port reads it: the game's 24 MiB plus 8 MiB above (0x81800000..0x81FFFFFF) that the
+/* MEM1 as the port reads it: the game's 24 MiB plus 40 MiB above (0x81800000..0x83FFFFFF) that the
  * game never uses, where the port keeps data the game is pointed at (charpack.c: character packs) */
-#define RAM_SIZE 0x02000000u
-#define RAM_ALLOC 0x02000000u /* allocation behind it (see mld_s) */
+#define RAM_SIZE 0x04000000u
+#define RAM_MASK (RAM_SIZE - 1)
+#define RAM_ALLOC RAM_SIZE /* allocation behind it (see mld_s) */
 #define REG_BYTES 0x10010    /* Ghidra's Gekko register space, incl. PS1 */
 #define REG_R2 0x08
 #define REG_R13 0x34
@@ -194,10 +195,10 @@ ALWAYS_INLINE void ctx_st(Ctx *c, uint64_t addr, unsigned size, uint64_t v) {
 /* RAM test: physical address below 32 MiB (MEM1 plus the allocation's unused tail), a single
  * bit test. Hardware registers (0x0C......), the locked cache (0x20......) etc. take the slow
  * path. The allocation has slack past RAM_ALLOC for accesses straddling its end. */
-#define IS_RAM(a) (((a) & 0x3E000000u) == 0)
+#define IS_RAM(a) (((a) & (0x3FFFFFFFu & ~RAM_MASK)) == 0)
 ALWAYS_INLINE uint64_t mld(Ctx *c, uint8_t *M, uint64_t addr, unsigned size) {
     uint32_t a = (uint32_t)addr;
-    if (LIKELY(IS_RAM(a))) return get_be(M + (a & 0x01FFFFFFu), size);
+    if (LIKELY(IS_RAM(a))) return get_be(M + (a & RAM_MASK), size);
     return mmio_rd(c, a, size);
 }
 /* A store the compiler can see goes to the gather pipe (lis rX,0xCC01 / stw -0x8000(rX)): append
@@ -216,14 +217,14 @@ ALWAYS_INLINE void gp_wr(Ctx *c, unsigned size, uint64_t v) {
 ALWAYS_INLINE void mst(Ctx *c, uint8_t *M, uint64_t addr, unsigned size, uint64_t v) {
     uint32_t a = (uint32_t)addr;
     if (__builtin_constant_p(a) && (a & 0xFFFFFFF8u) == 0xCC008000u) { gp_wr(c, size, v); return; }
-    if (LIKELY(IS_RAM(a))) put_be(M + (a & 0x01FFFFFFu), size, v);
+    if (LIKELY(IS_RAM(a))) put_be(M + (a & RAM_MASK), size, v);
     else mmio_wr(c, a, size, v);
 }
 
 /* Accesses based on r1 / r2 / r13 (stack, small-data areas): always MEM1, so no MMIO check;
  * the 25-bit mask keeps them inside the 32 MiB allocation whatever the value. */
-ALWAYS_INLINE uint64_t mld_s(uint8_t *M, uint64_t addr, unsigned size) { return get_be(M + ((uint32_t)addr & 0x01FFFFFFu), size); }
-ALWAYS_INLINE void mst_s(uint8_t *M, uint64_t addr, unsigned size, uint64_t v) { put_be(M + ((uint32_t)addr & 0x01FFFFFFu), size, v); }
+ALWAYS_INLINE uint64_t mld_s(uint8_t *M, uint64_t addr, unsigned size) { return get_be(M + ((uint32_t)addr & RAM_MASK), size); }
+ALWAYS_INLINE void mst_s(uint8_t *M, uint64_t addr, unsigned size, uint64_t v) { put_be(M + ((uint32_t)addr & RAM_MASK), size, v); }
 
 ALWAYS_INLINE bool core_hooked(uint32_t addr) {
     uint32_t i = (addr - TEXT_BASE) / 4;
@@ -400,7 +401,7 @@ ALWAYS_INLINE uint32_t ps_u32(double v) { float f = (float)v; uint32_t u; memcpy
 ALWAYS_INLINE void ps_load(Ctx *c, uint8_t *M, uint32_t ea, uint32_t g, int w, double *p0, double *p1) {
     /* Fast path: float pairs (GQR type 0, what GQR0 always holds) in RAM, one 8-byte access. */
     if (LIKELY((g & 0x00070000u) == 0 && IS_RAM(ea))) {
-        uint8_t *q = M + (ea & 0x01FFFFFFu);
+        uint8_t *q = M + (ea & RAM_MASK);
         if (w) { *p0 = ps_f32((uint32_t)get_be(q, 4)); *p1 = 1.0; return; }
         uint64_t v = get_be(q, 8);
         *p0 = ps_f32((uint32_t)(v >> 32));
@@ -415,7 +416,7 @@ ALWAYS_INLINE void ps_load(Ctx *c, uint8_t *M, uint32_t ea, uint32_t g, int w, d
 /* psq_st: GQR store type (bits 0-2) and scale (8-13) */
 ALWAYS_INLINE void ps_store(Ctx *c, uint8_t *M, uint32_t ea, uint32_t g, int w, double a, double b) {
     if (LIKELY((g & 7u) == 0 && IS_RAM(ea))) {
-        uint8_t *q = M + (ea & 0x01FFFFFFu);
+        uint8_t *q = M + (ea & RAM_MASK);
         if (w) put_be(q, 4, ps_u32(a));
         else put_be(q, 8, (uint64_t)ps_u32(a) << 32 | ps_u32(b));
         return;

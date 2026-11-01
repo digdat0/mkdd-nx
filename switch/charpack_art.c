@@ -18,7 +18,7 @@
 #include <strings.h>
 
 #include <switch.h>
-#include <GLES3/gl32.h>
+#include "gfx.h"
 
 #include "charpack_art.h"
 #include "ui_font.h"
@@ -158,7 +158,7 @@ void charpack_art_init(void) {
 
 /* ---- the variants' pictures, made on first use (render thread) ---- */
 /* by key, open addressing: a few hundred lookups a frame (every bind of a stand-in texture) */
-typedef struct { uint32_t key; GLuint tex; bool used; } Made; /* tex 0: the variant has none */
+typedef struct { uint32_t key; GfxTex tex; bool used; } Made; /* tex 0: the variant has none */
 #define MADE_SLOTS 16384 /* a power of 2, over CP_VARIANTS x (3 pictures + MODEL_TEX) */
 static Made s_made[MADE_SLOTS];
 static unsigned s_nmade;
@@ -186,19 +186,14 @@ static uint8_t *decode_bti(const uint8_t *h, size_t avail, int *w, int *ht) {
     *w = (int)t.width, *ht = (int)t.height;
     return rgba;
 }
-static GLuint upload(const uint8_t *rgba, int w, int h) {
+static GfxTex upload(const uint8_t *rgba, int w, int h) {
     if (!rgba) return 0;
-    GLuint tex = 0;
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-    return tex;
+    return gfx_tex_upload(0, GFX_RGBA8, w, h, rgba);
 }
-static GLuint upload_bti(const uint8_t *h, size_t avail) {
+static GfxTex upload_bti(const uint8_t *h, size_t avail) {
     int w, ht;
     uint8_t *rgba = decode_bti(h, avail, &w, &ht);
-    GLuint tex = upload(rgba, w, ht);
+    GfxTex tex = upload(rgba, w, ht);
     free(rgba);
     return tex;
 }
@@ -212,7 +207,7 @@ static uint8_t *read_picture(int v, char kind, const char *game, int *w, int *h)
 }
 
 /* the map icon from a face: a disc of it in a white ring, MAP_SIZE square */
-static GLuint map_from_face(const uint8_t *face, int fw, int fh) {
+static GfxTex map_from_face(const uint8_t *face, int fw, int fh) {
     uint8_t out[MAP_SIZE * MAP_SIZE * 4];
     const float c = (MAP_SIZE - 1) / 2.0f, r_out = MAP_SIZE / 2.0f - 0.5f, ring = 2.5f;
     for (int y = 0; y < MAP_SIZE; y++)
@@ -236,7 +231,7 @@ static GLuint map_from_face(const uint8_t *face, int fw, int fh) {
 }
 
 /* the name tag: s in MarioFont, white, centred in the game's tag size (squeezed when too wide) */
-static GLuint name_tag(const char *s) {
+static GfxTex name_tag(const char *s) {
     int aw, ah;
     const uint8_t *atlas = uifont_atlas(&aw, &ah);
     if (!atlas && uifont_load()) atlas = uifont_atlas(&aw, &ah);
@@ -268,12 +263,12 @@ static GLuint name_tag(const char *s) {
             }
         pen += gw * sx;
     }
-    GLuint tex = upload(out, w, h);
+    GfxTex tex = upload(out, w, h);
     free(out);
     return tex;
 }
 
-static GLuint make(int v, int b, unsigned kind, unsigned i) {
+static GfxTex make(int v, int b, unsigned kind, unsigned i) {
     int w = 0, h = 0;
     /* the variant's own pictures are named after its base (MKDD Patcher layout): a face shown in
      * another character's cell too */
@@ -293,7 +288,7 @@ static GLuint make(int v, int b, unsigned kind, unsigned i) {
                 px[0] = (uint8_t)g, px[1] = (uint8_t)g, px[2] = (uint8_t)(g + 10); /* a slate grey */
                 px[3] = (uint8_t)(px[3] * 85 / 100);
             }
-        GLuint tex = upload(rgba, w, h);
+        GfxTex tex = upload(rgba, w, h);
         free(rgba);
         return tex;
     }
@@ -301,13 +296,13 @@ static GLuint make(int v, int b, unsigned kind, unsigned i) {
         uint8_t *rgba = read_picture(v, kind == K_FACE ? 'f' : 'n', kind == K_FACE ? FACE[vb] : NAME[vb], &w, &h);
         /* no face of its own: its base's (not the game's picture of the cell it shows in) */
         if (!rgba && kind == K_FACE && vb < CP_BASES && s_face[vb]) rgba = decode_bti(s_face[vb], s_face_size[vb], &w, &h);
-        GLuint tex = rgba ? upload(rgba, w, h) : kind == K_NAME ? name_tag(charpack_name(v)) : 0;
+        GfxTex tex = rgba ? upload(rgba, w, h) : kind == K_NAME ? name_tag(charpack_name(v)) : 0;
         free(rgba);
         return tex;
     }
     if (kind == K_MAP) {
         uint8_t *rgba = read_picture(v, 'm', MAP[vb], &w, &h);
-        GLuint tex;
+        GfxTex tex;
         if (rgba) tex = upload(rgba, w, h);
         else tex = (rgba = read_picture(v, 'f', FACE[vb], &w, &h)) ? map_from_face(rgba, w, h) : 0;
         free(rgba);
@@ -358,10 +353,7 @@ unsigned charpack_art_texture(unsigned id) {
     unsigned j = (key * 2654435761u) & (MADE_SLOTS - 1);
     for (; s_made[j].used; j = (j + 1) & (MADE_SLOTS - 1))
         if (s_made[j].key == key) return s_made[j].tex;
-    GLint bound = 0;
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
-    GLuint tex = make(v, (int)b, kind, i);
-    glBindTexture(GL_TEXTURE_2D, (GLuint)bound);
+    GfxTex tex = make(v, (int)b, kind, i);
     if (s_nmade < MADE_SLOTS - 1) s_made[j] = (Made){key, tex, true}, s_nmade++; /* else (never: see MADE_SLOTS) made each time */
     if (!tex && kind != K_DIM)
         rt_log("charpack art: %s has no %s picture %u", charpack_name(v), kind == K_FACE ? "face" : kind == K_MAP ? "map" : kind == K_NAME ? "name" : "model", i);

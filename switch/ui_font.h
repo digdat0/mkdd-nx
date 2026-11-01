@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Read the glyphs from the disc and upload them (main thread, GL context current). False if the
+/* Read the glyphs from the disc and upload them (main thread, renderer up). False if the
  * disc has no usable font: the menu then keeps its built-in bitmap font. */
 bool uifont_load(void);
 unsigned uifont_texture(void);

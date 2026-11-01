@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define ROUTE_MAX 512       /* points in a network (or loop) */
-#define ROUTE_NETS 3        /* networks loaded at once: one for each computer's kart (a battle has 4 karts) */
+#define ROUTE_NETS 7        /* networks loaded at once: one for each computer's kart, shared only when a file has too few */
 #define ROUTE_FILE_NETS 32  /* networks a route file may hold */
 #define ROUTE_POINTS (ROUTE_MAX * ROUTE_NETS)
 

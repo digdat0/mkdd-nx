@@ -20,7 +20,7 @@ ALWAYS_INLINE void stf(Ctx *c, uint8_t *M, uint32_t a, float f) {
 }
 ALWAYS_INLINE void ldfn(Ctx *c, uint8_t *M, uint32_t a, float *v, int n) {
     if (LIKELY(IS_RAM(a) && IS_RAM(a + 4u * n - 1))) {
-        const uint8_t *p = M + (a & 0x01FFFFFFu);
+        const uint8_t *p = M + (a & RAM_MASK);
         for (int i = 0; i < n; i++) { uint32_t u = (uint32_t)get_be(p + 4 * i, 4); memcpy(&v[i], &u, 4); }
     } else {
         for (int i = 0; i < n; i++) v[i] = ldf(c, M, a + 4 * i);
@@ -28,7 +28,7 @@ ALWAYS_INLINE void ldfn(Ctx *c, uint8_t *M, uint32_t a, float *v, int n) {
 }
 ALWAYS_INLINE void stfn(Ctx *c, uint8_t *M, uint32_t a, const float *v, int n) {
     if (LIKELY(IS_RAM(a) && IS_RAM(a + 4u * n - 1))) {
-        uint8_t *p = M + (a & 0x01FFFFFFu);
+        uint8_t *p = M + (a & RAM_MASK);
         for (int i = 0; i < n; i++) { uint32_t u; memcpy(&u, &v[i], 4); put_be(p + 4 * i, 4, u); }
     } else {
         for (int i = 0; i < n; i++) stf(c, M, a + 4 * i, v[i]);
@@ -67,6 +67,7 @@ uint64_t i___ct__7Pause2DFP7JKRHeap(Ctx *c, uint8_t *M, ARGS);
 uint64_t i_FUN_80115040(Ctx *c, uint8_t *M, ARGS);
 /* battle.c's natives */
 uint64_t i_FUN_8018c878(Ctx *c, uint8_t *M, ARGS);
+uint64_t i_FUN_8018712c(Ctx *c, uint8_t *M, ARGS);
 uint64_t i_loadCrsData__6CourseFb(Ctx *c, uint8_t *M, ARGS);
 uint64_t i_FUN_802b1f60(Ctx *c, uint8_t *M, ARGS);
 uint64_t i_FUN_802b2174(Ctx *c, uint8_t *M, ARGS);

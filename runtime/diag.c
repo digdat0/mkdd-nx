@@ -10,7 +10,6 @@
 static PMutex s_lock;
 static bool s_init;
 static uint64_t s_seen_hash[MAX_SEEN];
-static uint32_t s_seen_count[MAX_SEEN];
 static unsigned s_nseen, s_lines;
 static FILE *s_log;
 volatile uint32_t g_log_mask = LOG_GAME | LOG_AUDIO | LOG_BATTLE;
@@ -31,6 +30,11 @@ void diag_set_log_file(const char *path) {
     s_log = fopen(path, "w");
     if (s_log) setvbuf(s_log, NULL, _IOFBF, 64 << 10);
     pmutex_unlock(&s_lock);
+}
+
+/* from the crash handler: the lock may be the crashed thread's own */
+void diag_flush_crash(void) {
+    if (s_log) fflush(s_log);
 }
 
 void diag_flush(void) {
@@ -57,8 +61,8 @@ void rt_log(const char *fmt, ...) {
     uint64_t h = fnv_bytes(FNV_INIT, msg, strlen(msg));
     lock();
     for (unsigned i = 0; i < s_nseen; i++)
-        if (s_seen_hash[i] == h) { s_seen_count[i]++; pmutex_unlock(&s_lock); return; }
-    if (s_nseen < MAX_SEEN) { s_seen_hash[s_nseen] = h; s_seen_count[s_nseen++] = 1; }
+        if (s_seen_hash[i] == h) { pmutex_unlock(&s_lock); return; }
+    if (s_nseen < MAX_SEEN) s_seen_hash[s_nseen++] = h;
     if (s_lines == LOG_LINES) {
         s_lines++;
         if (s_log) fprintf(s_log, "[%.3f] log: %u lines, the rest of this run not logged\n", (double)plat_now_ns() / 1e9, LOG_LINES);

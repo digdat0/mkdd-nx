@@ -22,6 +22,8 @@ typedef struct {
     bool mt_cpu;       /* MINI-TURBO FOR CPUS: the three above for the computer's karts too */
     bool perfect_start; /* PERFECT STARTS: every player's kart gets the start boost */
     bool battle_cpus;  /* MODS > SINGLE PLAYER BATTLE MODE (default on): battles filled up to 4 karts with computer karts */
+    int battle_karts;  /* MODS > BATTLE KARTS (default 4): the karts in a 1-player battle, 4 to 8 */
+    int bomb_hits;     /* MODS > BOB-OMB HITS TO WIN (default 4, the game's): in a 1-player Bob-omb Blast, 4 to 20 */
     int jump;          /* JUMP: 0 off, 1-3 low / mid / high hop on the JUMP button (map[MAP_JUMP]) */
     int laps;          /* LAPS: Grand Prix and Versus races, 0 the course's own, else 1-7 */
     int free_cam;      /* FREE CAMERA: 0 off, the right stick turns the race camera round the kart and
@@ -41,7 +43,8 @@ typedef struct {
     bool vsplit;       /* two players side by side (MULTIPLAYER > SPLIT SCREEN); top and bottom (the game's) when false */
     int camera;        /* race camera (CAMERA VIEW): 0 the game's, 1 DRIVER FPV, 2 KART FPV (first person, the kart's front in view) */
     int drv_up, drv_forward, drv_tilt; /* DRIVER FPV: eye above and ahead of the driver's head, degrees down */
-    int kart_up, kart_forward, kart_tilt; /* KART view: eye above and ahead of the driver's head, degrees down (settings.ini only) */
+    int kart_up, kart_forward, kart_tilt; /* KART view if the kart can't be read: eye above and ahead of the driver's head, degrees down */
+    int kart_add[21][3]; /* KART view, by EKartID: up, forward, degrees down, added to kart_eye.h */
     bool profiler;     /* sampling profiler (logs/mkdd_prof.bin), from the next start */
     bool game_clocks;  /* CLOCKS: GAME, the port raises the handheld profile and boosts the CPU while
                         * booting; off (SYSTEM, the default) leaves clocks alone, for overclock tools. Next start */

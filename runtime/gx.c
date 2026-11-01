@@ -546,7 +546,7 @@ void gx_subst_register(unsigned id, uint32_t fmt, uint32_t w, uint32_t h, uint64
 static volatile uint32_t s_movie[8][3]; /* recent movie plane sets (Y, U, V addresses) */
 static volatile unsigned s_nmovie;
 void gx_movie_planes(const uint32_t virt[3]) {
-    const uint32_t planes[3] = {virt[0] & 0x01FFFFFFu, virt[1] & 0x01FFFFFFu, virt[2] & 0x01FFFFFFu}; /* as the texture registers hold them */
+    const uint32_t planes[3] = {virt[0] & RAM_MASK, virt[1] & RAM_MASK, virt[2] & RAM_MASK}; /* as the texture registers hold them */
     for (unsigned i = 0; i < 8; i++)
         if (s_movie[i][0] == planes[0] && s_movie[i][1] == planes[1] && s_movie[i][2] == planes[2]) return;
     unsigned i = s_nmovie++ % 8;
@@ -566,7 +566,7 @@ static uint8_t movie_plane(uint32_t addr) {
 static struct { uint32_t addr; uint16_t id; } s_subst_at[64];
 static unsigned s_nsubst_at;
 void gx_subst_addr(uint32_t addr, unsigned id) {
-    addr &= 0x01FFFFFF;
+    addr &= RAM_MASK;
     for (unsigned i = 0; i < s_nsubst_at; i++)
         if (s_subst_at[i].addr == addr) { s_subst_at[i].id = (uint16_t)id; return; }
     if (s_nsubst_at < sizeof s_subst_at / sizeof s_subst_at[0]) s_subst_at[s_nsubst_at++] = (__typeof__(s_subst_at[0])){addr, (uint16_t)id};
@@ -586,7 +586,7 @@ static uint64_t sample_bytes(const uint8_t *d, size_t size) {
     return h;
 }
 unsigned gx_subst_at(uint32_t addr, uint32_t fmt, uint32_t w, uint32_t h) {
-    addr &= 0x01FFFFFF;
+    addr &= RAM_MASK;
     size_t size = tex_size(fmt, w, h);
     if (!size || addr + size > RAM_SIZE) return 0;
     const uint8_t *data = g_ram + addr;
@@ -654,12 +654,28 @@ static uint64_t texture_inner(unsigned map) {
         uint64_t key;
         if (u64map_get(&G.tex_cache_key, ck, &key) && store_has(key)) return key;
     }
-    uint32_t mode = G.bp[mode_r];
+    uint32_t mode = G.bp[mode_r], mode1 = G.bp[mode_r + 4]; /* TX_SETMODE1: 0x84+ / 0xA4+ */
+    /* Mip levels follow level 0 in RAM, each padded to whole tiles: kept when the game samples them
+     * (mipmap filter bits 5-6, max LOD in 1/16 steps), down to 4x4 (BC1 blocks). */
+    unsigned levels = 1;
+    size_t total = size;
+    if (bits(mode, 5, 2)) {
+        unsigned max_lod = bits(mode1, 8, 8) >> 4;
+        while (levels <= max_lod && levels < 11) {
+            uint32_t lw = w >> levels, lh = h >> levels;
+            if (lw < 4 || lh < 4 || lw << levels != w || lh << levels != h) break;
+            size_t s = tex_size(fmt, lw, lh);
+            if (!s || addr + total + s > RAM_SIZE) break;
+            total += s;
+            levels++;
+        }
+    }
     GxTexture *t = calloc(1, sizeof *t);
     t->width = w; t->height = h; t->fmt = fmt; t->tlut_fmt = tlut_fmt;
-    t->raw = malloc(size);
-    memcpy(t->raw, data, size);
+    t->raw = malloc(total);
+    memcpy(t->raw, data, total);
     t->raw_len = size;
+    t->levels = (uint8_t)levels;
     t->subst = subst_id(fmt, w, h, data, size);
     for (unsigned i = 0; i < s_nsubst_at; i++)
         if (s_subst_at[i].addr == addr) t->subst = s_subst_at[i].id;
@@ -1607,7 +1623,7 @@ static bool s_vc_check;
 static uint64_t s_vc_hit, s_vc_lists, s_vc_built, s_vc_changed, s_vc_verts, s_vc_bad;
 
 void gx_mem_dirty(uint32_t addr, uint32_t len) {
-    uint32_t off = addr & 0x01FFFFFFu;
+    uint32_t off = addr & RAM_MASK;
     if (!len || off >= RAM_SIZE) return;
     if (len > RAM_SIZE - off) len = RAM_SIZE - off;
     uint32_t gen = __atomic_add_fetch(&s_dirty_counter, 1, __ATOMIC_ACQ_REL);

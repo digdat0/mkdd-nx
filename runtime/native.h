@@ -27,6 +27,7 @@
 #define NATIVE_LIST(X) \
     X(changeKart__9SceneMenuFiiii, "rrrrr", 'r', 1) \
     X(FUN_8018c878, "rrrrrr", '-', 1) \
+    X(FUN_8018712c, "rrr", '-', 1) \
     X(loadCrsData__6CourseFb, "rr", '-', 1) \
     X(FUN_802b1f60, "", 'r', 1) \
     X(FUN_80226f1c, "rrr", 'r', 1) \
@@ -82,6 +83,7 @@
     X(getPerspAspectSub__6SystemFv, "", 'f', 0) \
     X(C_MTXPerspective, "rffff", '-', 1) \
     X(FUN_8029e0a8, "rr", '-', 1) \
+    X(FUN_80027ebc, "rr", '-', 0) \
     X(FUN_801a77e8, "rffffr", '-', 1) \
     X(FUN_8000a260, "r", '-', 1) \
     X(FUN_802b6bd4, "r", '-', 1) \
@@ -162,6 +164,7 @@
     X(diff__8J3DModelFv, "r", '-', 1) \
     X(draw__6Race2DFv, "r", '-', 4) \
     X(draw__11WipeManagerFv, "r", '-', 4) \
+    X(draw__5MarioFfQ28JUtility6TColor, "rfr", '-', 4) \
     X(__ct__11DriverModelFP10KartLoaderiUsbi, "rrrrrr", 'r', 1) \
     X(__ct__13DriverManagerFv, "r", 'r', 1) \
     X(loadAnimation__16DriverAnimBufMgrFii, "rrr", 'r', 1) \
@@ -181,7 +184,7 @@
     X(getPauseChoice__12PauseManagerFv, "", 'r', 1) \
     X(__ct__7Pause2DFP7JKRHeap, "rr", 'r', 1) \
     X(FUN_80115040, "rr", '-', 1) \
-    X(drawCourse__6Race2DFv, "r", '-', 4)     X(__GXSetDirtyState, "", '-', 4)     X(GXLoadTexObj, "rr", '-', 4)     X(FUN_80023828, "rr", '-', 4)     X(FUN_8007ce10, "rr", '-', 4)     X(FUN_8007c198, "rr", '-', 4)     X(FUN_8007c260, "rr", '-', 4)     X(FUN_8007de24, "rr", '-', 4)     X(FUN_8007d304, "rr", '-', 4)     X(FUN_8007d3e8, "rr", '-', 4)     X(GXSetTevDirect, "r", '-', 3)     X(GXSetTevColorOp, "rrrrrr", '-', 3)     X(GXSetTevAlphaOp, "rrrrrr", '-', 3)     X(__GXSetMatrixIndex, "r", '-', 3)     X(GXSetTexCoordGen2, "rrrrrr", '-', 3)     X(GXSetChanCtrl, "rrrrrrr", '-', 3)     X(GXSetVtxDesc, "rr", '-', 0)     X(GXBegin, "rrr", '-', 4)     X(IsHitSphere__12ObjColSphereFQ29JGeometry8TVec3_f_Q29JGeometry8TVec3_f_f, "rrrf", 'r', 0)     X(IsHitKart__12GeographyObjFRCQ29JGeometry8TVec3_f_fPQ29JGeometry8TVec3_f_, "rrfr", 'r', 1)     X(calc__13ShadowManagerFv, "r", '-', 1)     X(frameWorkAll__Q29GameAudio38SoundMgr_Q29GameAudio14ObjectSoundMgr_Fv, "", '-', 1)     X(setCurrentViewNo__19GeographyObjManagerFUl, "rr", '-', 1)     X(calc__11J3DMaterialFPA4_Cf, "rr", '-', 1)     X(calcMaterial__8J3DModelFv, "r", '-', 1)     X(beginDiff__12J3DMatPacketFv, "r", '-', 2)     X(viewCalc__19GeographyObjManagerFUl, "rr", '-', 1)     X(calc__8J3DModelFv, "r", '-', 1)     X(Collide_norm__19GeographyObjManagerFRC31JSUListIterator_12GeographyObj_RCiRCQ29JGeometry8TVec3_f_RCf, "rrrrr", '-', 1)     X(drawEachParticle__14stParticleDrawFR29JSUListIterator_10stParticle_, "rr", '-', 1)     X(FUN_800724d0, "rr", '-', 1)     X(drawK2D__10K2DPictureFffffb, "rffffr", '-', 4)     X(FUN_80093294, "rrrr", '-', 1)     X(FUN_800505bc, "r", '-', 4)     X(FUN_80182d74, "rr", '-', 1)     X(drawParentBillBoardCommon__14stParticleDrawFR29JSUListIterator_10stParticle_PA4_f, "rrr", '-', 4)     X(draw__13ShadowManagerFUlRQ27JGadget60TList_P11ShadowModel_Q27JGadget26TAllocator_P11ShadowModel__, "rrr", '-', 4)     X(FUN_80085f48, "rr", 'r', 1)     X(Calc_norm__19GeographyObjManagerFRC31JSUListIterator_12GeographyObj_, "rr", '-', 1)     X(viewCalc__13ShadowManagerFUl, "rr", '-', 1)     X(prepareShapePackets__8J3DModelFv, "r", '-', 0)     X(calc__12J3DJointTreeFP12J3DMtxBufferRC3VecRA3_A4_Cf, "rrrr", '-', 1)
+    X(drawCourse__6Race2DFv, "r", '-', 4)     X(__GXSetDirtyState, "", '-', 4)     X(GXLoadTexObj, "rr", '-', 4)     X(FUN_80023828, "rr", '-', 4)     X(FUN_8007ce10, "rr", '-', 4)     X(FUN_8007c198, "rr", '-', 4)     X(FUN_8007c260, "rr", '-', 4)     X(FUN_8007de24, "rr", '-', 4)     X(FUN_8007d304, "rr", '-', 4)     X(FUN_8007d3e8, "rr", '-', 4)     X(GXSetTevDirect, "r", '-', 3)     X(GXSetTevColorOp, "rrrrrr", '-', 3)     X(GXSetTevAlphaOp, "rrrrrr", '-', 3)     X(__GXSetMatrixIndex, "r", '-', 3)     X(GXSetTexCoordGen2, "rrrrrr", '-', 3)     X(GXSetChanCtrl, "rrrrrrr", '-', 3)     X(GXSetVtxDesc, "rr", '-', 0)     X(GXBegin, "rrr", '-', 4)     X(IsHitSphere__12ObjColSphereFQ29JGeometry8TVec3_f_Q29JGeometry8TVec3_f_f, "rrrf", 'r', 0)     X(IsHitKart__12GeographyObjFRCQ29JGeometry8TVec3_f_fPQ29JGeometry8TVec3_f_, "rrfr", 'r', 1)     X(calc__13ShadowManagerFv, "r", '-', 1)     X(frameWorkAll__Q29GameAudio38SoundMgr_Q29GameAudio14ObjectSoundMgr_Fv, "", '-', 1)     X(setCurrentViewNo__19GeographyObjManagerFUl, "rr", '-', 1)     X(calc__11J3DMaterialFPA4_Cf, "rr", '-', 1)     X(calcMaterial__8J3DModelFv, "r", '-', 1)     X(beginDiff__12J3DMatPacketFv, "r", '-', 2)     X(viewCalc__19GeographyObjManagerFUl, "rr", '-', 1)     X(calc__8J3DModelFv, "r", '-', 1)     X(Collide_norm__19GeographyObjManagerFRC31JSUListIterator_12GeographyObj_RCiRCQ29JGeometry8TVec3_f_RCf, "rrrrr", '-', 1)     X(drawEachParticle__14stParticleDrawFR29JSUListIterator_10stParticle_, "rr", '-', 1)     X(FUN_800724d0, "rr", '-', 1)     X(drawK2D__10K2DPictureFffffb, "rffffr", '-', 4)     X(FUN_80093294, "rrrr", '-', 1)     X(FUN_800505bc, "r", '-', 4)     X(FUN_80182d74, "rr", '-', 1)     X(drawParentBillBoardCommon__14stParticleDrawFR29JSUListIterator_10stParticle_PA4_f, "rrr", '-', 4)     X(draw__13ShadowManagerFUlRQ27JGadget60TList_P11ShadowModel_Q27JGadget26TAllocator_P11ShadowModel__, "rrr", '-', 4)     X(FUN_80085f48, "rr", 'r', 1)     X(Calc_norm__19GeographyObjManagerFRC31JSUListIterator_12GeographyObj_, "rr", '-', 1)     X(viewCalc__13ShadowManagerFUl, "rr", '-', 1)     X(prepareShapePackets__8J3DModelFv, "r", '-', 0)     X(calc__12J3DJointTreeFP12J3DMtxBufferRC3VecRA3_A4_Cf, "rrrr", '-', 1) X(findImportantMtxIndex__12J3DJointTreeFv, "r", '-', 1)
 
 #define NATIVE_DECL(name, args, ret, guest) \
     uint64_t n_##name(Ctx *c, uint8_t *M, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7);

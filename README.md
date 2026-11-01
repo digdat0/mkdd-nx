@@ -19,7 +19,7 @@ Note: This is an AI assisted project.
   karts, on the game's six arenas and all 24 of MKDD Plus's. The CPUs drive routes built into the app,
   chase karts and item boxes, aim their items and run when down to their last balloon. See
   [Battle mode](#battle-mode).
-- **Kart FPV and Driver FPV:** first person with the kart's front in view, or from the driver's eyes.
+- **Kart FPV and Driver FPV:** first person with the kart's front in view, or from the driver's eyes. Each of the 21 karts has its own Kart FPV view; the - menu's eye settings add to it, saved for each kart.
   The eye follows the driver's head, so every kart and character sits right; height, forward and
   tilt are adjustable. Per player, on the right stick click.
 - **LAN play over Wi-Fi:** the game's own LAN mode, between Switches on the same Wi-Fi network, with
@@ -29,7 +29,8 @@ Note: This is an AI assisted project.
 - **Character packs:** extra characters from GameBanana and the MKDD wiki on more select screen
   pages, with a third row (30 characters a page) when there are extra characters. A custom character
   and the one it plays as can now race together. See [Mods](#mods).
-- **Mario Kart Wii drivers:** MKDD-NX Tools converts a Mario Kart Wii driver into a character. See
+- **Mario Kart Wii drivers:** MKDD-NX Tools converts a Mario Kart Wii driver into a character, making
+  oversized textures smaller as it goes. See
   [Wii Characters](https://github.com/digdat0/mkdd-nx/wiki/Wii-Characters).
 - **Characters for a real GameCube:** MKDD-NX Tools can also export characters (native or converted
   from Wii) as MKDD Patcher mods, to patch into your own disc image for a GameCube or Dolphin.
@@ -118,14 +119,14 @@ The app creates three folders next to the `.nro` and the disc image:
 | Folder | |
 |---|---|
 | `save/` | standard `.gci` saves in `save/card_a/` (usable in Dolphin's GCI-folder mode and save editors); each file's previous version is kept in `save/backup/` |
-| `config/` | `settings.ini`, `color.ini` and `shaders.bin` (compiled shaders: delete it to rebuild) |
+| `config/` | `settings.ini`, `color.ini`, `shaders.bin` (the shader states seen) and `dksh.bin` (compiled shaders: delete it to rebuild) |
 | `logs/` | `mkdd.log`, `mkdd_trace.log`, `crash.log`, `stderr.log`, `boot.txt` (the previous run's as `*.prev.log`) |
 
 ### Controls
 
-Up to 4 players. Controllers become players in order: the console in handheld mode first,
-then wireless controllers as the system numbers them (so handheld + one Pro Controller is a
-2-player game). **Controls > Sync controllers** in the - menu opens the system screen for pairing,
+Up to 4 players. Controllers become players in order: wireless controllers as the system numbers
+them, then the console in handheld mode (so a Pro Controller is player 1 as soon as it wakes, and
+the attached Joy-Cons are player 2). **Controls > Sync controllers** in the - menu opens the system screen for pairing,
 the player order and single Joy-Cons (L + R pairs two Joy-Cons; one Joy-Con alone: hold it sideways
 and press SL + SR). A Joy-Con left on its own for 2 seconds becomes a single sideways controller by
 itself. Connects and disconnects are logged (`pad:` lines in `mkdd.log`). Full details:
@@ -142,7 +143,8 @@ itself. Connects and disconnects are logged (`pad:` lines in `mkdd.log`). Full d
   Remappable for driving on its own page (**Controls > Joy-Con sideways**). Player 1 on a single
   right Joy-Con opens the menu with stick click + +. HOME and Capture belong to the system and
   can't be remapped.
-- **GameCube controller (official adapter):** its own layout, with analog L/R.
+- **GameCube controller (official adapter):** its own layout, with analog L/R. Player 1 opens the menu by
+  holding Z and pressing Start.
 
 Rumble works on controllers with HD Rumble and on GameCube controllers.
 
@@ -159,6 +161,11 @@ The GameCube game only has battles for 2 to 4 players. MKDD-NX adds **single pla
 three computer karts (on by default: **Mods > Single player battle mode**). With one player, the mode
 page shows **Battle**; pick Balloon Battle, Shine Thief or Bob-omb Blast and an arena as usual. In 2
 and 3 player battles, computer karts fill the empty places up to 4.
+
+**Mods > Battle karts** sets how many karts a single player battle has, 4 to 8 (you and up to seven
+computer karts). The computer karts can be any character, unlocked or not. **Mods > Bob-omb hits to
+win** makes a single player Bob-omb Blast last longer, 4 (the game's own) to 20 hits: the score still shows 4 stars,
+each lighting after its share of the hits, and being hit takes one hit off.
 
 - **Arenas:** the game's six and all 24 of MKDD Plus's.
 - **The CPUs** drive routes made for each arena (the game has none for battles), built into the
@@ -236,7 +243,7 @@ How the port works, and how it is tested: [docs/ARCHITECTURE.md](docs/ARCHITECTU
 ## Credits and licence
 
 Based on [MKDD-Recomp](https://github.com/LeftInWalmart/MKDD-Recomp) (Rust/Bevy, PC): its
-spreadsheet pipeline, runtime design and renderer were ported to C / GLES here. Function names
+spreadsheet pipeline, runtime design and renderer were ported to C / deko3d here. Function names
 come from the [doldecomp/mkdd](https://github.com/doldecomp/mkdd) decompilation (CC0).
 
 - [MKDD-Recomp](https://github.com/LeftInWalmart/MKDD-Recomp): the spreadsheet pipeline,
@@ -255,6 +262,10 @@ come from the [doldecomp/mkdd](https://github.com/doldecomp/mkdd) decompilation 
   [MKDD wiki](https://mkdd.org/wiki/List_of_Custom_Characters/). None are included here: each
   character's author is kept in its `character.ini` (or its pack's `modinfo.ini`).
 - **realneonplayz** on [SteamGridDB](https://www.steamgriddb.com/), for the app icon.
+- [deko3d](https://github.com/devkitPro/deko3d) (zlib) draws the game, and
+  [uam](https://github.com/devkitPro/uam) (zlib; its Mesa parts MIT) compiles its shaders on the
+  console, as patched in SwitchWakerHD (`switch/third_party/uam/PATCHES.md`). The deko3d design
+  follows guides by **StevensND** (nfsmw-nx) and **ChanseyIsTheBest** (sa2-nx).
 
 The code in this repository is released under the MIT licence (`LICENSE`). Mario Kart:
 Double Dash!! and its characters are Nintendo's; this project is not affiliated with Nintendo.

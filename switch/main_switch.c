@@ -1,5 +1,5 @@
 /* Nintendo Switch front end: SD folder + logs, crash.log, loading screen, disc lookup, boot,
- * render loop (GLES via SDL2 + Mesa), controller input (libnx HID) and audio (SDL2).
+ * render loop (deko3d), controller input (libnx HID) and audio (SDL2).
  * Platform glue adapted from the gcNX template (gc-decomp-switch-port skill). */
 #include <dirent.h>
 #include <malloc.h>
@@ -15,11 +15,11 @@
 
 #include <switch.h>
 #include <SDL.h>
-#include <GLES3/gl32.h>
 
 #include "../runtime/gx.h"
 #include "../runtime/rt.h"
-#include "render_gl.h"
+#include "gfx.h"
+#include "render.h"
 #include "prof_switch.h"
 #include "menu.h"
 #include "pause_art.h"
@@ -39,7 +39,6 @@ const char g_build_stamp[] = __DATE__ " " __TIME__;
 #define HD_PATH MODS_DIR "/hd/" HD_FILE
 #define APP_TITLE "MARIO KART DOUBLE DASH"
 
-static SDL_Window *s_window;
 static const char *s_mod_key; /* the mods/ folder this session plays, NULL for the standard game */
 static u64 s_boot_tick;
 static Ctx s_boot;
@@ -62,9 +61,9 @@ void __libnx_exception_handler(ThreadExceptionDump *ctx) {
     u64 base, end;
     image_range(&base, &end);
     FILE *f = fopen(LOG_DIR "/crash.log", "w");
-    if (!f) return;
+    if (!f) { diag_flush_crash(); return; }
 #define OFF(v) ((v) >= base && (v) < end ? (v) - base : 0)
-    fprintf(f, "MKDD-NX crash\nexception 0x%x, esr 0x%x\nimage: 0x%llx-0x%llx\nlast guest fn: %#010x %s\n", ctx->error_desc,
+    fprintf(f, "MKDD-NX crash, build %s\nexception 0x%x, esr 0x%x\nimage: 0x%llx-0x%llx\nlast guest fn: %#010x %s\n", g_build_stamp, ctx->error_desc,
             ctx->esr, (unsigned long long)base, (unsigned long long)end, g_last_fn, m_name(g_last_fn));
     fprintf(f, "PC  0x%016llx  image+0x%llx\nLR  0x%016llx  image+0x%llx\nSP  0x%016llx\nFP  0x%016llx\nFAR 0x%016llx\n",
             (unsigned long long)ctx->pc.x, (unsigned long long)OFF(ctx->pc.x), (unsigned long long)ctx->lr.x,
@@ -89,6 +88,7 @@ void __libnx_exception_handler(ThreadExceptionDump *ctx) {
     }
 #undef OFF
     fclose(f);
+    diag_flush_crash(); /* last: up to 5 s of mkdd.log, the lines that led here */
 }
 
 /* ---- clocks (CPU / GPU / memory, MHz), for the log ---- */
@@ -120,10 +120,10 @@ static void clocks_exit(void) {
 /* ---- loading / message screen (menu.c draws it in the menu's style) ---- */
 static void screen(const char *line1, const char *line2, float progress) {
     int w = 0, h = 0;
-    SDL_GL_GetDrawableSize(s_window, &w, &h);
+    gfx_size(&w, &h);
     menu_loading(w, h, line1, line2, progress);
-    SDL_GL_SwapWindow(s_window);
-    SDL_PumpEvents(); /* runs appletMainLoop: HOME during a loading screen must not hang the console */
+    gfx_swap();
+    gfx_pump();
 }
 
 /* Show a message until + is pressed, then exit. */
@@ -131,7 +131,7 @@ static void shader_progress(unsigned done, unsigned total) {
     char line[64];
     snprintf(line, sizeof line, "PREPARING SHADERS %u / %u", done, total);
     screen(line, NULL, 0.3f + 0.25f * (float)done / (float)(total ? total : 1));
-    SDL_PumpEvents(); /* HOME during a loading screen must not hang the console */
+    gfx_pump();
 }
 
 static void fatal(const char *line1, const char *line2) {
@@ -143,6 +143,7 @@ static void fatal(const char *line1, const char *line2) {
         if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break;
         screen(line1, line2 ? line2 : "PRESS + TO EXIT", -1);
     }
+    gfx_close();
     SDL_Quit();
     exit(0);
 }
@@ -201,10 +202,10 @@ static int choose(const char *title, const char *a, const char *b, int sel, cons
         if (down & (HidNpadButton_AnyDown | HidNpadButton_StickLDown)) sel = 1;
         if (down & HidNpadButton_A) break;
         int w = 0, h = 0;
-        SDL_GL_GetDrawableSize(s_window, &w, &h);
+        gfx_size(&w, &h);
         menu_choice(w, h, title, opts, 2, sel, hint);
-        SDL_GL_SwapWindow(s_window);
-        SDL_PumpEvents();
+        gfx_swap();
+        gfx_pump();
     }
     return sel;
 }
@@ -427,8 +428,9 @@ static void audio_cb(void *ud, Uint8 *stream, int len) {
 }
 
 /* ---- input: up to 4 Switch controllers -> GameCube pads 1-4 ----
- * Sources in a fixed order (handheld, then controllers 1-4 as the system numbers them); the
- * connected ones become players 1, 2, ... so handheld + a Pro Controller is a 2-player game.
+ * Sources in a fixed order (controllers 1-4 as the system numbers them, then handheld); the
+ * connected ones become players 1, 2, ... so a Pro Controller takes player 1 from the attached
+ * Joy-Cons as soon as it wakes, and they stay on as player 2.
  * Full controllers (handheld, Pro, Joy-Con pair) use the mapping from the - menu; a single
  * Joy-Con held sideways and a GameCube controller (official adapter) have fixed layouts. */
 #define NSRC 5
@@ -591,10 +593,92 @@ static void map_gc(PadState *pad, u64 b, PadStatus *p) {
     p->trigger_r = (uint8_t)(padGetGcTriggerPos(pad, 1) * 255 / 0x7FFF);
 }
 
+/* Debug: while sdmc:/switch/MKDD-NX/config/fpv_test exists (tools/fpv_test.sh), a test run: "kart N"
+ * forces player 1's kart, then "eye UP FORWARD TILT" lines are tried in turn in the race, with a screen
+ * saved for each (logs/fpv_N_K.ppm; no eye lines: the table's, K = -1); A is pressed all the way through. */
+#define FPV_EYES 16
+static struct { bool on, loaded; int kart, eyes, eye[FPV_EYES][3], at, wait; uint32_t steps; } s_fpvt;
+static void fpv_test_load(void) {
+    s_fpvt.loaded = true;
+    FILE *f = fopen("sdmc:/switch/MKDD-NX/config/fpv_test", "r");
+    if (!f) return;
+    s_fpvt.on = true;
+    s_fpvt.kart = -1;
+    s_fpvt.wait = 420; /* past the START sign */
+    char l[64];
+    while (fgets(l, sizeof l, f)) {
+        int *e = s_fpvt.eyes < FPV_EYES ? s_fpvt.eye[s_fpvt.eyes] : NULL;
+        if (sscanf(l, "kart %d", &s_fpvt.kart) == 1) continue;
+        if (e && sscanf(l, "eye %d %d %d", &e[0], &e[1], &e[2]) == 3) s_fpvt.eyes++;
+    }
+    fclose(f);
+    rt_log("fpv test: kart %d, %d eyes", s_fpvt.kart, s_fpvt.eyes);
+}
+static void fpv_test_step(PadStatus *s) {
+    uint32_t t = s_fpvt.steps++;
+    /* the same way into a race as pc/bench.sh: START twice after the intro, then A */
+    if (t > 600) s->button |= t < 720 ? (t % 60 < 10 ? PAD_START : 0) : t % 90 < 10 ? PAD_A : 0;
+    /* gRaceInfo.mKartInfo[0].mKartDB; the karts' SKartDBs, 0x10 each (the same in every mod) */
+    int k = s_fpvt.kart;
+    if (k >= 0 && k < 21 && m_read_be(0x803B145Cu + 0x30, 4)) m_write_be(0x803B145Cu + 0x30, 4, 0x80332F38u + 0x10u * (uint32_t)k);
+    if (g_cam_frames[0] < 30 || s_fpvt.at > s_fpvt.eyes) return;
+    if (s_fpvt.wait-- > 0) return;
+    static char path[64];
+    if (s_fpvt.at > 0 || !s_fpvt.eyes) {
+        snprintf(path, sizeof path, "sdmc:/switch/MKDD-NX/logs/fpv_%d_%d.ppm", k, s_fpvt.at - 1);
+        render_capture(path);
+    }
+    if (s_fpvt.at < s_fpvt.eyes) {
+        g_kart_test_on = 1;
+        memcpy((void *)g_kart_test, s_fpvt.eye[s_fpvt.at], sizeof g_kart_test);
+    } else {
+        FILE *f = fopen("sdmc:/switch/MKDD-NX/logs/fpv_done", "w");
+        if (f) fclose(f);
+    }
+    s_fpvt.at++;
+    s_fpvt.wait = 6;
+}
+/* Debug: while config/char_test exists (tools/char_test.sh), its number is the variant to start from:
+ * into the select screen as above, then native.c's chartest_step. */
+static void char_test_load(void) {
+    FILE *f = fopen("sdmc:/switch/MKDD-NX/config/char_test", "r");
+    int n;
+    if (f && fscanf(f, "%d", &n) == 1) g_chartest_start = n;
+    if (f) fclose(f);
+}
+static void char_test_step(PadStatus *s) {
+    static uint32_t t;
+    t++;
+    if (g_chartest_in) s->button |= (uint16_t)g_chartest_btn;
+    else if (t > 600) s->button |= t < 720 ? (t % 60 < 10 ? PAD_START : 0) : t % 90 < 10 ? PAD_A : 0;
+}
+/* Debug: while config/battle_test exists (tools/battle_test.sh), "KIND STARTS": A all the way into 1-player
+ * battles of that type (0 balloons, 1 Shine, 2 Bob-omb), arenas keeping STARTS starts (0 all), a screen saved
+ * every 15 s (logs/bt_N.ppm). */
+static void battle_test_load(void) {
+    FILE *f = fopen("sdmc:/switch/MKDD-NX/config/battle_test", "r");
+    if (!f) return;
+    int kind = -1, starts = 0;
+    if (fscanf(f, "%d %d", &kind, &starts) >= 1) g_bt_kind = kind, g_bt_starts = starts;
+    fclose(f);
+    rt_log("battle test: type %d, %d starts", kind, starts);
+}
+static void battle_test_step(PadStatus *s) {
+    static uint32_t t;
+    t++;
+    if (t > 600) s->button |= t < 720 ? (t % 60 < 10 ? PAD_START : 0) : t % 90 < 10 ? PAD_A : 0;
+    if (t % 900 == 0) {
+        static char path[64];
+        snprintf(path, sizeof path, "sdmc:/switch/MKDD-NX/logs/bt_%03u.ppm", (unsigned)(t / 900));
+        render_capture(path);
+    }
+}
 static void update_pads(void) {
+    if (!s_fpvt.loaded) fpv_test_load(), char_test_load(), battle_test_load();
     int n = 0, src_of[4] = {-1, -1, -1, -1};
-    for (int i = 0; i < NSRC; i++) {
-        padUpdate(&s_src[i]);
+    for (int i = 0; i < NSRC; i++) padUpdate(&s_src[i]);
+    for (int k = 1; k <= NSRC; k++) { /* 1-4, then 0: handheld */
+        int i = k % NSRC;
         if (padIsConnected(&s_src[i]) && n < 4) src_of[n++] = i;
     }
     /* A lone Joy-Con the system still counts as half of a pair (style JoyDual, one side
@@ -631,7 +715,8 @@ static void update_pads(void) {
     }
 
     if (s_pad_quiet) s_pad_quiet--;
-    /* The - menu belongs to player 1 (a single right Joy-Con: press its stick and +). */
+    /* The - menu belongs to player 1 (a single right Joy-Con: press its stick and +; a GameCube
+     * controller, which has no -: hold Z and press Start). The menu takes both from the game. */
     PadState *p1 = s_player_src[0] >= 0 ? &s_src[s_player_src[0]] : &s_src[0];
     u64 down1 = padGetButtonsDown(p1), held1 = padGetButtons(p1);
     if (single_joycon(s_player_style[0])) {
@@ -639,6 +724,8 @@ static void update_pads(void) {
         down1 = sideways_buttons(down1, left), held1 = sideways_buttons(held1, left);
     }
     if ((s_player_style[0] & HidNpadStyleTag_NpadJoyRight) && (held1 & (HidNpadButton_StickL | HidNpadButton_StickR)) && (down1 & HidNpadButton_Plus))
+        down1 |= HidNpadButton_Minus;
+    if ((s_player_style[0] & HidNpadStyleTag_NpadGc) && (held1 & HidNpadButton_ZR) && (down1 & HidNpadButton_Plus))
         down1 |= HidNpadButton_Minus;
     bool menu = menu_input(down1, held1, &s_quit);
     uint32_t jump = 0, cam_reset = 0; /* JUMP (menu.c ACTIONS, GAME > JUMP): the ports holding it, for the game thread */
@@ -765,6 +852,9 @@ static void update_pads(void) {
             g_look_back = ours[p] && steal ? g_look_back | bit : g_look_back & ~bit;
             if (ours[p]) s.button &= ~PAD_Y;
         }
+        if (p == 0 && s_fpvt.on) fpv_test_step(&s);
+        if (p == 0 && (g_chartest_start >= 0 || g_chartest_in)) char_test_step(&s);
+        if (p == 0 && g_bt_kind >= 0) battle_test_step(&s);
         pad_set(p, &s);
     }
     g_jump_held = jump;
@@ -959,6 +1049,7 @@ int main(int argc, char **argv) {
     freopen(LOG_DIR "/stderr.log", "w", stderr);
     setvbuf(stderr, NULL, _IOFBF, 64 << 10);
     diag_set_log_file(LOG_DIR "/mkdd.log");
+    rt_log("MKDD-NX %s, build %s", update_version(), g_build_stamp);
     memcard_set_path(SAVE_DIR "/slotA.bin");
     settings_load(CFG_DIR "/settings.ini");
     g_lan_on = g_set.lan; /* LAN MODE on the title menu (eth.c): before the game boots */
@@ -970,19 +1061,11 @@ int main(int argc, char **argv) {
     bool game_clocks = g_set.game_clocks;
     if (game_clocks && hosversionAtLeast(7, 0, 0)) appletSetCpuBoostMode(ApmCpuBoostMode_FastLoad);
 
-    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
-    /* 1920x1080 on the TV, 1280x720 in handheld; resizable so it follows docking (see the loop) */
+    SDL_Init(SDL_INIT_AUDIO);
+    /* 1920x1080 on the TV, 1280x720 in handheld; follows docking (see the loop) */
     bool tv = appletGetOperationMode() == AppletOperationMode_Console;
-    s_window = SDL_CreateWindow(APP_TITLE, 0, 0, tv ? 1920 : 1280, tv ? 1080 : 720, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
-    if (!s_window || !SDL_GL_CreateContext(s_window)) {
-        fprintf(stderr, "[NX] window/GL context failed: %s\n", SDL_GetError());
-        return 1;
-    }
-    SDL_GL_SetSwapInterval(1);
-    rt_log("GL %s / %s / %s", glGetString(GL_VENDOR), glGetString(GL_RENDERER), glGetString(GL_VERSION));
+    if (!gfx_open(tv ? 1920 : 1280, tv ? 1080 : 720)) return 1;
+    rt_log("%s", gfx_describe());
 
     AppletType at = appletGetAppletType();
     if (at != AppletType_Application && at != AppletType_SystemApplication)
@@ -1116,12 +1199,15 @@ int main(int argc, char **argv) {
         }
         /* Out of focus (HOME menu) vi stops returning buffers, so a swap would block and the
          * close request never reach appletMainLoop: idle until focus comes back. */
+        static bool away;
         if (appletGetFocusState() != AppletFocusState_InFocus) {
+            if (!away) rt_log("applet: out of focus at %.1f s (HOME or sleep)", (double)plat_now_ns() / 1e9), away = true;
             g_pad_hold = true; /* the game waits in PADRead until we're back */
             rumble_update(true);
             svcSleepThread(16000000);
             continue;
         }
+        if (away) rt_log("applet: back in focus at %.1f s", (double)plat_now_ns() / 1e9), away = false;
         update_pads();
         if (s_quit) break;
         /* Wi-Fi mode: the game runs on behind the menu (its pads neutral, update_pads), or this
@@ -1197,7 +1283,6 @@ int main(int argc, char **argv) {
             g_cam_dist = DISTS[g_set.cam_dist % 5];
         }
         cheats_apply();
-        g_hud_log = g_set.logging ? 600 : 0; /* the race HUD in the log too (bug reports) */
         /* CAMERA VIEW: NORMAL, DRIVER FPV, KART FPV. Player 1's; when it changes (menu or player 1's
          * button) every player's view follows, players 2-4 can then switch their own again */
         int cv = g_set.camera % 3;
@@ -1210,8 +1295,13 @@ int main(int argc, char **argv) {
         else __atomic_and_fetch(&g_fp_kart, ~cbits, __ATOMIC_RELAXED);
         g_fp_up = (float)g_set.drv_up, g_fp_fwd = (float)g_set.drv_forward;
         g_fp_tilt = (float)(g_set.drv_tilt < -45 ? -45 : g_set.drv_tilt > 45 ? 45 : g_set.drv_tilt) * 0.017453293f;
+        g_kart_eye_on = 1;
         g_kart_up = (float)g_set.kart_up, g_kart_fwd = (float)g_set.kart_forward;
         g_kart_tilt = (float)(g_set.kart_tilt < -45 ? -45 : g_set.kart_tilt > 45 ? 45 : g_set.kart_tilt) * 0.017453293f;
+        for (int i = 0; i < 21; i++) {
+            g_kart_add[i][0] = (float)g_set.kart_add[i][0], g_kart_add[i][1] = (float)g_set.kart_add[i][1];
+            g_kart_add[i][2] = (float)g_set.kart_add[i][2] * 0.017453293f;
+        }
         render_set_hud43(wide);
         render_set_hd(g_set.hd_textures);
         static const float ANISO[5] = {1, 2, 4, 8, 16};
@@ -1224,10 +1314,10 @@ int main(int argc, char **argv) {
             static int last_w, last_h, last_scale, clocks_pending;
             if (clocks_pending && !--clocks_pending) clocks_log(docked ? "docked" : "handheld");
             int tw = docked ? 1920 : 1280, th = docked ? 1080 : 720, cw, ch;
-            SDL_GL_GetDrawableSize(s_window, &cw, &ch);
+            gfx_size(&cw, &ch);
             if (cw != tw || ch != th) {
-                SDL_SetWindowSize(s_window, tw, th);
-                SDL_GL_GetDrawableSize(s_window, &cw, &ch);
+                gfx_resize(tw, th);
+                gfx_size(&cw, &ch);
             }
             int scale = auto_on(docked) ? -1 : (int)(render_scale(docked) * 100.0f);
             if (cw != last_w || ch != last_h || scale != last_scale) {
@@ -1257,7 +1347,7 @@ int main(int argc, char **argv) {
         if (fps_ns >= 500000000ull) { /* game frames shown per second, updated twice a second */
             s_fps = (float)((double)fps_frames * 1e9 / (double)fps_ns);
             if (fps_frames) {
-                /* GAME: the game thread's busy time, GX: the graphics thread, RENDER: GL work on
+                /* GAME: the game thread's busy time, GX: the graphics thread, RENDER: renderer work on
                  * this thread (submit + present, incl. any wait for the GPU), per game frame */
                 uint64_t idle = g_guest_idle_ns - pf_idle, gx = g_gx_busy_ns - pf_gx;
                 double game = idle < fps_ns ? (double)(fps_ns - idle) : 0.0;
@@ -1272,7 +1362,7 @@ int main(int argc, char **argv) {
         }
         render_gpu_timer_mid();
         int w, h;
-        SDL_GL_GetDrawableSize(s_window, &w, &h);
+        gfx_size(&w, &h);
         u64 p0 = armGetSystemTick();
         if (total_rendered) {
             float adj[3];
@@ -1289,13 +1379,13 @@ int main(int argc, char **argv) {
             if (g_set.border && !wide && !title && racing) menu_border(w, h);
             if (!menu_is_open() && charpack_select_active()) menu_char_hint(w, h);
             menu_draw(w, h, s_fps, perf);
-        } else screen("BOOTING", NULL, 0.8f);
+        } else menu_loading(w, h, "BOOTING", NULL, 0.8f); /* (not screen(): gfx_swap below would then show a black frame after each) */
         render_gpu_timer_end();
         u64 s0 = armGetSystemTick();
         t_present += armTicksToNs(s0 - p0);
         pf_main += armTicksToNs(s0 - r0);
         pf_loops++;
-        SDL_GL_SwapWindow(s_window);
+        gfx_swap();
         u64 s1 = armGetSystemTick();
         t_swap += armTicksToNs(s1 - s0);
         hitch_log(r0, p0, s0, s1, got, paused);
@@ -1344,6 +1434,7 @@ out:
     clocks_exit();
     apmExit();
     diag_flush();
+    gfx_close();
     SDL_Quit();
     /* The game, guest and decoder threads would keep running on memory the loader takes back. */
     plat_pause_threads(); /* waiting threads end themselves, the rest pause (hbmenu needs threads) */

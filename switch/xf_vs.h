@@ -4,11 +4,10 @@
  * a_ids.x == 0xFFFFFFFF were transformed on the CPU and pass through. */
 #pragma once
 
-static const char *XF_VS =
+__attribute__((unused)) static const char *XF_VS =
     "#version 320 es\n"
     "precision highp float;\n"
     "precision highp int;\n"
-    "precision highp usamplerBuffer;\n"
     "layout(location=0) in vec4 a_pos;\n"
     "layout(location=1) in vec4 a_c0;\n"
     "layout(location=2) in vec4 a_c1;\n"
@@ -18,13 +17,15 @@ static const char *XF_VS =
     "layout(location=6) in vec4 a_uv67;\n"
     "layout(location=7) in vec3 a_nrm;\n"
     "layout(location=8) in uvec2 a_ids;\n"
-    "layout(binding=8) uniform usamplerBuffer u_xf;\n"
-    "uniform float u_squeeze; // widescreen 4:3 HUD: x of flagged 2D vertices * (1 - u_squeeze)\n"
-    "uniform float u_shift;   // moves the draw down by this much of the screen's height (render_set_below)\n"
+    /* the frame's XF records: a storage buffer */
+    "layout(std430, binding=0) readonly buffer Xf { uvec4 u_xf[]; };\n"
+    /* u_squeeze: widescreen 4:3 HUD, x of flagged 2D vertices * (1 - u_squeeze); u_shift: moves the
+     * draw down by this much of the screen's height (render_set_below) */
+    "layout(std140, binding=0) uniform Vs { float u_squeeze; float u_shift; };\n"
     "layout(location=0) out vec4 v_c0; layout(location=1) out vec4 v_c1; layout(location=2) out vec4 v_uv01;"
     "layout(location=3) out vec4 v_uv23; layout(location=4) out vec4 v_uv45; layout(location=5) out vec4 v_uv67;\n"
-    "uvec4 T(uint i) { return texelFetch(u_xf, int(i)); }\n"
-    "vec4 F(uint i) { return uintBitsToFloat(texelFetch(u_xf, int(i))); }\n"
+    "uvec4 T(uint i) { return u_xf[i]; }\n"
+    "vec4 F(uint i) { return uintBitsToFloat(T(i)); }\n"
     "vec4 rgba8(uint v) { return vec4(float(v >> 24), float((v >> 16) & 255u), float((v >> 8) & 255u), float(v & 255u)) / 255.0; }\n"
     "vec3 nrm3(vec3 v) { float l2 = dot(v, v); return l2 > 0.0 ? v * (1.0 / sqrt(l2)) : v; }\n"
     "vec4 q8(vec4 x) { return floor(x * 255.0 + 0.5) / 255.0; }\n"
@@ -134,7 +135,7 @@ static const char *XF_VS =
     "            uv[i] = (r3.w & (1u << i)) != 0u ? texgen(rec + 8u + 7u * i, tms[i], a_pos.xyz, n0, src[i]) : vec2(0.0);\n"
     "        v_uv01 = vec4(uv[0], uv[1]); v_uv23 = vec4(uv[2], uv[3]); v_uv45 = vec4(uv[4], uv[5]); v_uv67 = vec4(uv[6], uv[7]);\n"
     "    }\n"
-    "    // y flipped (texel row 0 = top); depth 0..1 (wgpu) -> -1..1 (GL), same stored depth.\n"
+    "    // texel row 0 = top; depth 0..1\n"
     "    cp.y -= 2.0 * u_shift * cp.w;\n"
-    "    gl_Position = vec4(cp.x, -cp.y, 2.0 * cp.z - cp.w, cp.w);\n"
+    "    gl_Position = cp;\n"
     "}\n";

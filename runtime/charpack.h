@@ -8,6 +8,8 @@
  * row's 10 under them (native.c: CP_BASES + column), a page of CP_CELLS. */
 #define CP_ROW 10
 #define CP_CELLS (CP_BASES + CP_ROW)
+void charpack_variant_place(int v, int *page, int *cell);
+uint32_t charpack_pool_left(void);
 /* The variant cell shows on the page shown now, -1 none (the game's own on the first page's 20, or
  * nothing there). */
 int charpack_cell_variant(int cell);
@@ -69,6 +71,8 @@ uint32_t charpack_reserve(uint32_t n);
 int charpack_anim(int variant);
 /* The select screen back on its first page (the game's 20). */
 void charpack_page_first(void);
+int charpack_page(void);
+void charpack_page_set(int page);
 /* Variant v's file in another driver folder of its pack ("cmn_Liz"), like charpack_file. */
 uint32_t charpack_folder_file(int variant, const char *folder, const char *file, uint32_t *size);
 uint32_t charpack_select_file(int variant, const char *file, uint32_t *size);

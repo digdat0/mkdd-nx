@@ -2,7 +2,7 @@
 
 MKDD-NX runs Mario Kart: Double Dash!! (USA, GM4E01) on the Switch by static recompilation: the
 game's PowerPC code is translated to C ahead of time, and a small console runtime stands in for
-the GameCube hardware. It is a C/GLES port of [MKDD-Recomp](https://github.com/LeftInWalmart/MKDD-Recomp)
+the GameCube hardware. It is a C/deko3d port of [MKDD-Recomp](https://github.com/LeftInWalmart/MKDD-Recomp)
 (Rust/Bevy, PC); most runtime files say which MKDD-Recomp module they port.
 
 No game code or data is in this repository. The generated C is built from the player's own
@@ -68,7 +68,7 @@ Generated code is disposable: change the sheets or the generator and regenerate.
 | file | role |
 |---|---|
 | `main_switch.c` | SD folders, logs, crash handler, disc lookup, boot, render loop, input, audio, the stutter log |
-| `render_gl.c` | GLES 3.2 renderer: replays each decoded GX frame on an emulated EFB, EFB copies as GL textures, 4:3/16:9 output |
+| `render_dk.c` | deko3d renderer: replays each decoded GX frame on an emulated EFB, EFB copies as textures, 4:3/16:9 output |
 | `xf_vs.h` | the XF stage (transform, lighting, texgen) as a vertex shader |
 | `tev_gen.c` | TEV fragment shaders specialised per material (an uber shader draws while they compile) |
 | `menu.c`, `ui_font.c` | the − menu, drawn with the game's own lettering from the disc |
@@ -85,7 +85,7 @@ decoder, the timer and the profiler. The audio callback runs above the renderer'
 16:9 widens the game's projection (`g_aspect_scale`) instead of stretching the picture. 2D
 draws are flagged by the decoder and squeezed back to 4:3 in `xf_vs.h` (`u_squeeze`), with
 HUD elements pushed to the screen edges. Draws that span the whole screen, and the
-`WipeManager` fades (zone 3 in `native.c`), stay full width.
+`WipeManager` fades and the pause menu's quit wipe (zone 3 in `native.c`), stay full width.
 
 ## Testing
 
@@ -104,7 +104,7 @@ controller (see `pc/main_pc.c`). A normal check is to reach a race with 0 unreso
 | Vertex transform | `MKDD_XFCHECK=1` | the GPU path's XF maths (`gx_xf_eval`, mirrored by `xf_vs.h`) against the CPU path, per vertex |
 | Vertex decoder | `MKDD_VTXCHECK=1`, `MKDD_VCACHECK=1` | the fast vertex loops and the vertex cache against the general loop |
 | Scene watchdog | `MKDD_TEST_LOST_LOAD=1` | injects a lost scene load on the title screen; the watchdog must recover |
-| Shaders | `MKDD_DUMP_TEV=<dir>` | writes every specialised TEV shader for offline checks with Mesa's compiler (devkitPro `uam`) |
+| Shaders | `MKDD_DUMP_TEV=<dir>` | writes every specialised TEV shader for offline checks with devkitPro's `uam` |
 
 `pc/bench.sh` and `pc/verify.sh` race with a scripted controller on the disc image named by
 `MKDD_DISC`. `pc/bench.sh` measures throughput (guest time runs 4× fast with `MKDD_TIMESCALE`);
@@ -128,12 +128,11 @@ controller (see `pc/main_pc.c`). A normal check is to reach a race with 0 unreso
 
 ## Switch performance notes
 
-What mattered most on the Switch (1 GHz Cortex-A57, Mesa nouveau):
+What mattered most on the Switch (1 GHz Cortex-A57; the GPU side is in DEKO3D_MIGRATION.md):
 
 - The GX decoder on its own core, per-draw setup cached until the state changes, and vertex
   transform on the GPU.
-- Streaming vertex/index/uniform data into persistent buffers: replacing a GL buffer per draw
-  makes nouveau wait for the GPU.
+- Streaming vertex/index/uniform data into per-frame rings.
 - Specialised TEV shaders compiled a few per frame, with the uber shader in the meantime.
 - Natives for the hottest engine functions, and the generator's register work above.
 - Logs buffered in memory: SD card writes can stall for a quarter of a second.

@@ -170,6 +170,9 @@ unsigned mod_install(const char *path, const char *out_dir, ModProgress cb, void
  * trees), variants of the 20 drivers. Characters ("bases") are numbered in the select screen's grid
  * order (Mario 0 ... King Boo 19). ---- */
 #define CP_BASES 20
+extern volatile int g_chartest_start; /* debug (tools/char_test.sh): the variant to start from, -1 off */
+extern volatile uint32_t g_chartest_btn;
+extern volatile bool g_chartest_in;
 #define CP_VARIANTS 256 /* variants at most (folders in mods/characters too) */
 #define CP_DIM (-2) /* charpack_show: the game's own picture, dimmed (a page with no variant there) */
 void charpack_scan(const char *dir); /* at start-up: the mods/characters folder */
@@ -261,6 +264,7 @@ void diag_intrinsic(const char *name);
 void diag_set_log_file(const char *path);
 void diag_start_watchdog(const char *trace_path);
 void diag_flush(void);
+void diag_flush_crash(void);
 /* What is logged (− menu LOGGING): LOG_GAME = mkdd.log / stderr.log lines, the 5 s trace and the
  * Switch profiler; LOG_AUDIO = audio lines (DSP, AI timing, audio thread); LOG_BATTLE = the battle
  * CPUs' decisions (battle.c, with LOG_GAME). 0 writes nothing. */
@@ -284,10 +288,13 @@ extern volatile uint32_t g_hud_log;
 extern volatile uint32_t g_first_person;
 extern float g_fp_up, g_fp_fwd, g_fp_tilt, g_fp_look;
 /* KART view (CAMERA VIEW, player 1's): bit v = view v's first person keeps its kart (not the
- * characters) drawn, from g_kart_up above and g_kart_fwd ahead of the driver's head, looking g_kart_tilt
- * radians down so the kart's front shows at the bottom of the screen */
-extern volatile uint32_t g_fp_kart;
-extern float g_kart_up, g_kart_fwd, g_kart_tilt;
+ * characters) drawn. g_kart_eye_on: the eye is the kart's own (kart_eye.h, every mod's karts are the same), else
+ * above and ahead of the driver's head. g_kart_add[kart] (up, forward, radians) adds to the kart's own;
+ * g_kart_up, g_kart_fwd and g_kart_tilt (radians) to the head's. g_kart_last: player 1's kart, or -1. */
+extern volatile uint32_t g_fp_kart, g_kart_eye_on;
+extern float g_kart_up, g_kart_fwd, g_kart_tilt, g_kart_add[21][3];
+extern volatile int g_kart_last;
+extern volatile int g_kart_test_on, g_kart_test[3];
 /* Look back (held by the front end): bit v turns view v's race camera around (view = player, any
  * number of screens). g_cam_frames[v] counts view v's race camera updates, so the front end knows
  * when that player's Y is a look-back button. */
@@ -306,6 +313,9 @@ extern volatile float g_cam_dist;
 /* Kart screen: every unlocked kart for any pair of drivers, whatever their weight class (nonzero = on). */
 extern volatile uint32_t g_any_kart;
 extern volatile uint32_t g_battle_cpus; /* SINGLE PLAYER BATTLE MODE: battles get computer karts up to 4 */
+extern volatile uint32_t g_battle_karts; /* MODS > BATTLE KARTS: the karts in a 1-player battle, 4 to 8 */
+extern volatile uint32_t g_bomb_hits; /* MODS > BOB-OMB HITS TO WIN: in a 1-player Bob-omb Blast, 4 (the game's) to 20 */
+extern volatile int g_bt_kind, g_bt_starts; /* debug (tools/battle_test.sh): the battle type (-1 off), the starts an arena keeps (0 all) */
 extern volatile uint32_t g_perfect_start; /* PERFECT STARTS (cheats): every player's kart gets the start boost */
 /* SPECIAL ITEMS, by character ID (1-20): 0 the character's own special, an item kind (fireballs 7,
  * heart 0x11, egg 0xe, chain chomp 0x15, golden mushroom 8, triple shells 0xb, giant banana 4,

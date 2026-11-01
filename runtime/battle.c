@@ -18,6 +18,9 @@
  * players' karts (while fewer than gRaceInfo +0x1c) fills the rest with computer karts, as it does
  * for a Grand Prix. */
 volatile uint32_t g_battle_cpus;
+volatile uint32_t g_battle_karts = 4;
+volatile uint32_t g_bomb_hits = 4;
+volatile int g_bt_kind = -1, g_bt_starts;
 /* A Wi-Fi (LAN) race: every console must run the game's own (rt.h g_lan_play), so no computer karts.
  * After Wi-Fi mode was entered a race with one player on one console is still this console's own:
  * single player battle mode stays on for those. Set by each setRace, read for the race. */
@@ -47,6 +50,69 @@ uint64_t i_FUN_8018c878(Ctx *c, uint8_t *M, ARGS) {
 #define BOL_HEAD 0x7c
 #define ROUTE_WIDTH 600.0f /* CL point scale: how far either side of the line the karts keep */
 static bool s_route_cpus;
+/* A kart's start in a battle is the BOL's with its number as ID (+0x25), and the game reads through
+ * what it finds, so an arena needs one for every kart (the game's, Plus's and RTGP's have 8). One
+ * with too few gets a table of its own in our pool: its starts, then one for each missing kart, a
+ * copy of its first (0x18 the direction * 10000) on the route point farthest from all the others,
+ * heading along the route; with no route, in a ring around its first. */
+#define BOL_STARTS 16
+static float dist3(const float *a, const float *b);
+#define BOL_START_MEM (0x80 + 0x20 * ROUTE_POINTS)
+static bool starts_short(Ctx *c, uint8_t *M, uint32_t bol, int karts, int have) {
+    uint32_t tab = bol + ld32(c, M, bol + 0x58);
+    for (int id = 0; id < karts; id++) {
+        bool found = false;
+        for (int i = 0; i < have && !found; i++) found = mld(c, M, tab + 0x28 * (uint32_t)i + 0x25, 1) == (uint32_t)id;
+        if (!found) return true;
+    }
+    return false;
+}
+static void starts_add(Ctx *c, uint8_t *M, uint32_t bol, uint32_t mem, int karts, int have, float (*pts)[3], int npts) {
+    uint32_t from = bol + ld32(c, M, bol + 0x58), tab = mem + BOL_START_MEM;
+    int n = 0;
+    bool used[8] = {false};
+    float at[BOL_STARTS][3];
+    for (int i = 0; i < have && n < 8; i++, n++) {
+        for (uint32_t k = 0; k < 0x28; k += 4) mst(c, M, tab + 0x28 * (uint32_t)n + k, 4, ld32(c, M, from + 0x28 * (uint32_t)i + k));
+        uint32_t id = mld(c, M, tab + 0x28 * (uint32_t)n + 0x25, 1);
+        if (id < 8) used[id] = true;
+        for (uint32_t k = 0; k < 3; k++) at[n][k] = ldf(c, M, tab + 0x28 * (uint32_t)n + 4 * k);
+    }
+    int first = n;
+    for (int id = 0; id < karts && id < 8 && n < BOL_STARTS; id++) {
+        if (used[id]) continue;
+        uint32_t e = tab + 0x28 * (uint32_t)n;
+        for (uint32_t k = 0; k < 0x28; k += 4) mst(c, M, e + k, 4, ld32(c, M, tab + k));
+        if (npts > 0) {
+            int best = 0;
+            float far = -1;
+            for (int i = 0; i < npts; i++) {
+                float near = 1e30f;
+                for (int j = 0; j < n; j++) {
+                    float d = dist3(pts[i], at[j]);
+                    if (d < near) near = d;
+                }
+                if (near > far) far = near, best = i;
+            }
+            memcpy(at[n], pts[best], sizeof at[n]);
+            int to = best + 1 < npts ? best + 1 : best - 1; /* (a network's next or last point: close by, or not it) */
+            float d = to >= 0 ? dist3(pts[best], pts[to]) : 0, sign = to > best ? 1.0f : -1.0f;
+            if (d > 1.0f && d < 2000.0f) {
+                mst(c, M, e + 0x18, 2, (uint32_t)(int32_t)(sign * (pts[to][0] - pts[best][0]) / d * 10000.0f) & 0xffff);
+                mst(c, M, e + 0x1c, 2, (uint32_t)(int32_t)(sign * (pts[to][2] - pts[best][2]) / d * 10000.0f) & 0xffff);
+            }
+        } else {
+            float a = 6.2831853f * (float)(n - first) / 8.0f;
+            at[n][0] = at[0][0] + 900.0f * cosf(a), at[n][1] = at[0][1], at[n][2] = at[0][2] + 900.0f * sinf(a);
+        }
+        for (uint32_t k = 0; k < 3; k++) stf(c, M, e + 4 * k, at[n][k]);
+        mst(c, M, e + 0x25, 1, (uint32_t)id);
+        rt_log("battle cpus: start %d added at (%.0f %.0f %.0f)", id, at[n][0], at[n][1], at[n][2]);
+        n++;
+    }
+    mst(c, M, mem + 0x3b, 1, (uint32_t)n);
+    mst(c, M, mem + 0x58, 4, BOL_START_MEM);
+}
 /* the route's CL points (s_cl_n, their file data from s_cl_mem + 0x80), its networks (s_nets,
  * network k from point s_net_start[k]) and each kart's: computers' karts one each, in turn
  * (kart players + i: network i, sharing only when there are fewer networks), -1 a player's.
@@ -63,6 +129,8 @@ uint64_t i_loadCrsData__6CourseFb(Ctx *c, uint8_t *M, ARGS) {
     bool battle = mode >= 4 && mode <= 7;
     s_route_cpus = false, s_nets = 0, s_cl_n = 0, s_cl_base = 0;
     bai_reset();
+    static unsigned races; /* (its number: rt_log drops repeated lines) */
+    if (IS_RAM(bol)) rt_log("race %u: mode %u, course %#x, %u karts, %u players", ++races, mode, (unsigned)mld(c, M, bol + 0x19, 1), ld16(c, M, RACE_INFO + 0x1c), ld16(c, M, RACE_INFO + 0x1e));
     if (IS_RAM(bol) && IS_RAM(bol + BOL_HEAD)) {
         uint32_t h = 2166136261u;
         for (uint32_t i = 0; i < BOL_HEAD; i++) h = (h ^ mld(c, M, bol + i, 1)) * 16777619u;
@@ -73,15 +141,26 @@ uint64_t i_loadCrsData__6CourseFb(Ctx *c, uint8_t *M, ARGS) {
         int karts = (int16_t)ld16(c, M, RACE_INFO + 0x1c), players = (int16_t)ld16(c, M, RACE_INFO + 0x1e);
         int want = karts - players < 1 ? 1 : karts - players > ROUTE_NETS ? ROUTE_NETS : karts - players;
         int n = battle_on() && battle && ld16(c, M, bol + 0x1a) == 0 ? route_load(pts, grp, ROUTE_POINTS, want, s_net_start, &s_nets) : 0;
-        if (n && !mem) mem = charpack_reserve(0x80 + 0x20 * ROUTE_POINTS);
+        int have = (int)mld(c, M, bol + 0x3b, 1);
+        if (g_bt_starts > 0 && have > g_bt_starts) have = g_bt_starts;
+        bool few = battle_on() && battle && karts > 4 && (have < 1 || starts_short(c, M, bol, karts, have));
+        if (few && have < 1) {
+            rt_log("battle cpus: an arena with no start of its own, left as it is");
+            few = false;
+        }
+        if ((n || few) && !mem) mem = charpack_reserve(BOL_START_MEM + 0x28 * BOL_STARTS);
+        if ((n || few) && mem) {
+            for (uint32_t i = 0; i < BOL_HEAD; i += 4) mst(c, M, mem + i, 4, ld32(c, M, bol + i));
+            for (uint32_t o = 0x40; o <= 0x6c; o += 4) mst(c, M, mem + o, 4, ld32(c, M, bol + o) + bol - mem);
+            mst(c, M, crs + 4, 4, mem);
+        }
+        if (few && mem) starts_add(c, M, bol, mem, karts, have, pts, n);
         if (n && mem) {
             s_cl_mem = mem, s_cl_n = n;
             for (int k = 0; k < 8; k++) {
                 s_kart_net[k] = k >= players && k < karts && s_nets ? (k - players) % s_nets : -1;
                 if (s_kart_net[k] >= 0) rt_log("battle cpus: kart %d drives network %d of the %d loaded", k, s_kart_net[k] + 1, s_nets);
             }
-            for (uint32_t i = 0; i < BOL_HEAD; i += 4) mst(c, M, mem + i, 4, ld32(c, M, bol + i));
-            for (uint32_t o = 0x40; o <= 0x6c; o += 4) mst(c, M, mem + o, 4, ld32(c, M, bol + o) + bol - mem);
             mst(c, M, mem + 0x1a, 2, (uint32_t)n);
             mst(c, M, mem + 0x44, 4, 0x80);
             int group = -1;
@@ -95,7 +174,6 @@ uint64_t i_loadCrsData__6CourseFb(Ctx *c, uint8_t *M, ARGS) {
                 if (grp[i] >= 0 && (start = !start)) group++; /* (the game's own count: a group ID opens a group, the next closes it) */
                 mst(c, M, p + 0x16, 1, (uint32_t)group & 0xff); /* uniqueGroupID */
             }
-            mst(c, M, crs + 4, 4, mem);
             s_route_cpus = true;
             bai_graph(grp);
             rt_log("battle cpus: course %#x gets a route of %d points", (unsigned)mld(c, M, bol + 0x19, 1), n);
@@ -598,6 +676,48 @@ uint64_t i_doItemCtrl__13RivalItemCtrlFv(Ctx *c, uint8_t *M, ARGS) {
     return 0;
 }
 
+/* KartChecker::setBombEvent(event, item) (FUN_8018712c, with incMyBombPoint and incYourBombPoint inlined):
+ * +0xa6 the kart's points, +0x9c the kart behind each point, +2 the kart, +0x8c bit 2 points fixed. Event 1 a
+ * Bob-omb hit it (item +0x120 the thrower: not itself, that kart +1 and this one -1), 3 Lakitu (-1). A kart with
+ * the win score (r13 - 0x7976, its stars) ends the battle. Race2D's HUD has 4 places a screen with no room for
+ * more, so a 1-player battle with more hits to win (g_bomb_hits) keeps the stars: its hits are counted here, and a
+ * kart has the points its share of them comes to (hits * win / g_bomb_hits). The game does each event; where the points
+ * shouldn't change yet they are put back. */
+static int s_bomb_hits[8];
+uint64_t i_FUN_8018712c(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t self = (uint32_t)a0, ev = (uint32_t)a1, item = (uint32_t)a2, need = g_bomb_hits;
+    uint32_t rm = ld32(c, M, (uint32_t)ctx_gpr(c, 13) - 0x5c38), win = ld16(c, M, (uint32_t)ctx_gpr(c, 13) - 0x7976);
+    bool on = battle_on() && win >= 1 && win <= 4 && need > win && need <= 20 && ld32(c, M, RACE_MODE) == 6 && ram_ptr(self) && ram_ptr(rm) && ld16(c, M, RACE_INFO + 0x1e) == 1 &&
+              (ev == 1 || ev == 3) && (int16_t)ld16(c, M, self + 0xa6) < (int16_t)ld16(c, M, (uint32_t)ctx_gpr(c, 13) - 0x7976);
+    int me = on ? (int16_t)ld16(c, M, self + 2) : -1, thrower = on && ev == 1 && ram_ptr(item) ? (int)ld32(c, M, item + 0x120) : -1;
+    if (me < 0 || me > 7 || (ev == 1 && thrower == me) || (ev == 1 && (thrower < 0 || thrower > 7))) {
+        ctx_call_orig(c, g_native_addr[NAT_FUN_8018712c]);
+        return 0;
+    }
+    int who[2] = {me, ev == 1 ? thrower : -1}, d[2] = {-1, 1};
+    uint32_t chk[2], was[2], tab[2][3];
+    for (int i = 0; i < 2; i++) {
+        chk[i] = who[i] >= 0 ? ld32(c, M, rm + 0x48 + 4 * (uint32_t)who[i]) : 0;
+        if (!ram_ptr(chk[i])) { chk[i] = 0; continue; }
+        was[i] = ld16(c, M, chk[i] + 0xa6);
+        for (uint32_t k = 0; k < 3; k++) tab[i][k] = ld32(c, M, chk[i] + 0x9c + 4 * k);
+    }
+    ctx_call_orig(c, g_native_addr[NAT_FUN_8018712c]);
+    for (int i = 0; i < 2; i++) {
+        if (!chk[i] || (mld(c, M, chk[i] + 0x8c, 2) & 2)) continue;
+        int *h = &s_bomb_hits[who[i]];
+        *h += d[i];
+        if (*h < 0) *h = 0;
+        if (*h > (int)need) *h = (int)need;
+        if ((uint32_t)*h * win / need == was[i]) { /* no change of points yet */
+            mst(c, M, chk[i] + 0xa6, 2, was[i]);
+            for (uint32_t k = 0; k < 3; k++) mst(c, M, chk[i] + 0x9c + 4 * k, 4, tab[i][k]);
+        }
+        rt_log("bomb hits: kart %d has %d of %u, %u of %u points", who[i], *h, need, ld16(c, M, chk[i] + 0xa6), win);
+    }
+    return 0;
+}
 /* BombStart2D (Bob-omb Blast's start banner) has layouts for 2 and 3-4 screens only: for one
  * (a SINGLE PLAYER BATTLE MODE Bob-omb Blast) the constructor sets up an empty J2DScreen, whose
  * own white fill then covers the screen while the banner shows (the countdown's 3 and 2), and
@@ -749,6 +869,7 @@ uint64_t i_doSterrCtrl__13RivalBodyCtrlFv(Ctx *c, uint8_t *M, ARGS) {
         struct stuck *st = &s_stuck[k];
         if (st->escaping && (dist3(s_kpos[k], st->esc) < ESCAPE_NEAR || s_bai_frame - st->esc_at > ESCAPE_FRAMES)) bai_rejoin(c, M, bc, k);
         else if (!st->escaping && st->armed && s_bai_frame - st->at > STUCK_FRAMES) bai_escape(c, M, bc, k);
+        ctx_set_gpr(c, 3, bc); /* (their calls left their own, and the game's doSterrCtrl below reads it) */
         if (st->escaping) {
             s_direct[k] = false, s_direct_at[k] = s_bai_frame;
             if (ld32(c, M, bc + 0x84) == 3) { /* turning in place (doColWallCtrl), toward the place */
@@ -784,6 +905,7 @@ uint64_t i_doSterrCtrl__13RivalBodyCtrlFv(Ctx *c, uint8_t *M, ARGS) {
 /* a battle's start: the boxes are found again, each computer's kart's focus (how often it takes the
  * best way rather than the game's random one: 0.6 to 0.9) drawn anew */
 static void bai_reset(void) {
+    memset(s_bomb_hits, 0, sizeof s_bomb_hits);
     s_nbox = 0, s_bai_frame = 0, s_bai_boxes_said = false, s_karts_now = s_players_now = 0, s_shine_holder = -1;
     for (int k = 0; k < 8; k++) {
         s_bai_item[k][0] = s_bai_item[k][1] = -1, s_hold_item[k] = s_hold_frames[k] = 0, s_alive[k] = false, s_direct[k] = false, s_direct_at[k] = 0;
@@ -942,6 +1064,7 @@ uint64_t i_mode__9SceneMenuFv(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t m = (uint32_t)a0;
     bool solo = solo_menu(c, M, m) && s_three;
+    if (solo && g_bt_kind >= 0) mst(c, M, m + SM_MODE, 4, 3);
     uint32_t pad = ld32(c, M, MENU_PAD), m0 = solo ? ld32(c, M, m + SM_MODE) : 0;
     uint32_t press = IS_RAM(pad) ? ld32(c, M, pad + 0x1c) : 0, rep = IS_RAM(pad) ? ld32(c, M, pad + 0x30) : 0;
     /* on Battle, not yet decided: the 1-player code sees Grand Prix (its A decides any mode the same) */
@@ -972,17 +1095,21 @@ uint64_t i_mode_end__9SceneMenuFv(Ctx *c, uint8_t *M, ARGS) {
     }
     return 0;
 }
-/* setRaceData sets up a battle only for 2-4 karts: a 1-player battle gets setRace(mode, 4 karts,
- * 1 player, 1 screen) here first (the battle type +0x2118: 0 balloons, 1 Shine Thief, 2 Bob-omb);
+/* setRaceData sets up a battle only for 2-4 karts: a 1-player battle gets setRace(mode, its karts
+ * (MODS > BATTLE KARTS; Wi-Fi never over 4), 1 player, 1 screen) here first (the battle type +0x2118: 0 balloons, 1 Shine Thief, 2 Bob-omb);
  * the call from here runs the recompiled setRace, not i_FUN_8018c878. */
+static uint8_t s_cpu_taken[20];
 uint64_t i_setRaceData__9SceneMenuFv(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t m = (uint32_t)a0, kind = solo_menu(c, M, m) && ld32(c, M, m + SM_MODE) == 3 ? ld32(c, M, m + 0x2118) : 3;
+    memset(s_cpu_taken, 0, sizeof s_cpu_taken);
+    if (kind < 3 && g_bt_kind >= 0) kind = (uint32_t)g_bt_kind % 3;
     if (kind < 3) {
         static const uint32_t race_mode[3] = {4, 7, 6};
-        const uint32_t args[6] = {0x803B145Cu /* gRaceInfo */, race_mode[kind], 4, 1, 1, 1};
+        uint32_t karts = g_lan_play || g_battle_karts < 4 ? 4 : g_battle_karts > 8 ? 8 : g_battle_karts;
+        const uint32_t args[6] = {0x803B145Cu /* gRaceInfo */, race_mode[kind], karts, 1, 1, 1};
         uint32_t old_sp = frame_push(c, M, 0x20);
-        rt_log("1-player battle: mode %u", race_mode[kind]);
+        rt_log("1-player battle: mode %u, %u karts", race_mode[kind], karts);
         ctx_call_guest(c, g_native_addr[NAT_FUN_8018c878], args, 6);
         frame_pop(c, old_sp);
         ctx_set_gpr(c, 3, m);
@@ -994,7 +1121,10 @@ uint64_t i_setRaceData__9SceneMenuFv(Ctx *c, uint8_t *M, ARGS) {
  * still free (+0x22a0 + cell, 1 free: the players' and the locked ones cleared), each taken as it
  * is chosen. The game seeds from OSGetTime on each call and (at its level 0, a battle's) keeps
  * official partners together. A single player battle mode battle (gRaceInfo +8 modes 4-7, set before) draws any
- * two free cells from a seed of its own instead; the kart is still the heavier one's (setRaceData). */
+ * two free cells from a seed of its own instead; the kart is still the heavier one's (setRaceData).
+ * With more than 4 karts (one player, BATTLE KARTS) it draws from all 20 cells but the player's
+ * (+0x2138, +0x213c per player, 0x1c each, the slot's +0x2130 -1 when empty), locked or not: the
+ * save's unlocks only hide them from the player. */
 uint64_t i_getCharSel__9SceneMenuFRiRi(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t m = (uint32_t)a0, mode = ld32(c, M, RACE_MODE);
@@ -1004,18 +1134,28 @@ uint64_t i_getCharSel__9SceneMenuFRiRi(Ctx *c, uint8_t *M, ARGS) {
     }
     static uint64_t s;
     if (!s) s = plat_now_ns() | 1;
+    bool any = ld16(c, M, RACE_INFO + 0x1c) > 4;
     int cell[2];
     for (int k = 0; k < 2; k++) {
         int free_[20], n = 0;
-        for (int i = 0; i < 20; i++)
-            if (mld(c, M, m + 0x22a0 + (uint32_t)i, 1)) free_[n++] = i;
-        if (!n) { /* nothing left (cannot happen with 4 karts): the game's own */
+        for (int i = 0; i < 20; i++) {
+            bool can = mld(c, M, m + 0x22a0 + (uint32_t)i, 1);
+            if (any) {
+                can = !s_cpu_taken[i];
+                for (uint32_t p = 0; p < 4 && can; p++)
+                    if (ld32(c, M, m + 0x2130 + 0x1c * p) != 0xffffffffu)
+                        can = ld32(c, M, m + 0x2138 + 0x1c * p) != (uint32_t)i && ld32(c, M, m + 0x213c + 0x1c * p) != (uint32_t)i;
+            }
+            if (can) free_[n++] = i;
+        }
+        if (!n) { /* nothing left (cannot happen: 8 karts use 16 of the 20): the game's own */
             ctx_call_orig(c, g_native_addr[NAT_getCharSel__9SceneMenuFRiRi]);
             return 0;
         }
         s ^= s << 13, s ^= s >> 7, s ^= s << 17;
         cell[k] = free_[s % (uint64_t)n];
         mst(c, M, m + 0x22a0 + (uint32_t)cell[k], 1, 0);
+        s_cpu_taken[cell[k]] = 1;
     }
     mst(c, M, (uint32_t)a1, 4, (uint32_t)cell[0]), mst(c, M, (uint32_t)a2, 4, (uint32_t)cell[1]);
     char n0[16] = "?", n1[16] = "?";
@@ -1033,7 +1173,7 @@ uint64_t i_getCharSel__9SceneMenuFRiRi(Ctx *c, uint8_t *M, ARGS) {
 uint64_t i_FUN_801f1cf4(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t players = ld16(c, M, RACE_INFO + 0x1e), karts = ld16(c, M, RACE_INFO + 0x1c);
-    bool all = battle_on() && ld32(c, M, RACE_MODE) == 4 && karts > players && karts <= 4;
+    bool all = battle_on() && ld32(c, M, RACE_MODE) == 4 && karts > players && karts <= 8;
     if (all) mst(c, M, RACE_INFO + 0x1e, 2, karts);
     ctx_call_orig(c, g_native_addr[NAT_FUN_801f1cf4]);
     if (all) mst(c, M, RACE_INFO + 0x1e, 2, players);

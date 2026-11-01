@@ -9,10 +9,10 @@
 #include <string.h>
 
 #include <switch.h>
-#include <GLES3/gl32.h>
 
 #include "menu.h"
-#include "render_gl.h"
+#include "gfx.h"
+#include "render.h"
 #include "hdtex.h"
 #include "ui_font.h"
 #include "route.h"
@@ -134,9 +134,9 @@ static int map_fix(const char **name) {
 #define DRV_UP 0
 #define DRV_FWD 20
 #define DRV_TILT 0
-#define KART_UP 25
-#define KART_FWD 10
-#define KART_TILT 10
+#define KART_UP 0 /* added to the kart's own eye */
+#define KART_FWD 0
+#define KART_TILT 0
 static void defaults(void) {
     g_set.wide = true;
     g_set.show_fps = 0;
@@ -149,6 +149,8 @@ static void defaults(void) {
     g_set.mt_cpu = false;
     g_set.perfect_start = false;
     g_set.battle_cpus = true;
+    g_set.battle_karts = 4;
+    g_set.bomb_hits = 4;
     g_set.jump = 2; /* MID, on ZL (g_map_default) */
     g_set.laps = 0;
     g_set.free_cam = 1; /* SNAP BACK */
@@ -170,6 +172,7 @@ static void defaults(void) {
     g_set.camera = 0;
     g_set.drv_up = DRV_UP, g_set.drv_forward = DRV_FWD, g_set.drv_tilt = DRV_TILT;
     g_set.kart_up = KART_UP, g_set.kart_forward = KART_FWD, g_set.kart_tilt = KART_TILT;
+    memset(g_set.kart_add, 0, sizeof g_set.kart_add);
     g_set.docked_res = DOCKED_AUTO;
     g_set.handheld_res = HANDHELD_AUTO;
     g_set.profiler = false;
@@ -188,6 +191,16 @@ static const char *HANDHELD_NAMES[4] = {"NATIVE", "1.25X", "1.5X", "AUTO"};
 static void apply_logging(void) {
     g_log_mask = LOG_MASKS[(unsigned)g_set.logging % LOG_MODES];
     diag_flush();
+}
+
+
+/* what a report needs to know (from loading and each save; an unchanged line is dropped by rt_log) */
+static void settings_log(void) {
+    rt_log("settings: 16:9 %d, fov %d / %d, fps %d, logging %d, rumble %d, unlock all %d, res docked %d handheld %d, aniso %d, hd %d, "
+           "mod %s, characters %d, clocks %d, camera %d, any kart %d, laps %d, multi-thread cpu %d, single battle %d, battle karts %d, bomb hits %d, split %d, lan %d",
+           g_set.wide, g_set.fov[0], g_set.fov[1], g_set.show_fps, g_set.logging, g_set.rumble, g_set.unlock_all, g_set.docked_res, g_set.handheld_res,
+           g_set.aniso, g_set.hd_textures, g_set.mod, g_set.characters, g_set.game_clocks, g_set.camera, g_set.any_kart, g_set.laps, g_set.mt_cpu,
+           g_set.battle_cpus, g_set.battle_karts, g_set.bomb_hits, g_set.vsplit, g_set.lan);
 }
 
 void settings_load(const char *path) {
@@ -217,6 +230,8 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "mt_cpu")) g_set.mt_cpu = atoi(v) != 0;
         else if (!strcmp(k, "perfect_start")) g_set.perfect_start = atoi(v) != 0;
         else if (!strcmp(k, "single_battle")) g_set.battle_cpus = atoi(v) != 0;
+        else if (!strcmp(k, "battle_karts")) g_set.battle_karts = atoi(v) < 4 ? 4 : atoi(v) > 8 ? 8 : atoi(v);
+        else if (!strcmp(k, "bomb_hits")) g_set.bomb_hits = atoi(v) < 4 ? 4 : atoi(v) > 20 ? 20 : atoi(v) & ~1;
         else if (!strcmp(k, "mt_length")) g_set.mt_length = atoi(v) < 0 ? 0 : atoi(v) >= MT_N_LENGTHS ? MT_N_LENGTHS - 1 : atoi(v);
         else if (!strcmp(k, "jump")) g_set.jump = atoi(v) < 0 || atoi(v) > 3 ? 0 : atoi(v);
         else if (!strcmp(k, "laps")) g_set.laps = atoi(v) < 0 || atoi(v) > 7 ? 0 : atoi(v);
@@ -244,9 +259,17 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "driver_eye_up")) g_set.drv_up = atoi(v);
         else if (!strcmp(k, "driver_eye_forward")) g_set.drv_forward = atoi(v);
         else if (!strcmp(k, "driver_tilt")) g_set.drv_tilt = atoi(v);
-        else if (!strcmp(k, "kart_eye_up")) g_set.kart_up = atoi(v);
-        else if (!strcmp(k, "kart_eye_forward")) g_set.kart_forward = atoi(v);
-        else if (!strcmp(k, "kart_tilt")) g_set.kart_tilt = atoi(v);
+        else if (!strcmp(k, "kart_add_up")) g_set.kart_up = atoi(v);
+        else if (!strcmp(k, "kart_add_forward")) g_set.kart_forward = atoi(v);
+        else if (!strcmp(k, "kart_add_tilt")) g_set.kart_tilt = atoi(v);
+        else if (!strncmp(k, "kart_add_", 9) && k[9] >= '0' && k[9] <= '9') { /* one kart: up,forward,tilt */
+            int id = atoi(k + 9), u, f, t;
+            if (id < 21 && sscanf(v, "%d,%d,%d", &u, &f, &t) == 3) {
+                g_set.kart_add[id][0] = u < -100 ? -100 : u > 200 ? 200 : u;
+                g_set.kart_add[id][1] = f < -150 ? -150 : f > 150 ? 150 : f;
+                g_set.kart_add[id][2] = t < -45 ? -45 : t > 45 ? 45 : t;
+            }
+        }
         else if (!strcmp(k, "profiler")) g_set.profiler = atoi(v) != 0;
         else if (!strcmp(k, "game_clocks")) g_set.game_clocks = atoi(v) != 0;
         else if (!strcmp(k, "lan")) g_set.lan = atoi(v) != 0;
@@ -282,20 +305,23 @@ void settings_load(const char *path) {
     }
     s_mset = 0;
     apply_logging();
-    rt_log("settings: 16:9 %d, fov %d / %d, fps %d, logging %d, rumble %d, unlock all %d", g_set.wide, g_set.fov[0], g_set.fov[1], g_set.show_fps,
-           g_set.logging, g_set.rumble, g_set.unlock_all);
+    settings_log();
 }
 
 void settings_save(void) {
+    settings_log();
     FILE *f = fopen(s_path, "w");
-    if (!f) return;
+    if (!f) { rt_log("settings: could not write %s", s_path); return; }
     fprintf(f, "display=%d\nshow_fps=%d\nlogging=%d\nrumble=%d\nunlock_all=%d\nhd_textures=%d\nfov_4_3=%d\nfov_16_9=%d\naniso=%d\nborder=%d\n"
-            "docked_res=%d\nprofiler=%d\nmod=%s\nhandheld_res=%d\nhud_hide=%u\nhud_style=%d\nspeed_kmh=%d\ncamera_view=%d\ndriver_eye_up=%d\ndriver_eye_forward=%d\ndriver_tilt=%d\nkart_eye_up=%d\nkart_eye_forward=%d\nkart_tilt=%d\nany_kart=%d\n", g_set.wide, g_set.show_fps,
+            "docked_res=%d\nprofiler=%d\nmod=%s\nhandheld_res=%d\nhud_hide=%u\nhud_style=%d\nspeed_kmh=%d\ncamera_view=%d\ndriver_eye_up=%d\ndriver_eye_forward=%d\ndriver_tilt=%d\nkart_add_up=%d\nkart_add_forward=%d\nkart_add_tilt=%d\nany_kart=%d\n", g_set.wide, g_set.show_fps,
             g_set.logging, g_set.rumble, g_set.unlock_all, g_set.hd_textures, g_set.fov[0], g_set.fov[1], g_set.aniso, g_set.border, g_set.docked_res,
             g_set.profiler, g_set.mod, g_set.handheld_res, g_set.hud_hide, g_set.hud_style, g_set.speed_kmh, g_set.camera, g_set.drv_up, g_set.drv_forward, g_set.drv_tilt, g_set.kart_up, g_set.kart_forward, g_set.kart_tilt, g_set.any_kart);
-    fprintf(f, "mt_cpu=%d\nsingle_battle=%d\nperfect_start=%d\n", g_set.mt_cpu, g_set.battle_cpus, g_set.perfect_start);
+    fprintf(f, "mt_cpu=%d\nsingle_battle=%d\nbattle_karts=%d\nbomb_hits=%d\nperfect_start=%d\n", g_set.mt_cpu, g_set.battle_cpus, g_set.battle_karts, g_set.bomb_hits, g_set.perfect_start);
     fprintf(f, "mt_sweeps=%d\nmt_speed=%d\nmt_length=%d\njump=%d\nlaps=%d\nfree_camera=%d\ncamera_height=%d\ncamera_distance=%d\n", g_set.mt_sweeps, g_set.mt_speed,
             g_set.mt_length, g_set.jump, g_set.laps, g_set.free_cam, g_set.cam_height, g_set.cam_dist);
+    for (int i = 0; i < 21; i++)
+        if (g_set.kart_add[i][0] || g_set.kart_add[i][1] || g_set.kart_add[i][2])
+            fprintf(f, "kart_add_%d=%d,%d,%d\n", i, g_set.kart_add[i][0], g_set.kart_add[i][1], g_set.kart_add[i][2]);
     fprintf(f, "characters=%d\n", g_set.characters);
     fprintf(f, "game_clocks=%d\n", g_set.game_clocks);
     fprintf(f, "split_side_by_side=%d\n", g_set.vsplit);
@@ -368,7 +394,7 @@ enum { PAGE_MAIN, PAGE_MAP, PAGE_EXIT, PAGE_COLOR, PAGE_DEBUG, PAGE_GFX, PAGE_UP
        PAGE_MULTI, PAGE_LAN, PAGE_COUNT };
 /* the main page's rows; UPDATE and DEBUG sit on EXIT GAME's row, at its right (LEFT/RIGHT there) */
 enum { M_GAME, M_GFX, M_CAM, M_CTRL, M_MULTI, M_MODS, M_CHEATS, M_EXIT, M_UPDATE, M_DEBUG, M_COUNT };
-enum { MD_MOD, MD_HD, MD_CHARS, MD_BATTLE, MD_RESTART, MD_BACK, MD_COUNT };
+enum { MD_MOD, MD_HD, MD_CHARS, MD_BATTLE, MD_BKARTS, MD_BHITS, MD_RESTART, MD_BACK, MD_COUNT };
 enum { MP_SPLIT, MP_LAN, MP_BACK, MP_COUNT };
 /* LAN PLAY's page (A on MULTIPLAYER's LAN PLAY): RESTART NOW only while a change waits for one (lan_rows) */
 enum { LN_LAN, LN_PEER, LN_LINK, LN_RESTART, LN_BACK, LN_COUNT };
@@ -454,12 +480,19 @@ static void upper(char *dst, size_t size, const char *s) {
 enum { C_MAP, C_JOYMAP, C_SYNC, C_BACK, C_COUNT };
 enum { GM_STYLE, GM_UNITS, GM_HUD, GM_JUMP, GM_RUMBLE, GM_BACK, GM_COUNT };
 enum { CA_VIEW, CA_HEIGHT, CA_DIST, CA_FOV, CA_FREE, CA_BACK, CA_COUNT };
-/* the KART view's page (A on CAMERA VIEW while it is KART): its eye (KA_UP, KA_FWD: steps of 5 from
- * the driver's head; KA_TILT: degrees down) */
-enum { KA_UP, KA_FWD, KA_TILT, KA_RESET, KA_BACK, KA_COUNT };
+/* the FPV page (A on CAMERA VIEW): its eye (KA_UP, KA_FWD: steps of 5; KA_TILT: degrees down). KART FPV keeps
+ * one for each kart: in a race the one being driven, otherwise KA_KART chooses. DRIVER FPV's covers every kart. */
+enum { KA_KART, KA_UP, KA_FWD, KA_TILT, KA_RESET, KA_BACK, KA_COUNT };
+static const char *KART_NAMES[21] = {"RED FIRE", "DK JUMBO", "TURBO YOSHI", "KOOPA DASHER", "HEART COACH", "GOO-GOO BUGGY", "WARIO CAR",
+                                     "KOOPA KING", "GREEN FIRE", "BARREL TRAIN", "TURBO BIRDO", "PARA-WING", "BLOOM COACH", "RATTLE BUGGY",
+                                     "WALUIGI RACER", "BULLET BLASTER", "TOAD KART", "TOADETTE KART", "BOO PIPES", "PIRANHA PIPES", "PARADE KART"};
+static int s_kart_sel;
+static bool s_in_race; /* the race camera was running when the menu opened */
+static bool fpv_each_kart(void) { return g_set.camera == 2 && g_kart_eye_on; }
 /* the page's three settings: DRIVER FPV's or KART FPV's (CAMERA VIEW 1 / 2), and their defaults */
 static int *fpv_eye(int i) {
     bool kart = g_set.camera == 2;
+    if (fpv_each_kart()) return &g_set.kart_add[s_kart_sel][i - KA_UP];
     return i == KA_UP ? (kart ? &g_set.kart_up : &g_set.drv_up) : i == KA_FWD ? (kart ? &g_set.kart_forward : &g_set.drv_forward)
                       : (kart ? &g_set.kart_tilt : &g_set.drv_tilt);
 }
@@ -494,6 +527,8 @@ void cheats_apply(void) {
         g_mt_sweeps = 3, g_mt_speed = 1.3f, g_mt_length = 1.0f, g_mt_cpu = 0;
         g_perfect_start = 0;
         g_battle_cpus = g_set.battle_cpus; /* battle.c keeps Wi-Fi races the game's own */
+        g_battle_karts = (uint32_t)g_set.battle_karts;
+        g_bomb_hits = (uint32_t)g_set.bomb_hits;
         g_jump_power = 0;
         memset((void *)g_special, 0, sizeof g_special);
         return;
@@ -504,6 +539,8 @@ void cheats_apply(void) {
     g_mt_cpu = g_set.mt_cpu;
     g_perfect_start = g_set.perfect_start;
     g_battle_cpus = g_set.battle_cpus;
+    g_battle_karts = (uint32_t)g_set.battle_karts;
+    g_bomb_hits = (uint32_t)g_set.bomb_hits;
     g_jump_power = JUMP_POWER[g_set.jump & 3];
     special_apply();
 }
@@ -613,6 +650,12 @@ void menu_open(const char *notice) {
 bool menu_input(uint64_t down, uint64_t held, bool *quit) {
     if (!s_open) {
         s_block &= held;
+        static uint32_t cam_last;
+        static int cam_idle = 100;
+        uint32_t cam = g_cam_frames[0];
+        cam_idle = cam != cam_last ? 0 : cam_idle < 100 ? cam_idle + 1 : cam_idle;
+        cam_last = cam;
+        s_in_race = cam_idle < 4;
         if (down & HidNpadButton_Minus) { s_open = true; s_page = PAGE_MAIN; s_pressed = HidNpadButton_Minus; }
         return s_open;
     }
@@ -720,6 +763,8 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         case MD_HD: g_set.hd_textures = !g_set.hd_textures; settings_save(); break;
         case MD_CHARS: if (s_chars_found) { g_set.characters = !g_set.characters; settings_save(); } break;
         case MD_BATTLE: g_set.battle_cpus = !g_set.battle_cpus; cheats_apply(); settings_save(); break;
+        case MD_BKARTS: g_set.battle_karts = (g_set.battle_karts - 4 + (left ? 4 : 1)) % 5 + 4; cheats_apply(); settings_save(); break;
+        case MD_BHITS: g_set.bomb_hits = (g_set.bomb_hits - 4 + (left ? 16 : 2)) % 18 + 4; cheats_apply(); settings_save(); break;
         case MD_RESTART: if (ok) restart_now(quit); break;
         case MD_BACK: if (ok) s_page = PAGE_MAIN; break;
         }
@@ -795,7 +840,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
     if (s_page == PAGE_CAM && (ok || side)) {
         switch (*sel) {
         case CA_VIEW: /* A on DRIVER FPV or KART FPV: its eye's page */
-            if (ok && g_set.camera) { s_page = PAGE_KART; s_sel[PAGE_KART] = 0; break; }
+            if (ok && g_set.camera) { s_page = PAGE_KART; s_sel[PAGE_KART] = 0; s_kart_sel = g_kart_last >= 0 && g_kart_last < 21 ? g_kart_last : 0; break; }
             g_set.camera = (g_set.camera + (left ? 2 : 1)) % 3; settings_save(); break;
         case CA_HEIGHT: g_set.cam_height = (g_set.cam_height + (left ? 3 : 1)) & 3; settings_save(); break;
         case CA_DIST: g_set.cam_dist = (g_set.cam_dist + (left ? 4 : 1)) % 5; settings_save(); break;
@@ -807,6 +852,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
     }
     if (s_page == PAGE_KART && (ok || side)) {
         switch (*sel) {
+        case KA_KART: if (fpv_each_kart() && !s_in_race) s_kart_sel = (s_kart_sel + (side && left ? 20 : 1)) % 21; break;
         case KA_UP: *fpv_eye(KA_UP) = step_clamp(*fpv_eye(KA_UP), left ? -5 : 5, -100, 200); settings_save(); break;
         case KA_FWD: *fpv_eye(KA_FWD) = step_clamp(*fpv_eye(KA_FWD), left ? -5 : 5, -150, 150); settings_save(); break;
         case KA_TILT: *fpv_eye(KA_TILT) = step_clamp(*fpv_eye(KA_TILT), left ? -1 : 1, -45, 45); settings_save(); break;
@@ -902,124 +948,13 @@ const char *font_glyph(char c) {
  * One instanced program; each instance is a rectangle with a top and a bottom colour and a
  * shape: a 5x7 bitmap glyph, a solid box, a MarioFont letter (atlas from the disc), a rounded
  * box, a star or a right-pointing arrow. No buffers to manage, ~100 instances a frame. */
-#define BATCH 64
+#define BATCH GFX_UI_BATCH
 enum { SH_GLYPH, SH_BOX, SH_FONT, SH_ROUND, SH_STAR, SH_ARROW, SH_IMAGE };
-static GLuint s_prog;
-static GLint u_rect, u_col, u_col2, u_par, u_bits, u_screen, u_atlas;
-static float s_rect[BATCH][4], s_col[BATCH][4], s_col2[BATCH][4], s_par[BATCH][4];
-static GLuint s_bits[BATCH][2];
+static GfxUiBatch s_b;
 static int s_n;
-
-static const char *VS =
-    "#version 320 es\n"
-    "uniform vec4 u_rect[64];\n"
-    "uniform vec4 u_col[64];\n"
-    "uniform vec4 u_col2[64];\n"
-    "uniform vec4 u_par[64];\n"
-    "uniform uvec2 u_bits[64];\n"
-    "uniform vec2 u_screen;\n"
-    "out vec2 v_uv;\n"
-    "flat out vec4 v_col;\n"
-    "flat out vec4 v_col2;\n"
-    "flat out vec4 v_par;\n"
-    "flat out vec2 v_size;\n"
-    "flat out uvec2 v_bits;\n"
-    "void main() {\n"
-    "    vec2 c = vec2(float((0x32 >> gl_VertexID) & 1), float((0x2C >> gl_VertexID) & 1));\n"
-    "    vec4 r = u_rect[gl_InstanceID];\n"
-    "    vec2 p = r.xy + c * r.zw;\n"
-    "    gl_Position = vec4(p.x / u_screen.x * 2.0 - 1.0, 1.0 - p.y / u_screen.y * 2.0, 0.0, 1.0);\n"
-    "    v_uv = c;\n"
-    "    v_size = r.zw;\n"
-    "    v_col = u_col[gl_InstanceID];\n"
-    "    v_col2 = u_col2[gl_InstanceID];\n"
-    "    v_par = u_par[gl_InstanceID];\n"
-    "    v_bits = u_bits[gl_InstanceID];\n"
-    "}\n";
-static const char *FS =
-    "#version 320 es\n"
-    "precision highp float;\n"
-    "precision highp int;\n"
-    "uniform sampler2D u_atlas;\n"
-    "in vec2 v_uv;\n"
-    "flat in vec4 v_col;\n"
-    "flat in vec4 v_col2;\n"
-    "flat in vec4 v_par;\n"
-    "flat in vec2 v_size;\n"
-    "flat in uvec2 v_bits;\n"
-    "out vec4 o;\n"
-    "void main() {\n"
-    "    uint shape = v_bits.y >> 28;\n"
-    "    vec4 c = mix(v_col, v_col2, v_uv.y);\n"
-    "    float a = 1.0;\n"
-    "    if (shape == 0u) {\n" /* 5x7 bitmap glyph */
-    "        ivec2 cell = clamp(ivec2(v_uv * vec2(5.0, 7.0)), ivec2(0), ivec2(4, 6));\n"
-    "        int bit = cell.y * 5 + cell.x;\n"
-    "        uint w = bit < 32 ? v_bits.x : v_bits.y;\n"
-    "        if (((w >> uint(bit & 31)) & 1u) == 0u) discard;\n"
-    "    } else if (shape == 2u) {\n" /* MarioFont letter: R intensity (outline), G alpha */
-    "        vec2 la = texture(u_atlas, mix(v_par.xy, v_par.zw, v_uv)).rg;\n"
-    "        c.rgb *= la.r;\n"
-    "        a = la.g;\n"
-    "    } else if (shape == 3u) {\n" /* rounded box, corner radius v_par.x px */
-    "        vec2 h = v_size * 0.5, q = abs(v_uv * v_size - h) - (h - vec2(v_par.x));\n"
-    "        float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - v_par.x;\n"
-    "        a = clamp(0.5 - d, 0.0, 1.0);\n"
-    "    } else if (shape == 4u) {\n" /* five-pointed star */
-    "        vec2 p = (v_uv - 0.5) * 2.0;\n"
-    "        float ang = atan(p.x, -p.y), k = 6.2831853 / 5.0;\n"
-    "        float f = abs(mod(ang + k * 0.5, k) - k * 0.5) / (k * 0.5);\n"
-    "        float r = mix(1.0, 0.45, f);\n"
-    "        a = clamp((r - length(p)) * v_size.x * 0.5, 0.0, 1.0);\n"
-    "    } else if (shape == 5u) {\n" /* arrow pointing right */
-    "        float d = (1.0 - v_uv.x) - abs(v_uv.y - 0.5) * 2.0;\n"
-        "        a = clamp(d * v_size.x, 0.0, 1.0);\n"
-    "    } else if (shape == 6u) {\n" /* RGBA image (the logo), tinted */
-    "        c *= texture(u_atlas, mix(v_par.xy, v_par.zw, v_uv));\n"
-    "    }\n"
-    "    if (a * c.a < 0.004) discard;\n"
-    "    o = vec4(c.rgb, c.a * a);\n"
-    "}\n";
-
-static GLuint shader(GLenum type, const char *src) {
-    GLuint s = glCreateShader(type);
-    glShaderSource(s, 1, &src, NULL);
-    glCompileShader(s);
-    GLint ok = 0;
-    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
-    if (!ok) {
-        char log[1024];
-        glGetShaderInfoLog(s, sizeof log, NULL, log);
-        rt_log("menu shader: %s", log);
-    }
-    return s;
-}
+static GfxTex s_tex; /* the batch's texture: the font atlas or a picture */
 
 static bool s_font;   /* MarioFont glyphs loaded from the disc */
-
-static bool init_gl(void) {
-    static bool tried;
-    if (tried) return s_prog != 0;
-    tried = true;
-    GLuint p = glCreateProgram(), vs = shader(GL_VERTEX_SHADER, VS), fs = shader(GL_FRAGMENT_SHADER, FS);
-    glAttachShader(p, vs);
-    glAttachShader(p, fs);
-    glLinkProgram(p);
-    glDeleteShader(vs);
-    glDeleteShader(fs);
-    GLint ok = 0;
-    glGetProgramiv(p, GL_LINK_STATUS, &ok);
-    if (!ok) { rt_log("menu program failed to link"); glDeleteProgram(p); return false; }
-    s_prog = p;
-    u_rect = glGetUniformLocation(p, "u_rect");
-    u_col = glGetUniformLocation(p, "u_col");
-    u_col2 = glGetUniformLocation(p, "u_col2");
-    u_par = glGetUniformLocation(p, "u_par");
-    u_bits = glGetUniformLocation(p, "u_bits");
-    u_screen = glGetUniformLocation(p, "u_screen");
-    u_atlas = glGetUniformLocation(p, "u_atlas");
-    return true;
-}
 
 void menu_font_load(void) {
     static bool tried;
@@ -1030,27 +965,22 @@ void menu_font_load(void) {
 
 static void flush(void) {
     if (!s_n) return;
-    glUniform4fv(u_rect, s_n, &s_rect[0][0]);
-    glUniform4fv(u_col, s_n, &s_col[0][0]);
-    glUniform4fv(u_col2, s_n, &s_col2[0][0]);
-    glUniform4fv(u_par, s_n, &s_par[0][0]);
-    glUniform2uiv(u_bits, s_n, &s_bits[0][0]);
-    glDrawArraysInstanced(GL_TRIANGLES, 0, 6, s_n);
+    gfx_ui_draw(&s_b, (unsigned)s_n, s_tex);
     s_n = 0;
 }
 
 static void rgba(float out[4], uint32_t c) {
     for (int i = 0; i < 4; i++) out[i] = (float)((c >> (24 - 8 * i)) & 0xFF) / 255.0f;
 }
-static void quad(float x, float y, float w, float h, uint32_t top, uint32_t bot, unsigned shape, GLuint b0, GLuint b1,
+static void quad(float x, float y, float w, float h, uint32_t top, uint32_t bot, unsigned shape, uint32_t b0, uint32_t b1,
                  const float par[4]) {
     if (s_n == BATCH) flush();
-    s_rect[s_n][0] = x; s_rect[s_n][1] = y; s_rect[s_n][2] = w; s_rect[s_n][3] = h;
-    rgba(s_col[s_n], top);
-    rgba(s_col2[s_n], bot);
-    for (int i = 0; i < 4; i++) s_par[s_n][i] = par ? par[i] : 0.0f;
-    s_bits[s_n][0] = b0;
-    s_bits[s_n][1] = (b1 & 0x0FFFFFFFu) | (GLuint)shape << 28;
+    s_b.rect[s_n][0] = x; s_b.rect[s_n][1] = y; s_b.rect[s_n][2] = w; s_b.rect[s_n][3] = h;
+    rgba(s_b.col[s_n], top);
+    rgba(s_b.col2[s_n], bot);
+    for (int i = 0; i < 4; i++) s_b.par[s_n][i] = par ? par[i] : 0.0f;
+    s_b.bits[s_n][0] = b0;
+    s_b.bits[s_n][1] = (b1 & 0x0FFFFFFFu) | (uint32_t)shape << 28;
     s_n++;
 }
 static void rect(float x, float y, float w, float h, uint32_t rgba_) { quad(x, y, w, h, rgba_, rgba_, SH_BOX, 0, 0, NULL); }
@@ -1068,7 +998,7 @@ static float text(float x, float y, float px, uint32_t rgba_, const char *s) {
     for (; *s; s++, x += 6 * px) {
         const char *g = font_glyph(*s);
         if (!g) continue;
-        GLuint b[2] = {0, 0};
+        uint32_t b[2] = {0, 0};
         for (int i = 0; i < 35; i++)
             if (g[i] == '1') b[i >> 5] |= 1u << (i & 31);
         quad(x, y, 5 * px, 7 * px, rgba_, rgba_, SH_GLYPH, b[0], b[1], NULL);
@@ -1096,7 +1026,7 @@ static float mtext_draw(float x, float y, float size, uint32_t top, uint32_t bot
             const char *g = font_glyph(*s);
             float px = size / 9.0f;
             if (g && draw) {
-                GLuint b[2] = {0, 0};
+                uint32_t b[2] = {0, 0};
                 for (int i = 0; i < 35; i++)
                     if (g[i] == '1') b[i >> 5] |= 1u << (i & 31);
                 quad(x, y + size * 0.14f, 5 * px, 7 * px, 0x101010FFu, 0x101010FFu, SH_GLYPH, b[0], b[1], NULL); /* outline */
@@ -1186,35 +1116,22 @@ bool menu_take_peer(void) {
     return r;
 }
 
-static void begin(int w, int h) {
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, w, h);
-    glDisable(GL_SCISSOR_TEST);
-    glDisable(GL_DEPTH_TEST);
-    glEnable(GL_BLEND);
-    glBlendEquation(GL_FUNC_ADD);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-    glUseProgram(s_prog);
-    glUniform2f(u_screen, (float)w, (float)h);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, s_font ? uifont_texture() : 0);
-    glBindSampler(0, 0);
-    glUniform1i(u_atlas, 0);
-    glBindVertexArray(0);
+/* The overlay on the screen (clear: black first); false if the backend has none. */
+static bool begin(int w, int h, bool clear) {
+    if (!gfx_ui_begin(w, h, clear)) return false;
+    s_b.screen[0] = (float)w, s_b.screen[1] = (float)h;
+    s_tex = s_font ? uifont_texture() : 0;
+    return true;
 }
 static void end(void) {
     flush();
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glDisable(GL_BLEND);
-    glUseProgram(0);
+    gfx_ui_end();
 }
 
 void menu_draw(int w, int h, float fps, const char *perf) {
     if (!s_open && !g_set.show_fps) return;
-    if (!init_gl()) return;
     menu_font_load();
-    begin(w, h);
+    if (!begin(w, h, false)) return;
     float k = (float)h / 720.0f;
 
     if (g_set.show_fps) {
@@ -1340,16 +1257,18 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s_sel[PAGE_GFX] == G_COLOR  ? "A: ADJUST   LEFT/RIGHT: ACCURATE, VIVID, CUSTOM"
                                                  : "B: BACK";
         } else if (s_page == PAGE_MODS) {
-            static const char *labels[MD_COUNT] = {"LEVEL PACK", "HD TEXTURES", "EXTRA CHARACTERS", "SINGLE PLAYER BATTLE MODE", "RESTART NOW", "BACK"};
+            static const char *labels[MD_COUNT] = {"LEVEL PACK", "HD TEXTURES", "EXTRA CHARACTERS", "SINGLE PLAYER BATTLE MODE", "BATTLE KARTS", "BOB-OMB HITS TO WIN", "RESTART NOW", "BACK"};
             unsigned pick = mods_pick(s_mods_found);
-            char mod_value[16], mod_hint[96];
+            char mod_value[16], mod_hint[96], karts_value[8], hits_value[8];
+            snprintf(karts_value, sizeof karts_value, "%d", g_set.battle_karts);
+            snprintf(hits_value, sizeof hits_value, "%d", g_set.bomb_hits);
             upper(mod_value, sizeof mod_value, pick ? MODS[pick - 1].key : s_mods_found ? "off" : "none found");
             upper(mod_hint, sizeof mod_hint, pick ? MODS[pick - 1].name : "the standard game");
             snprintf(mod_hint + strlen(mod_hint), sizeof mod_hint - strlen(mod_hint), pick ? ": ITS OWN SAVE" : "");
             const char *values[MD_COUNT] = {mod_value,
                                             !hdtex_available() ? "NO PACK" : g_set.hd_textures ? "ON" : "OFF",
                                             !s_chars_found ? "NONE FOUND" : g_set.characters ? "ON" : "OFF",
-                                            g_set.battle_cpus ? "ON" : "OFF", NULL, NULL};
+                                            g_set.battle_cpus ? "ON" : "OFF", karts_value, hits_value, NULL, NULL};
             for (int i = 0; i < MD_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, MD_COUNT), pw, rh, k, s_sel[PAGE_MODS] == i, labels[i], values[i], false);
             char hd_hint[64];
             if (!hdtex_available()) snprintf(hd_hint, sizeof hd_hint, "PUT HD-TEXTURES.BIN IN THE MKDD-NX FOLDER");
@@ -1364,6 +1283,8 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s == MD_CHARS && chars_pending() ? "CHANGES AFTER A RESTART: SEE RESTART NOW"
                    : s == MD_CHARS                   ? "MORE CHARACTERS ON THE CHARACTER SELECT SCREEN"
                    : s == MD_BATTLE                  ? "CPUS FILL BATTLES TO 4 KARTS. 1 PLAYER: BATTLE ON THE MODE PAGE"
+                   : s == MD_BKARTS                  ? "KARTS IN A 1 PLAYER BATTLE, YOU AND THE CPUS. 2-3 PLAYERS: ALWAYS 4"
+                   : s == MD_BHITS                   ? "1 PLAYER BOB-OMB BLAST: HITS TO FILL THE 4 STARS. 4 IS THE GAME'S OWN"
                    : s == MD_RESTART                 ? restart_hint()
                                                      : "B: BACK";
         } else if (s_page == PAGE_MULTI) {
@@ -1428,19 +1349,21 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                                                                                 : "GIVE CAMERA RESET A BUTTON: CONTROLS > BUTTON MAPPING")
                                                   : "B: BACK";
         } else if (s_page == PAGE_KART) {
-            static const char *labels[KA_COUNT] = {"EYE HEIGHT", "EYE FORWARD", "TILT", "DEFAULTS", "BACK"};
+            static const char *labels[KA_COUNT] = {"KART", "EYE HEIGHT", "EYE FORWARD", "TILT", "DEFAULTS", "BACK"};
             static char kup[16], kfwd[16], ktilt[16], khint[48];
             snprintf(kup, sizeof kup, "%d", *fpv_eye(KA_UP));
             snprintf(kfwd, sizeof kfwd, "%d", *fpv_eye(KA_FWD));
             snprintf(ktilt, sizeof ktilt, "%d DEG", *fpv_eye(KA_TILT));
-            const char *values[KA_COUNT] = {kup, kfwd, ktilt, NULL, NULL};
+            const char *values[KA_COUNT] = {fpv_each_kart() ? KART_NAMES[s_kart_sel] : "ALL", kup, kfwd, ktilt, NULL, NULL};
             for (int i = 0; i < KA_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, KA_COUNT), pw, rh, k, s_sel[PAGE_KART] == i, labels[i], values[i], false);
             int ks = s_sel[PAGE_KART];
-            if (ks <= KA_TILT)
-                snprintf(khint, sizeof khint, "%s. DEFAULT %d", ks == KA_UP ? "ABOVE THE DRIVER'S HEAD" : ks == KA_FWD ? "AHEAD OF THE DRIVER'S HEAD"
+            if (ks >= KA_UP && ks <= KA_TILT)
+                snprintf(khint, sizeof khint, "%s. DEFAULT %d", g_set.camera == 2 ? (ks == KA_UP ? "HIGHER THAN THE KART'S VIEW" : ks == KA_FWD ? "AHEAD OF THE KART'S VIEW" : "LOOKS DOWN MORE")
+                         : ks == KA_UP ? "ABOVE THE DRIVER'S HEAD" : ks == KA_FWD ? "AHEAD OF THE DRIVER'S HEAD"
                          : "HOW FAR IT LOOKS DOWN", fpv_default(ks));
-            hint = ks <= KA_TILT                ? khint
-                   : s_sel[PAGE_KART] == KA_RESET ? "A: BACK TO THE DEFAULTS"
+            hint = ks == KA_KART                ? (!fpv_each_kart() ? "THESE COVER EVERY KART" : s_in_race ? "THE KART YOU ARE DRIVING. SAVED FOR THIS KART ONLY" : "LEFT AND RIGHT CHOOSE THE KART. SAVED FOR EACH KART")
+                   : ks <= KA_TILT              ? khint
+                   : s_sel[PAGE_KART] == KA_RESET ? (fpv_each_kart() ? "A: THIS KART BACK TO ITS DEFAULTS" : "A: BACK TO THE DEFAULTS")
                                                   : "B: BACK";
         } else if (s_page == PAGE_CHEATS) {
             static const char *labels[CH_COUNT] = {"UNLOCK ALL", "NO WEIGHT CLASSES", "SPECIAL ITEMS", "MINI-TURBO SWEEPS", "MINI-TURBO SPEED",
@@ -1557,8 +1480,10 @@ void menu_draw(int w, int h, float fps, const char *perf) {
         }
 #undef ROW_Y
         if (hint) {
-            float px = 2.4f * k;
-            text(x + (pw - text_w(hint, px)) / 2, y + ph - foot + 14 * k, px, 0xFFFFFFFFu, hint);
+            /* MarioFont, as the build number; a long one is made smaller to fit the box */
+            float hs = 26 * k, hw = mtext_w(hint, hs), most = pw - 48 * k;
+            if (hw > most) { hs *= most / hw; hw = most; }
+            mtext(x + (pw - hw) / 2, y + ph - foot + (foot - hs) / 2, hs, 0xFFFFFFFFu, 0xFFFFFFFFu, hint);
         }
     }
     end();
@@ -1570,8 +1495,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
 #define BANNER_MID 40.0f
 void menu_char_hint(int w, int h) {
     int pages = charpack_pages();
-    if (pages < 2 || !init_gl()) return;
-    begin(w, h);
+    if (pages < 2 || !begin(w, h, false)) return;
     /* in 4:3 inside the picture (its side bars beside it) */
     float k = (float)h / 720.0f, s = (float)h / 960.0f * 0.8f, bar = g_set.wide ? 0 : ((float)w - (float)h * 4.0f / 3.0f) / 2;
     float edge = 14 * k + (bar > 0 ? bar : 0);
@@ -1583,11 +1507,11 @@ void menu_char_hint(int w, int h) {
         if (!t) continue;
         float iw = (float)tw * s, ih = (float)th * s, x = side ? (float)w - edge - used * s : edge;
         flush();
-        glBindTexture(GL_TEXTURE_2D, t);
+        s_tex = t;
         quad(x, BANNER_MID * k - ih / 2, iw, ih, 0xFFFFFFFFu, 0xFFFFFFFFu, SH_IMAGE, 0, 0, par);
         flush();
     }
-    glBindTexture(GL_TEXTURE_2D, s_font ? uifont_texture() : 0);
+    s_tex = s_font ? uifont_texture() : 0;
     end();
 }
 
@@ -1596,8 +1520,7 @@ void menu_char_hint(int w, int h) {
  * between: the loading screen's look, in the side bars of a 4:3 race. */
 void menu_border(int w, int h) {
     float pw = (float)h * 4.0f / 3.0f, bar = ((float)w - pw) / 2;
-    if (bar < 8 || !init_gl()) return;
-    begin(w, h);
+    if (bar < 8 || !begin(w, h, false)) return;
     float k = (float)h / 720.0f, fh = (float)h;
     int rows = (int)(fh / (14 * k) + 0.5f);
     float ch = fh / (float)rows, cw = ch;
@@ -1627,15 +1550,9 @@ void menu_border(int w, int h) {
 #define TITLE_B "DOUBLE DASH!! "
 #define TITLE_C "NX"
 
-/* The loading screen's background and title; false if GL isn't up. */
+/* The loading screen's background and title; false if the renderer isn't up. */
 static bool loading_back(int w, int h) {
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, w, h);
-    glDisable(GL_SCISSOR_TEST);
-    glClearColor(0, 0, 0, 1);
-    glClear(GL_COLOR_BUFFER_BIT);
-    if (!init_gl()) return false;
-    begin(w, h);
+    if (!begin(w, h, true)) return false;
     float k = (float)h / 720.0f, fw = (float)w, fh = (float)h;
 
     /* navy sky with the menus' darker-blue stars, framed by a checkered-flag border two squares
@@ -1658,7 +1575,7 @@ static bool loading_back(int w, int h) {
             rect((float)x * cw, (float)y * ch, cw, ch, (x + y) & 1 ? 0x101010FFu : 0xFFFFFFFFu);
         }
     flush();
-    glBindTexture(GL_TEXTURE_2D, s_font ? uifont_texture() : 0);
+    s_tex = s_font ? uifont_texture() : 0;
 
     /* the title in the game's lettering (yellow to orange, like its menu titles) */
     /* "MARIO KART" yellow to orange on top, "DOUBLE DASH!!" white and "NX" red below it */

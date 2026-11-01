@@ -101,7 +101,7 @@ typedef struct Frame {
     float clear[4];
     float efb[2];
     uint32_t draws;
-    uint32_t vseam;        /* two players side by side (a MGV_ group drawn): render_gl blurs the middle */
+    uint32_t vseam;        /* two players side by side (a MGV_ group drawn): the renderer draws a line down the middle */
     volatile int refs;
 } Frame;
 
@@ -112,14 +112,15 @@ typedef struct Frame {
  * address in 32-byte units). The hardware decodes 25 bits, so higher bits a game leaves set are
  * ignored, as in Dolphin. MKDD's race intro loads the cup icon's palette with stray high bits
  * (they change from run to run); without the mask it read past RAM and the icon vanished. */
-static inline uint32_t gx_phys(uint32_t reg) { return (reg << 5) & 0x01FFFFFFu; }
+static inline uint32_t gx_phys(uint32_t reg) { return (reg << 5) & 0x03FFFFFFu; } /* gc_core.h RAM_MASK */
 static inline uint64_t rt_key(uint32_t addr, uint32_t mode) { return RT_TAG | ((uint64_t)(mode & 0xFFFF) << 32) | addr; }
 
 typedef struct GxTexture {
     uint64_t key;
     uint32_t width, height, fmt, tlut_fmt;
     uint8_t *raw;          /* raw GX texture bytes, decoded by the renderer */
-    size_t raw_len;
+    size_t raw_len;        /* of level 0; the mip levels (levels - 1) follow it in raw */
+    uint8_t levels;        /* 1 + mip levels the game samples (mipmap filter, max LOD); 0 or 1: none */
     uint8_t *tlut;         /* 512 bytes of TMEM palette, or NULL */
     uint8_t wrap_s, wrap_t; /* 0 clamp, 1 repeat, 2 mirror */
     bool linear;

@@ -28,7 +28,7 @@
  *
  * The files are read once each from the SD card into MEM1 above the game's 24 MiB (gc_core.h
  * RAM_SIZE): the models the game builds from them point into them. They stay until a select
- * screen opens anew (charpack_pool_reset), when no model built from them is left: the 8 MiB (3 of
+ * screen opens anew (charpack_pool_reset), when no model built from them is left: the 40 MiB (3 of
  * them the select screen's models' heap) need hold only one visit's and the race's after it. */
 #include <ctype.h>
 #include <dirent.h>
@@ -42,7 +42,7 @@
 #define CP_DRIVERS "MRAM.arc/mram/driver"
 #define CP_ANIMS "ARAM.arc/aram/driveranm"
 #define POOL_LO 0x81800000u
-#define POOL_HI 0x82000000u
+#define POOL_HI 0x84000000u
 #define VAR_MAX CP_VARIANTS
 #define FILE_MAX 4096 /* each file asked for, there or not */
 
@@ -256,7 +256,6 @@ static int variant_anim(const char *bmd, int b, bool has_anims, const char *wher
 static void added(Variant *v, const char *where) {
     upper(v->name), upper(v->author);
     s_nvar++;
-    rt_log("charpack: variant %u: %s (on %s)%s%s, %s", s_nvar, v->name, BASE_NAMES[v->base], v->author[0] ? " by " : "", v->author, where);
 }
 static void default_name(Variant *v) {
     unsigned same = 2;
@@ -418,6 +417,8 @@ bool charpack_path(int v, char kind, const char *game, char *out, size_t n) {
     return true;
 }
 
+void charpack_variant_place(int v, int *page, int *cell) { *page = s_var[v].page, *cell = s_var[v].cell; }
+uint32_t charpack_pool_left(void) { return s_pool_top - s_pool; }
 int charpack_cell_variant(int c) {
     for (unsigned i = 0; c >= 0 && c < CP_CELLS && i < s_nvar; i++)
         if (s_var[i].page == s_page && s_var[i].cell == c) return (int)i;
@@ -470,6 +471,9 @@ int charpack_pick(int kart, int drv, int b, bool human) {
 int charpack_pages(void) { return s_pages; }
 int charpack_page(void) { return s_page; }
 void charpack_page_first(void) { s_page = 0; }
+void charpack_page_set(int page) {
+    if (page >= 0 && page < s_pages) s_page = page;
+}
 void charpack_page_step(int dir) {
     if (s_pages < 2) return;
     s_page = (s_page + (dir < 0 ? s_pages - 1 : 1)) % s_pages;
@@ -707,7 +711,7 @@ static uint32_t load_file(const char *path, uint32_t *size) {
     long n = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (n > 0 && n < (8 << 20) && s_pool + (uint32_t)n <= s_pool_top) {
-        uint8_t *dst = g_ram + (s_pool & 0x01FFFFFFu);
+        uint8_t *dst = g_ram + (s_pool & RAM_MASK);
         if (fread(dst, 1, (size_t)n, f) == (size_t)n && memcmp(dst, "Yaz0", 4)) {
             l->addr = s_pool, l->size = (uint32_t)n;
             s_pool = (s_pool + (uint32_t)n + 31) & ~31u;

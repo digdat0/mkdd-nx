@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Publish a build for the in-game updater (switch/update.c), and open the update window.
 #
-#   tools/release.sh publish ["notes"]   upload build-switch/MKDD-NX.nro (+ update.txt) as release v<version>
+#   tools/release.sh publish ["notes"]   upload build-switch-dk/MKDD-NX.nro (+ update.txt) as release v<version>
 #                                        (version from switch/CMakeLists.txt; an existing release of
 #                                        that version gets its files replaced: same-version rebuilds)
 #   tools/release.sh window [seconds]    make the repository public, wait (Enter, or the seconds given),
@@ -17,7 +17,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 case "${1:-}" in
 publish)
-    NRO="$ROOT/build-switch/MKDD-NX.nro"
+    NRO="$ROOT/build-switch-dk/MKDD-NX.nro"
     [ -f "$NRO" ] || { echo "no $NRO: run switch/build.sh first" >&2; exit 1; }
     VER=$(sed -n 's/^set(MKDD_VERSION "\(.*\)")/\1/p' "$ROOT/switch/CMakeLists.txt")
     [ -n "$VER" ] || { echo "MKDD_VERSION not found in switch/CMakeLists.txt" >&2; exit 1; }

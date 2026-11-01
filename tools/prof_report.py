@@ -166,7 +166,7 @@ def main():
         print(f"\n== render thread: self time (top 30 of {r} samples)")
         for s, c in self_r.most_common(30):
             print(f"{100 * c / r:6.2f}%  {s}")
-        print(f"\n== render thread: inclusive (top 30; frame-pointer chains, may stop in Mesa)")
+        print(f"\n== render thread: inclusive (top 30; frame-pointer chains)")
         for s, c in incl_r.most_common(30):
             print(f"{100 * c / r:6.2f}%  {s}")
 

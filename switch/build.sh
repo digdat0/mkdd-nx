@@ -1,7 +1,8 @@
 #!/bin/bash
 # Build the Switch .nro:  switch/build.sh <generated C dir> [extra make args]
-# Needs devkitPro (devkitA64, libnx, switch-sdl2, switch-mesa, switch-tools, its msys2 cmake + make).
-# Output: build-switch/sdcard/switch/MKDD-NX/MKDD-NX.nro -> copy to the SD card root, put your
+# Needs devkitPro (devkitA64, libnx, deko3d, switch-sdl2, switch-tools, its msys2 cmake + make).
+# Output: build-switch/sdcard/switch/MKDD-NX/MKDD-NX.nro (built in build-switch-dk) -> copy to
+# the SD card root, put your (MKDD_DEKO3D_DEBUG=1: deko3d's validating library)
 # GM4E01 disc image (.iso/.gcm/.ciso/.rvz) next to it.
 set -e
 cd "$(dirname "$0")/.."
@@ -26,8 +27,12 @@ fi
 
 # Configure every time: GEN_DIR is a cache variable, so an existing build directory would keep
 # compiling the generated C it was first configured with.
-"${RUN[@]}" cmake -S switch -B build-switch -G "Unix Makefiles" \
-    -DCMAKE_TOOLCHAIN_FILE="$DKP/cmake/Switch.cmake" -DGEN_DIR="$GEN"
+BUILD=build-switch-dk
+DKDEBUG=OFF
+[ "${MKDD_DEKO3D_DEBUG:-0}" = 1 ] && DKDEBUG=ON
+"${RUN[@]}" cmake -S switch -B "$BUILD" -G "Unix Makefiles" \
+    -DCMAKE_TOOLCHAIN_FILE="$DKP/cmake/Switch.cmake" -DGEN_DIR="$GEN" \
+    -DMKDD_DEKO3D_DEBUG="$DKDEBUG"
 # main_switch.c carries the build stamp (boot.txt, the menu's BUILD HHMM): always recompile it.
 touch switch/main_switch.c
-"${RUN[@]}" cmake --build build-switch -j"$(nproc)" -- "$@"
+"${RUN[@]}" cmake --build "$BUILD" -j"$(nproc)" -- "$@"

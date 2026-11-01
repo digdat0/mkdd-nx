@@ -13,7 +13,7 @@
 #include <string.h>
 
 #include <switch.h>
-#include <GLES3/gl32.h>
+#include "gfx.h"
 
 #include "menu.h"
 #include "pause_art.h"
@@ -59,7 +59,7 @@ static const struct { const char *file; int gc; int w, h; const char *arc; } SLO
     /* the speedometer's "mph" (64x16): "km/h" when the - menu's SPEED is KM/H (build_kmh) */
     [S_KMH] = {"speed_km.bti", -1, KMH_W, KMH_H, "MRAM_Locale/English/MRAMLoc.arc"},
 };
-static GLuint s_tex[S_COUNT];
+static GfxTex s_tex[S_COUNT];
 
 /* MKDD Plus's title bars (titleline.arc, 512x32 IA4) end in "/ Y X" with the GameCube's Y and X
  * buttons drawn in (the buttons that change the track set); Retro Track Grand Prix's in "/ Y" (its X
@@ -102,10 +102,10 @@ static const struct { const char *arc, *file; int word, words; } WORDS[WORD_COUN
 static uint8_t *s_word[WORD_COUNT]; /* the game's picture, RGBA, until word_build replaces it */
 static int s_word_w[WORD_COUNT], s_word_h[WORD_COUNT];
 static bool s_word_done[WORD_COUNT];
-static GLuint s_word_tex[WORD_COUNT];
+static GfxTex s_word_tex[WORD_COUNT];
 static uint8_t *s_snap[SNAP_SETS];
 static int s_snap_w[SNAP_SETS], s_snap_h[SNAP_SETS], s_snaps;
-static GLuint s_snap_tex[SNAP_SETS];
+static GfxTex s_snap_tex[SNAP_SETS];
 static volatile int s_snap_set = -1;
 static volatile u64 s_snap_tick;
 static const char *const RND_FILES[2] = {"mariofont_number_plus.bti", "mozi_ramdomselect.bti"};
@@ -114,7 +114,7 @@ static u64 s_hint_tick; /* when a cup or course bar's hint line was last drawn *
 static volatile u64 s_random_tick; /* ... and the word RANDOM (any game: pause_art_random_shown) */
 static uint8_t *s_bar[BAR_COUNT];     /* RGBA, the slash and buttons erased */
 static int s_bar_l[BAR_COUNT], s_bar_r[BAR_COUNT]; /* the words left: their left and right edge */
-static GLuint s_bar_tex[BAR_COUNT], s_hint_tex[BAR_COUNT];
+static GfxTex s_bar_tex[BAR_COUNT], s_hint_tex[BAR_COUNT];
 static uint64_t s_hint_key[BAR_COUNT];
 #define HINT_W (BAR_W * 2)
 #define HINT_H (BAR_H * 2)
@@ -870,11 +870,7 @@ static void box_draw(uint8_t *px, int W, int H, const Img *b, int n, const char 
 }
 
 static void upload(unsigned id, const uint8_t *rgba) {
-    if (!s_tex[id]) glGenTextures(1, &s_tex[id]);
-    glBindTexture(GL_TEXTURE_2D, s_tex[id]);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, SLOTS[id].w, SLOTS[id].h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    s_tex[id] = gfx_tex_upload(s_tex[id], GFX_RGBA8, SLOTS[id].w, SLOTS[id].h, rgba);
 }
 
 /* Rebuild the icons when the mapping or the pausing controller changes. */
@@ -982,14 +978,7 @@ static void build_menupad(void) {
     free(px);
 }
 
-static GLuint upload_rgba(GLuint tex, int w, int h, const uint8_t *rgba) {
-    if (!tex) glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    return tex;
-}
+static GfxTex upload_rgba(GfxTex tex, int w, int h, const uint8_t *rgba) { return gfx_tex_upload(tex, GFX_RGBA8, w, h, rgba); }
 
 /* A hyphen texel in MarioFont's look (as ui_font.c's brackets: a white stroke ~5 texels thick, a
  * black edge 2 wide, rounded ends), rows 11-20 of the 32 px cell: intensity, alpha into px. */
@@ -1179,7 +1168,7 @@ static float label_line(uint8_t *dst, int side, int page, int pages, bool draw) 
     return x;
 }
 unsigned pause_art_char_label(int side, int page, int pages, int *w, int *h, float *used) {
-    static GLuint tex[2];
+    static GfxTex tex[2];
     static int key[2] = {-1, -1};
     static float width[2];
     side = side ? 1 : 0;
@@ -1192,14 +1181,6 @@ unsigned pause_art_char_label(int side, int page, int pages, int *w, int *h, flo
     tex[side] = upload_rgba(tex[side], HINT_W, HINT_H, px);
     key[side] = k;
     free(px);
-    /* drawn by the menu overlay without a sampler: no mipmaps, so a plain filter (the default
-     * mipmapped one makes it incomplete: black) */
-    glBindTexture(GL_TEXTURE_2D, tex[side]);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_2D, 0);
     return tex[side];
 }
 
@@ -1222,7 +1203,7 @@ bool pause_art_random_shown(void) {
 
 /* the character select's title (CHAR_TITLE): its letters 5/8 of the bar's height, centred */
 static unsigned char_title_texture(void) {
-    static GLuint tex;
+    static GfxTex tex;
     int aw, ah;
     if (tex || !uifont_atlas(&aw, &ah)) return tex;
     uint8_t *px = calloc((size_t)HINT_W * HINT_H, 4);

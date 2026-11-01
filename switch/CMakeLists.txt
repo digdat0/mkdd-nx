@@ -11,19 +11,25 @@ set(CMAKE_C_RESPONSE_FILE_LINK_FLAG "@")
 
 set(ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 # The app's version: the NACP's and the updater's (only update.c sees it, so a bump rebuilds one file)
-set(MKDD_VERSION "1.7.1")
+set(MKDD_VERSION "1.8.0")
 if(NOT GEN_DIR)
     message(FATAL_ERROR "set -DGEN_DIR=<output of tools/gen_c.py>")
 endif()
 message(STATUS "generated C: ${GEN_DIR}")
+# MKDD_DEKO3D_DEBUG links deko3d's validating library.
+option(MKDD_DEKO3D_DEBUG "deko3d debug library" OFF)
+set(APP MKDD-NX)
+set(BACKEND_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/render_dk.c ${CMAKE_CURRENT_SOURCE_DIR}/uam_c.cpp ${CMAKE_CURRENT_SOURCE_DIR}/egl_stub.c)
 
 add_compile_options(-fPIE -ffp-contract=off -fwrapv -fno-strict-aliasing)
 include_directories(${ROOT}/runtime ${GEN_DIR} ${DEVKITPRO}/portlibs/switch/include ${DEVKITPRO}/portlibs/switch/include/SDL2)
 link_directories(${DEVKITPRO}/portlibs/switch/lib)
 
 file(GLOB RT_SOURCES CONFIGURE_DEPENDS "${ROOT}/runtime/*.c")
+# NAT_ numbers come from this list: a runtime file built against an older one calls the wrong function
+set_source_files_properties(${RT_SOURCES} PROPERTIES OBJECT_DEPENDS "${ROOT}/runtime/native.h")
 file(GLOB GEN_SOURCES CONFIGURE_DEPENDS "${GEN_DIR}/part_*.c")
-set(SW_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/main_switch.c ${CMAKE_CURRENT_SOURCE_DIR}/render_gl.c ${CMAKE_CURRENT_SOURCE_DIR}/tev_gen.c ${CMAKE_CURRENT_SOURCE_DIR}/prof_switch.c ${CMAKE_CURRENT_SOURCE_DIR}/menu.c ${CMAKE_CURRENT_SOURCE_DIR}/ui_font.c ${CMAKE_CURRENT_SOURCE_DIR}/pause_art.c ${CMAKE_CURRENT_SOURCE_DIR}/charpack_art.c ${CMAKE_CURRENT_SOURCE_DIR}/hdtex.c ${CMAKE_CURRENT_SOURCE_DIR}/update.c)
+set(SW_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/main_switch.c ${BACKEND_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/tev_gen.c ${CMAKE_CURRENT_SOURCE_DIR}/prof_switch.c ${CMAKE_CURRENT_SOURCE_DIR}/menu.c ${CMAKE_CURRENT_SOURCE_DIR}/ui_font.c ${CMAKE_CURRENT_SOURCE_DIR}/pause_art.c ${CMAKE_CURRENT_SOURCE_DIR}/charpack_art.c ${CMAKE_CURRENT_SOURCE_DIR}/hdtex.c ${CMAKE_CURRENT_SOURCE_DIR}/update.c)
 
 # Generated code: -O2 (big functions; -O3 mostly costs compile time). Runtime hot paths -O3.
 set_source_files_properties(${GEN_SOURCES} ${GEN_DIR}/table.c PROPERTIES COMPILE_OPTIONS "-O2;-w")
@@ -63,7 +69,7 @@ endif()
 set_source_files_properties("${ROUTES_S}" PROPERTIES COMPILE_OPTIONS "-I${ROUTES_DIR}" OBJECT_DEPENDS "${ROUTE_FILES}")
 message(STATUS "battle routes built in: ${ROUTE_N} from ${ROUTES_DIR}")
 
-add_executable(MKDD-NX ${SW_SOURCES} ${RT_SOURCES} ${GEN_SOURCES} ${GEN_DIR}/table.c ${CMAKE_CURRENT_SOURCE_DIR}/pause_art_data.S "${ROUTES_S}")
+add_executable(${APP} ${SW_SOURCES} ${RT_SOURCES} ${GEN_SOURCES} ${GEN_DIR}/table.c ${CMAKE_CURRENT_SOURCE_DIR}/pause_art_data.S "${ROUTES_S}")
 # The version reaches update.c in a header, rewritten only when it changes: a compile definition
 # would go into the flags file every object depends on, and a bump would rebuild everything.
 set(VERSION_H "${CMAKE_BINARY_DIR}/version/mkdd_version.h")
@@ -76,23 +82,37 @@ if(NOT VERSION_OLD STREQUAL VERSION_LINE)
     file(WRITE "${VERSION_H}" "${VERSION_LINE}")
 endif()
 set_property(SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/update.c APPEND PROPERTY INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}/version")
-target_link_libraries(MKDD-NX SDL2 EGL GLESv2 glapi drm_nouveau curl z zstd lzma nx m)
-# Mesa is C++: link with the C++ driver so libstdc++ / libsupc++ come in
-set_target_properties(MKDD-NX PROPERTIES LINKER_LANGUAGE CXX)
+set_property(SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/update.c APPEND PROPERTY OBJECT_DEPENDS "${VERSION_H}") # (header changes aren't tracked in this build)
+# uam (deko3d's GLSL compiler, MIT): compiles the shaders on the console (render_dk.c)
+# (compiler depfiles from this subdirectory come out as "uam/C:/..." paths make rejects)
+set(CMAKE_DEPENDS_USE_COMPILER FALSE)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party/uam ${CMAKE_BINARY_DIR}/uam EXCLUDE_FROM_ALL)
+if(MKDD_DEKO3D_DEBUG)
+    set(DEKO3D_LIB deko3dd)
+    # (on render_dk.c only: switching libraries rebuilds one file)
+    set_property(SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/render_dk.c APPEND PROPERTY COMPILE_DEFINITIONS MKDD_DEKO3D_DEBUG)
+else()
+    set(DEKO3D_LIB deko3d)
+endif()
+# SDL2 is kept for audio only; its video driver still references EGL (egl_stub.c)
+target_link_libraries(${APP} uamlib ${DEKO3D_LIB} SDL2 curl z zstd lzma nx m)
+# uam is C++: link with the C++ driver so libstdc++ / libsupc++ come in
+set_target_properties(${APP} PROPERTIES LINKER_LANGUAGE CXX)
 
-nx_generate_nacp(MKDD-NX.nacp
-    NAME "Mario Kart: Double Dash!! (recomp)"
+set(APP_NAME "Mario Kart: Double Dash!! (recomp)")
+nx_generate_nacp(${APP}.nacp
+    NAME "${APP_NAME}"
     AUTHOR "digdat0"
     VERSION "${MKDD_VERSION}"
 )
-nx_create_nro(MKDD-NX
-    NACP MKDD-NX.nacp
+nx_create_nro(${APP}
+    NACP ${APP}.nacp
     ICON "${CMAKE_CURRENT_SOURCE_DIR}/icon.jpg"
 )
 
 # SD card layout. Only the .nro is (re)written; the disc image and saves put there are left alone.
-set(SD_DIR "${CMAKE_BINARY_DIR}/sdcard/switch/MKDD-NX")
-add_custom_command(TARGET MKDD-NX_nro POST_BUILD
+set(SD_DIR "${ROOT}/build-switch/sdcard/switch/MKDD-NX")
+add_custom_command(TARGET ${APP}_nro POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${SD_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_BINARY_DIR}/MKDD-NX.nro" "${SD_DIR}/"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_BINARY_DIR}/${APP}.nro" "${SD_DIR}/"
     COMMENT "Assembling sdcard/switch/MKDD-NX/")

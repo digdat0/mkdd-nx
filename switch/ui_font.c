@@ -1,21 +1,21 @@
 /* The game's own lettering for the - menu: MKDD draws words like "GRAND PRIX" from one 32x32
  * IA4 texture per letter (MarioFont_*.bti in race2d.arc, inside MRAM.arc). They are read from
  * the player's disc at start-up (nothing from the game ships with the port) and packed into one
- * GL texture: R = intensity (the dark outline), G = alpha. The menu tints them with a
+ * texture: R = intensity (the dark outline), G = alpha. The menu tints them with a
  * top-to-bottom gradient, like the game's yellow-to-orange titles. */
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
-#include <GLES3/gl32.h>
+#include "gfx.h"
 
 #include "ui_font.h"
 #include "../runtime/rt.h"
 
 #define CELL 32
 #define COLS 8
-#define ROWS 6
+#define ROWS 7
 
 typedef struct { char c; const char *file; } GlyphFile;
 static const GlyphFile FILES[] = {
@@ -25,10 +25,11 @@ static const GlyphFile FILES[] = {
     {'9', "mariofont_number_9.bti"}, {'+', "mariofont_number_plus.bti"}, {'!', "mariofontexclamation.bti"},
     {'?', "mariofontquestion.bti"}, {'.', "mariofontperiod.bti"}, {':', "mariofontcolon.bti"},
     {'/', "mariofontslash.bti"},
-    {'(', NULL}, {')', NULL}, /* the disc has none: drawn in the same style (paren_glyph) */
+    /* the disc has none: drawn in the same style (paren_glyph, stroke_glyph) */
+    {'(', NULL}, {')', NULL}, {',', NULL}, {'\'', NULL}, {'-', NULL}, {'>', NULL}, {'%', NULL},
 };
 
-static GLuint s_tex;
+static GfxTex s_tex;
 static uint8_t *s_atlas; /* the same RG8 atlas on the CPU, COLS*CELL x ROWS*CELL */
 static bool s_have[128];
 static float s_uv[128][4], s_x0[128], s_x1[128];
@@ -141,6 +142,39 @@ static bool paren_glyph(uint8_t *cell, int pitch, bool close) {
     return true;
 }
 
+/* Punctuation from straight strokes (x0, y0, x1, y1), with the same stroke and edge as paren_glyph. */
+static bool stroke_glyph(uint8_t *cell, int pitch, char c) {
+    static const struct { char c; int n; float s[3][4]; } GLYPHS[] = {
+        {',', 1, {{16, 24, 12, 29}}},
+        {'\'', 1, {{16, 4, 13, 10}}},
+        {'-', 1, {{9, 16, 23, 16}}},
+        {'>', 2, {{10, 7, 22, 16}, {22, 16, 10, 25}}},
+        {'%', 3, {{23, 5, 9, 27}, {8, 7, 10, 9}, {22, 23, 24, 25}}},
+    };
+    const float core = 2.6f, edge = 4.6f;
+    for (size_t g = 0; g < sizeof GLYPHS / sizeof GLYPHS[0]; g++) {
+        if (GLYPHS[g].c != c) continue;
+        for (int y = 0; y < CELL; y++)
+            for (int x = 0; x < CELL; x++) {
+                float px = x + 0.5f, py = y + 0.5f, d = 1e9f;
+                for (int i = 0; i < GLYPHS[g].n; i++) {
+                    const float *s = GLYPHS[g].s[i];
+                    float dx = s[2] - s[0], dy = s[3] - s[1];
+                    float t = ((px - s[0]) * dx + (py - s[1]) * dy) / (dx * dx + dy * dy);
+                    t = t < 0 ? 0 : t > 1 ? 1 : t;
+                    float ex = s[0] + t * dx - px, ey = s[1] + t * dy - py, e = sqrtf(ex * ex + ey * ey);
+                    if (e < d) d = e;
+                }
+                float al = edge + 0.5f - d, in = core + 0.5f - d;
+                uint8_t *o = cell + (size_t)y * pitch + (size_t)x * 2;
+                o[0] = (uint8_t)(255 * (in < 0 ? 0 : in > 1 ? 1 : in));
+                o[1] = (uint8_t)(255 * (al < 0 ? 0 : al > 1 ? 1 : al));
+            }
+        return true;
+    }
+    return false;
+}
+
 bool uifont_load(void) {
     uint64_t mram;
     uint32_t msize;
@@ -165,7 +199,8 @@ bool uifont_load(void) {
         else { c = FILES[i - 26].c; snprintf(file, sizeof file, "%s", FILES[i - 26].file ? FILES[i - 26].file : ""); }
         int cx = slot % COLS * CELL, cy = slot / COLS * CELL;
         uint8_t *cell = atlas + ((size_t)cy * W + (size_t)cx) * 2;
-        if (!(*file ? load_glyph(&r2d, file, cell, W * 2) : paren_glyph(cell, W * 2, c == ')'))) continue;
+        if (!(*file ? load_glyph(&r2d, file, cell, W * 2)
+              : c == '(' || c == ')' ? paren_glyph(cell, W * 2, c == ')') : stroke_glyph(cell, W * 2, c))) continue;
         /* the letter's horizontal extent (its alpha), for proportional spacing */
         int x0 = CELL, x1 = 0;
         for (int y = 0; y < CELL; y++)
@@ -187,16 +222,7 @@ bool uifont_load(void) {
         memset(s_have, 0, sizeof s_have);
         return false;
     }
-    glGenTextures(1, &s_tex);
-    glBindTexture(GL_TEXTURE_2D, s_tex);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, W, H, 0, GL_RG, GL_UNSIGNED_BYTE, atlas);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    s_tex = gfx_tex_upload(0, GFX_RG8, W, H, atlas);
     s_atlas = atlas;
     rt_log("ui font: %d MarioFont glyphs from the disc", loaded);
     return true;

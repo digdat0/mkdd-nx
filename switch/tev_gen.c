@@ -1,11 +1,11 @@
 /* Specialised TEV fragment shaders.
  *
- * The uber shader (render_gl.c TEV_FS) interprets the stage configuration per pixel: a loop over
+ * The uber shader (shaders_glsl.h TEV_FS) interprets the stage configuration per pixel: a loop over
  * up to 16 stages with dynamically indexed input arrays, which nouveau spills to local memory.
  * Here the configuration that selects code paths is baked into GLSL instead (one program per
  * distinct configuration); colours, konst values, alpha references and fog parameters stay in the
  * same Tev uniform block, so a specialised program is a drop-in replacement for the uber shader.
- * Semantics follow TEV_FS line by line. Pure C (no GL) so the PC build can test it. */
+ * Semantics follow TEV_FS line by line. Pure C (no renderer calls) so the PC build can test it. */
 #include "tev_gen.h"
 #include <stdarg.h>
 #include <stdio.h>
@@ -87,9 +87,11 @@ size_t tev_gen_fs(const TevState *t, char *dst, size_t cap) {
     unsigned n = t->params[0] > 16 ? 16 : t->params[0];
     uint32_t swap = t->params[2], acr = t->params[1];
     out(b, "#version 320 es\nprecision highp float;\nprecision highp int;\n"
-           "layout(std140) uniform Tev { uvec4 stages[16]; vec4 regs[4]; vec4 konst[4]; uvec4 params; vec4 fog; vec4 fog_color; } tev;\n"
-           "uniform sampler2D tex0; uniform sampler2D tex1; uniform sampler2D tex2; uniform sampler2D tex3;\n"
-           "uniform sampler2D tex4; uniform sampler2D tex5; uniform sampler2D tex6; uniform sampler2D tex7;\n"
+           "layout(std140, binding=0) uniform Tev { uvec4 stages[16]; vec4 regs[4]; vec4 konst[4]; uvec4 params; vec4 fog; vec4 fog_color; } tev;\n"
+           "layout(binding=0) uniform sampler2D tex0; layout(binding=1) uniform sampler2D tex1;\n"
+           "layout(binding=2) uniform sampler2D tex2; layout(binding=3) uniform sampler2D tex3;\n"
+           "layout(binding=4) uniform sampler2D tex4; layout(binding=5) uniform sampler2D tex5;\n"
+           "layout(binding=6) uniform sampler2D tex6; layout(binding=7) uniform sampler2D tex7;\n"
            "layout(location=0) in vec4 v_c0; layout(location=1) in vec4 v_c1; layout(location=2) in vec4 v_uv01;"
            "layout(location=3) in vec4 v_uv23; layout(location=4) in vec4 v_uv45; layout(location=5) in vec4 v_uv67;\n"
            "out vec4 o_color;\n"

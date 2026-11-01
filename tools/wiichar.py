@@ -20,6 +20,7 @@ replaces the base on the GameCube disc instead (tools/charpack.py export_gc).
 The output is a character folder (tools/charpack.py) for the SD card's mods/characters/. Nothing
 from the game's disc is written: the disc image, when given, is only read to check the skeleton.
 """
+import copy
 import math
 import os
 import re
@@ -31,6 +32,10 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import charpack  # noqa: E402  (yaz0, BASES, Disc, bmd_info)
 
+
+FILE_LIMIT = 8 << 20   # runtime/charpack.c load_file: the largest file it takes
+LARGE_BYTES = 1 << 20  # shrink_textures, size_note: only 3 of 1514 converted drivers are over this
+SMALLEST_TEX = 64      # shrink_textures leaves a texture's longer side at least this
 
 class ConvertError(Exception):
     """the input can't be converted (the reason, for the user)"""
@@ -1774,6 +1779,108 @@ def pick_base(szs, disc, hint=None):
     return best[3], why
 
 
+def cmpr_block(px):
+    """16 (r, g, b, a), a 0 or 255 -> 8 bytes of CMPR (DXT1, GX's bit order)"""
+    solid = [p for p in px if p[3]]
+    if not solid:
+        return b"\0\0\0\0\xff\xff\xff\xff"
+    def key(p):
+        return 2 * p[0] + 5 * p[1] + p[2]
+    def to565(p):
+        return (p[0] & 0xF8) << 8 | (p[1] & 0xFC) << 3 | p[2] >> 3
+    def to888(v):
+        r, g, b = v >> 11, v >> 5 & 63, v & 31
+        return (r << 3 | r >> 2, g << 2 | g >> 4, b << 3 | b >> 2)
+    hi, lo = to565(max(solid, key=key)), to565(min(solid, key=key))
+    clear = len(solid) < 16
+    if clear:  # 3 colours and transparent: the first <= the second
+        c0, c1 = min(hi, lo), max(hi, lo)
+    else:
+        c0, c1 = max(hi, lo), min(hi, lo)
+    a, b = to888(c0), to888(c1)
+    if clear:
+        pal = [a, b, tuple((x + y) // 2 for x, y in zip(a, b))]
+    elif c0 == c1:
+        pal = [a]
+    else:
+        pal = [a, b, tuple((2 * x + y) // 3 for x, y in zip(a, b)), tuple((x + 2 * y) // 3 for x, y in zip(a, b))]
+    bits = 0
+    for p in px:
+        i = 3 if clear and not p[3] else min(range(len(pal)), key=lambda k: sum((p[n] - pal[k][n]) ** 2 for n in range(3)))
+        bits = bits << 2 | i
+    return struct.pack(">HHI", c0, c1, bits)
+
+
+def cmpr(px, w, h):
+    """rows of (r, g, b, a), a 0 or 255 -> GX CMPR (8x8 tiles of 4 blocks)"""
+    out = bytearray()
+    empty = (0, 0, 0, 0)
+    for ty in range(0, h, 8):
+        for tx in range(0, w, 8):
+            for by in (ty, ty + 4):
+                for bx in (tx, tx + 4):
+                    out += cmpr_block([px[y][x] if y < h and x < w else empty
+                                       for y in range(by, by + 4) for x in range(bx, bx + 4)])
+    return bytes(out)
+
+
+def shrink_texture(t, w, h):
+    """a copy of the texture t at w x h, one mip level; CMPR stays CMPR, the others become RGBA8"""
+    from PIL import Image
+    px = decode_texture(t.fmt, t.w, t.h, t.data)
+    img = Image.new("RGBA", (t.w, t.h))
+    img.putdata([p for row in px for p in row])
+    img = img.resize((w, h), Image.BOX)
+    data = list(img.getdata())
+    rows = [data[y * w:(y + 1) * w] for y in range(h)]
+    n = copy.copy(t)
+    n.w, n.h, n.levels, n.min_lod, n.max_lod = w, h, 1, 0.0, 0.0
+    if t.fmt == 14:
+        n.fmt, n.data = 14, cmpr([[p[:3] + (255 if p[3] >= 128 else 0,) for p in row] for row in rows], w, h)
+    else:
+        n.fmt, n.data = 6, bytes(rgba8(rows, w, h))
+    return n
+
+
+def shrink_textures(drv, notes):
+    """drv -> its BMD. One over LARGE_BYTES gets its largest textures halved until it fits, when textures are what
+    makes it large: a model large by its geometry would only lose detail and stay large, so it stays as it is."""
+    data = write_bmd(drv)
+    if len(data) <= LARGE_BYTES:
+        return data
+    tex = {e[0]: e[1] for e in drv.tex}
+    room = LARGE_BYTES - (len(data) - sum(len(t.data) for t in tex.values()))
+    # planned sizes: (w, h, bytes), a texture's first halving dropping its mips and any format but CMPR's
+    plan = {k: (t.w, t.h, len(t.data)) for k, t in tex.items()}
+    while sum(p[2] for p in plan.values()) > room:
+        can = [k for k, p in plan.items() if max(p[0], p[1]) > SMALLEST_TEX]
+        if not can:
+            return data
+        k = max(can, key=lambda k: plan[k][2])
+        w, h = max(1, plan[k][0] // 2), max(1, plan[k][1] // 2)
+        plan[k] = (w, h, tex_size(14 if tex[k].fmt == 14 else 6, w, h))
+    done = {k: shrink_texture(t, plan[k][0], plan[k][1]) for k, t in tex.items() if plan[k][:2] != (t.w, t.h)}
+    drv.tex = [(e[0], done.get(e[0], e[1])) + tuple(e[2:]) for e in drv.tex]
+    new = write_bmd(drv)
+    biggest = max(done, key=lambda k: len(tex[k].data))
+    notes.append(("info", f"textures made smaller to fit: {len(done)} of them, the largest "
+                          f"{tex[biggest].w}x{tex[biggest].h} to {done[biggest].w}x{done[biggest].h} "
+                          f"(driver model {len(data) / (1 << 20):.1f} MB to {len(new) / (1 << 20):.1f} MB)"))
+    return new
+
+
+def size_note(size, notes):
+    """a model still large after shrink_textures: the game keeps custom characters' files in one pool
+    (runtime/charpack.c), and one that doesn't fit plays with the stock character's model"""
+    mb = size / (1 << 20)
+    if size >= FILE_LIMIT:
+        notes.append(("warn", f"driver model is {mb:.1f} MB: too big for the game to load, it will show the stock "
+                              f"character's model. Keep it under {LARGE_BYTES >> 20} MB"))
+    elif size > LARGE_BYTES:
+        notes.append(("warn", f"driver model is {mb:.1f} MB, a large one (most are under 0.5 MB), mostly geometry: with "
+                              f"many custom characters browsed it may not fit, and then shows the stock character's model"))
+
+
 def convert(szs, base, disc=None):
     """a Wii driver archive (bytes) on base (charpack.BASES index) -> ({file: bytes}, notes)"""
     notes = []
@@ -1809,10 +1916,11 @@ def convert(szs, base, disc=None):
             notes.append(("ok", f"hair joined to the head ({charpack.BASES[base][1]} has no hair model of its own)"))
         hair = None
     drv = build(body, skel, tex, notes, "driver")
-    out["driver.bmd"] = write_bmd(drv)
+    out["driver.bmd"] = shrink_textures(drv, notes)
     out["driver_200.bmd"] = out["driver.bmd"]  # the game's smaller model: the same one
     notes.append(("ok", f"driver: {len(drv.pos)} vertices, {len(drv.shapes)} parts, {len(drv.mats)} materials, "
                         f"{len(drv.tex)} textures, {len(drv.joints)} joints"))
+    size_note(len(out["driver.bmd"]), notes)
     if hair is not None and hair_skel is None:
         hair_skel = Skeleton(["k_hair_all_root"] + [j.name for j in hair.bones if j.parent >= 0],
                              [-1] + [max(0, j.parent) for j in hair.bones if j.parent >= 0],

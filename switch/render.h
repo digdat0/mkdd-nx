@@ -1,4 +1,4 @@
-/* GLES 3.2 renderer for decoded GX frames (port of MKDD-Recomp's mkdd-bevy/src/gxrender.rs). */
+/* Renderer for decoded GX frames, on deko3d (render_dk.c; first a port of MKDD-Recomp's mkdd-bevy/src/gxrender.rs). */
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
@@ -21,13 +21,14 @@ void render_set_backdrop(bool on);
 /* HD texture replacements (hdtex.h) on or off: takes effect next frame, every texture reloads. Stays
  * off without a texture file or BC7 support. */
 void render_set_hd(bool on);
+void render_capture(const char *path); /* the next presented screen, as a .ppm */
 /* Anisotropic filtering level (1 = off, up to 16; clamped to what the GPU supports). */
 void render_set_aniso(float level);
 /* Textures currently showing an HD replacement. */
 unsigned render_hd_in_use(void);
 /* GPU memory of those (BC7 data). */
 uint64_t render_hd_bytes(void);
-/* Textures registered with gx_subst_register: the GL texture to draw instead (0 = the game's own). */
+/* Textures registered with gx_subst_register: the texture to draw instead (0 = the game's own). */
 void render_set_subst(unsigned (*texture)(unsigned id));
 /* Sampled GPU time of a whole loop (render_update .. present), about once a second: begin before
  * render_update, end after the menu; take returns the samples since the last call (avg / max ms). */
