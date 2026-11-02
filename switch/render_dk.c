@@ -1513,8 +1513,11 @@ static void apply_pipe(uint32_t zmode, uint32_t blend, uint32_t pix) {
     bool enabled = blend & 1, logic = (blend >> 1) & 1, subtract = (blend >> 11) & 1;
     uint32_t logic_op = (blend >> 12) & 15;
     bool ca = alpha && ((pix >> 16) & 1);
-    bool keep = ca && blend_uses_src_alpha(blend);
-    DkBlendFactor sa = keep ? DkBlendFactor_Zero : DkBlendFactor_One, da = keep ? DkBlendFactor_One : DkBlendFactor_Zero;
+    /* Constant dst alpha under source alpha blending: the shader's alpha has to stay the blend's, so the EFB's goes
+     * towards full instead of to the constant: solid draws fill it (Plus's courses blend everything; left empty, the
+     * 4-player shadow pass, which reads the EFB's alpha, painted them navy), see-through ones over a full EFB keep it. */
+    bool over = ca && blend_uses_src_alpha(blend);
+    DkBlendFactor sa = DkBlendFactor_One, da = over ? DkBlendFactor_InvSrcAlpha : DkBlendFactor_Zero;
     bool on = true;
     DkBlendState bs;
     dkBlendStateDefaults(&bs);
