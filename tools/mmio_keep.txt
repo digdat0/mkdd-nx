@@ -1,0 +1,4 @@
+# Extra functions that keep their hardware-address checks (tools/gen_c.py), "<address> <note>" lines.
+# None needed: in the census runs (tools/mmio_census.py; a race and a battle, 139 functions) every game
+# function that reached hardware either has the address in a lis or calls a small SDK function inlined
+# into it, and those keep their own checks. Delete this file to keep every check.

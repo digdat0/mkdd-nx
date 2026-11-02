@@ -295,6 +295,24 @@ static void overlay_free(void) {
     s_nfiles = s_nbuild = 0;
 }
 
+/* An .ast from the stream folder, its size; -1 if it isn't there or isn't whole (a copy cut short plays
+ * silence), and the mod's own stream plays. */
+static long stream_size(const char *path) {
+    long sz = file_size(path);
+    if (sz < 0) return -1;
+    uint8_t h[8];
+    FILE *f = fopen(path, "rb");
+    bool ok = f && fread(h, 1, sizeof h, f) == sizeof h && !memcmp(h, "STRM", 4) && (uint64_t)BE32(h + 4) + 64 == (uint64_t)sz;
+    if (f) fclose(f);
+    if (!ok) rt_log("mod: %s is not a whole .ast: not used", path);
+    return ok ? sz : -1;
+}
+
+static const char *s_stream_dir;
+static unsigned s_from_streams;
+void disc_overlay_set_streams(const char *dir) { s_stream_dir = dir; }
+unsigned disc_overlay_stream_count(void) { return s_from_streams; }
+
 #define OV_ALIGN 0x8000u
 #define OV_DOL 0x20000u   /* past the image's boot header, BI2 and apploader */
 bool disc_overlay(const char *mod_dir, char *err, size_t errlen) {
@@ -367,8 +385,16 @@ bool disc_overlay(const char *mod_dir, char *err, size_t errlen) {
         for (int d = 0; d < depth; d++) k += (size_t)snprintf(rel + k, sizeof rel - k, "%s/", names + dir_name[d]);
         snprintf(rel + (k < sizeof rel ? k : sizeof rel - 1), sizeof rel - (k < sizeof rel ? k : sizeof rel - 1), "%s", names + no);
         voff = (voff + OV_ALIGN - 1) & ~(uint64_t)(OV_ALIGN - 1);
-        snprintf(path, sizeof path, "%s/files/%s", mod_dir, rel);
-        long sz = file_size(path);
+        long sz = -1;
+        if (s_stream_dir && !strncasecmp(rel, "AudioRes/Stream/", 16)) {
+            snprintf(path, sizeof path, "%s/%s", s_stream_dir, rel + 16);
+            sz = stream_size(path);
+            if (sz >= 0) s_from_streams++;
+        }
+        if (sz < 0) {
+            snprintf(path, sizeof path, "%s/files/%s", mod_dir, rel);
+            sz = file_size(path);
+        }
         Extent x = {voff, 0, 0, X_FILE, 0, NULL};
         if (sz >= 0) {
             /* the file's own size: a mod can update a file without its table (MKDD Plus 3.3's MRAM.arc) */
@@ -404,12 +430,13 @@ bool disc_overlay(const char *mod_dir, char *err, size_t errlen) {
     s_want = NO_REQ;
     s_layout++;
     pmutex_unlock(&s_lock);
-    rt_log("mod: %s: %u files from the mod, %u from the disc image, %.0f MB disc", s_mod_name, from_mod, from_image,
-           (double)voff / 1048576);
+    rt_log("mod: %s: %u files from the mod (%u streams from %s), %u from the disc image, %.0f MB disc", s_mod_name, from_mod,
+           s_from_streams, s_stream_dir ? s_stream_dir : "no stream folder", from_image, (double)voff / 1048576);
     return true;
 oom:
     snprintf(err, errlen, "out of memory");
 fail:
+    s_from_streams = 0;
     free(image_fst);
     overlay_free();
     return false;

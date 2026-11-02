@@ -188,6 +188,7 @@ void gx_drain_dma(uint32_t len);
 extern volatile uint64_t g_racing_ns, g_gx_drain_skips;
 void gx_mem_dirty_all(void);
 extern bool g_gx_vcache;
+extern bool g_gx_vjobs; /* draws converted on the helper core (default on; config/novjobs off) */
 extern bool g_gx_cpu_xform;
 extern bool g_gx_cpu_xform_forced; /* set by the renderer when the XF shader is unusable */
 void gx_xf_report(char *out, size_t n); /* MKDD_XFCHECK result */

@@ -43,6 +43,9 @@ bool disc_find(const char *path, uint64_t *off, uint32_t *size); /* file in the 
 /* Play a mod extracted to mod_dir (sys/main.dol, sys/fst.bin, files/) over the open image: from
  * then on the disc is the mod's, its missing files taken from the image. */
 bool disc_overlay(const char *mod_dir, char *err, size_t errlen);
+/* before disc_overlay: a folder of .ast files played instead of the mod's streams of those names (NULL none) */
+void disc_overlay_set_streams(const char *dir);
+unsigned disc_overlay_stream_count(void); /* how many it took */
 bool disc_overlay_active(void);
 const char *disc_overlay_name(void); /* the mod folder's name, NULL without one */
 /* Replace n bytes at disc offset off in every later read (front-end layout fixes; at most 1024 bytes). */
@@ -175,6 +178,16 @@ extern volatile uint32_t g_chartest_btn;
 extern volatile bool g_chartest_in;
 #define CP_VARIANTS 256 /* variants at most (folders in mods/characters too) */
 #define CP_DIM (-2) /* charpack_show: the game's own picture, dimmed (a page with no variant there) */
+/* mods/karts: extra karts, each looking like its own and driving as a stock kart (its base, EKartID) */
+void kartpack_scan(const char *dir); /* at start-up */
+unsigned kartpack_count(void);
+int kartpack_kart(int v);
+const char *kartpack_name(int v);
+int kartpack_step(int kart, int v, int dir); /* the next (dir > 0) or previous one of kart from v (-1 the kart itself), -1 none */
+uint32_t kartpack_file(int v, int data, uint32_t *size); /* its file for a ResMgr::KartDataId, read into the pool; 0 none */
+/* a player's latest extra kart on the kart screen, for its name on screen; the time it was chosen (ns), 0 none */
+extern char g_kart_label[4][56];
+extern volatile uint64_t g_kart_label_at[4];
 void charpack_scan(const char *dir); /* at start-up: the mods/characters folder */
 unsigned charpack_count(void);
 int charpack_base(const char *folder, size_t n); /* a driver folder name ("Mario") -> 0..19, -1 */
@@ -219,6 +232,9 @@ bool charvoice_match(uint32_t wave, CharVoiceSound *out); /* a channel starting 
 extern volatile uint32_t g_char_cycle;
 /* Log code words the game rewrote since boot (call once a frame; checks about once a second). */
 void machine_watch_code(void);
+bool car_pairs(Ctx *c, uint32_t addr);
+extern bool g_car_verify; /* config/car_verify: run the game's car check too, and compare */
+extern bool g_car_check;  /* config/car_check: the native car check (off: unproven, it has yet to engage on hardware) */
 void cheats_unlock_all(void);
 void cheats_set(bool on); /* on: unlock_all; off: the earned bits back */
 bool cheats_active(void);
@@ -295,6 +311,7 @@ extern volatile uint32_t g_fp_kart, g_kart_eye_on;
 extern float g_kart_up, g_kart_fwd, g_kart_tilt, g_kart_add[21][3];
 extern volatile int g_kart_last;
 extern volatile int g_kart_test_on, g_kart_test[3];
+extern volatile int g_kart_test_right, g_kart_test_shot; /* an extra kart picked, the kart screen saved */
 /* Look back (held by the front end): bit v turns view v's race camera around (view = player, any
  * number of screens). g_cam_frames[v] counts view v's race camera updates, so the front end knows
  * when that player's Y is a look-back button. */

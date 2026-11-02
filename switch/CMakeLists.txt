@@ -11,7 +11,7 @@ set(CMAKE_C_RESPONSE_FILE_LINK_FLAG "@")
 
 set(ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 # The app's version: the NACP's and the updater's (only update.c sees it, so a bump rebuilds one file)
-set(MKDD_VERSION "1.8.0")
+set(MKDD_VERSION "1.8.1")
 if(NOT GEN_DIR)
     message(FATAL_ERROR "set -DGEN_DIR=<output of tools/gen_c.py>")
 endif()
@@ -21,7 +21,15 @@ option(MKDD_DEKO3D_DEBUG "deko3d debug library" OFF)
 set(APP MKDD-NX)
 set(BACKEND_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/render_dk.c ${CMAKE_CURRENT_SOURCE_DIR}/uam_c.cpp ${CMAKE_CURRENT_SOURCE_DIR}/egl_stub.c)
 
-add_compile_options(-fPIE -ffp-contract=off -fwrapv -fno-strict-aliasing)
+# No errno from sqrt and no FP traps: the game's results are the same, sqrt is one instruction.
+add_compile_options(-fPIE -ffp-contract=off -fwrapv -fno-strict-aliasing -fno-math-errno -fno-trapping-math)
+# Generated code gets x29 as one more register. MKDD_FRAME_POINTERS=ON for the profiler's inclusive
+# times and full crash backtraces through game code.
+option(MKDD_FRAME_POINTERS "frame pointers in generated code" OFF)
+option(MKDD_MMIO_CENSUS "log the code that reaches hardware addresses (tools/mmio_census.py)" OFF)
+if(MKDD_MMIO_CENSUS)
+    set_property(SOURCE ${ROOT}/runtime/hw.c ${ROOT}/runtime/mmio_tramp.c APPEND PROPERTY COMPILE_DEFINITIONS MKDD_MMIO_CENSUS)
+endif()
 include_directories(${ROOT}/runtime ${GEN_DIR} ${DEVKITPRO}/portlibs/switch/include ${DEVKITPRO}/portlibs/switch/include/SDL2)
 link_directories(${DEVKITPRO}/portlibs/switch/lib)
 
@@ -32,7 +40,11 @@ file(GLOB GEN_SOURCES CONFIGURE_DEPENDS "${GEN_DIR}/part_*.c")
 set(SW_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/main_switch.c ${BACKEND_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/tev_gen.c ${CMAKE_CURRENT_SOURCE_DIR}/prof_switch.c ${CMAKE_CURRENT_SOURCE_DIR}/menu.c ${CMAKE_CURRENT_SOURCE_DIR}/ui_font.c ${CMAKE_CURRENT_SOURCE_DIR}/pause_art.c ${CMAKE_CURRENT_SOURCE_DIR}/charpack_art.c ${CMAKE_CURRENT_SOURCE_DIR}/hdtex.c ${CMAKE_CURRENT_SOURCE_DIR}/update.c)
 
 # Generated code: -O2 (big functions; -O3 mostly costs compile time). Runtime hot paths -O3.
-set_source_files_properties(${GEN_SOURCES} ${GEN_DIR}/table.c PROPERTIES COMPILE_OPTIONS "-O2;-w")
+set(GEN_OPTIONS -O2 -w)
+if(NOT MKDD_FRAME_POINTERS)
+    list(APPEND GEN_OPTIONS -fomit-frame-pointer)
+endif()
+set_source_files_properties(${GEN_SOURCES} ${GEN_DIR}/table.c PROPERTIES COMPILE_OPTIONS "${GEN_OPTIONS}")
 set_source_files_properties(${RT_SOURCES} ${SW_SOURCES} PROPERTIES COMPILE_OPTIONS "-O3;-Wall;-Wno-unused-function")
 # pause_art_data.S: the pause screen's Switch picture and button badges (tools/make_pause_art.py)
 set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/pause_art_data.S PROPERTIES COMPILE_OPTIONS "-I${CMAKE_CURRENT_SOURCE_DIR}"
@@ -98,6 +110,11 @@ endif()
 target_link_libraries(${APP} uamlib ${DEKO3D_LIB} SDL2 curl z zstd lzma nx m)
 # uam is C++: link with the C++ driver so libstdc++ / libsupc++ come in
 set_target_properties(${APP} PROPERTIES LINKER_LANGUAGE CXX)
+# The profiled functions together (tools/hot_order.py): layout only. -DMKDD_HOT_ORDER=OFF for comparisons.
+option(MKDD_HOT_ORDER "link the profiled functions together" ON)
+if(MKDD_HOT_ORDER)
+    target_link_options(${APP} PRIVATE "-Wl,--section-ordering-file=${CMAKE_CURRENT_SOURCE_DIR}/hot_order.ld")
+endif()
 
 set(APP_NAME "Mario Kart: Double Dash!! (recomp)")
 nx_generate_nacp(${APP}.nacp

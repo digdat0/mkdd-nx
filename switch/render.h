@@ -21,6 +21,7 @@ void render_set_backdrop(bool on);
 /* HD texture replacements (hdtex.h) on or off: takes effect next frame, every texture reloads. Stays
  * off without a texture file or BC7 support. */
 void render_set_hd(bool on);
+void render_set_gpu_test(bool on); /* before render_init */
 void render_capture(const char *path); /* the next presented screen, as a .ppm */
 /* Anisotropic filtering level (1 = off, up to 16; clamped to what the GPU supports). */
 void render_set_aniso(float level);

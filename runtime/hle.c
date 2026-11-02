@@ -31,7 +31,7 @@ enum {
     H_HID2,
     H_THP_DECODE, H_OS_REPORT, H_OS_PANIC, H_RESET_IGNORED, H_PPC_HALT,
     H_SYS_FETCH, H_SYS_STORE, H_CARD, H_GX_DRAW_DONE, H_SET_PRIORITY,
-    H_MT_CHECK, H_MT_RELEASE, H_MT_DASH, H_JUMP, H_ETH,
+    H_MT_CHECK, H_MT_RELEASE, H_MT_DASH, H_JUMP, H_ETH, H_CAR_PAIRS,
 };
 
 static const struct { const char *name; int id; } BIND[] = {
@@ -65,6 +65,7 @@ static const struct { const char *name; int id; } BIND[] = {
     {"GXDrawDone", H_GX_DRAW_DONE},
     {"FUN_802ab538", H_MT_CHECK}, {"FUN_802ab8a4", H_MT_RELEASE}, {"FUN_802a9354", H_MT_DASH},
     {"FUN_802ad9d0", H_JUMP},
+    {"FUN_801915dc", H_CAR_PAIRS},
     {"ETHInit", H_ETH}, {"ETHSendAsync", H_ETH}, {"ETHGetMACAddr", H_ETH}, {"ETHSetRecvCallback", H_ETH},
     {"ETHGetLinkStateAsync", H_ETH}, {"ETHSetProtoType", H_ETH}, {"ETHAddMulticastAddress", H_ETH},
     {"ETHClearMulticastAddresses", H_ETH}, {"EXIGetID", H_ETH},
@@ -426,7 +427,7 @@ bool rt_hle(Ctx *c, uint32_t addr) {
     switch (h->id) {
     case H_DISABLE: case H_ENABLE: case H_RESTORE: case H_MTMSR:
     case H_MTX_COPY: case H_MTX_CONCAT: case H_MTX_MULTVEC: case H_VEC_CROSS: case H_VEC_MAG: case H_MTX_INVERSE:
-    case H_MT_CHECK: case H_MT_RELEASE: case H_MT_DASH: case H_JUMP:
+    case H_MT_CHECK: case H_MT_RELEASE: case H_MT_DASH: case H_JUMP: case H_CAR_PAIRS:
         break;
     default:
         hw_gx_flush();
@@ -684,6 +685,7 @@ bool rt_hle(Ctx *c, uint32_t addr) {
     }
     case H_MT_CHECK: case H_MT_RELEASE: case H_MT_DASH: return mini_turbo(c, h->id, addr);
     case H_JUMP: return jump(c, addr);
+    case H_CAR_PAIRS: return car_pairs(c, addr);
     case H_ETH: {
         uint32_t r;
         if (!eth_call(c, h->name, &r)) return false;

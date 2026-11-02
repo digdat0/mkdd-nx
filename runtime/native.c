@@ -102,7 +102,19 @@ static uint64_t i_PSMTXCopy(Ctx *c, uint8_t *M, ARGS) {
 /* PSMTXConcat on host copies (o may alias a or b) */
 static void mtx_concat_h(const float *a, const float *b, float *out) {
     float o[12];
-#ifdef HAVE_D2
+#ifdef MKDD_MTX_NEON
+    /* Four lanes of single with a fused multiply-add, as the GameCube's ps_madd rounds. The
+     * recompiled code's double sums round the same way except in rare last-bit cases. */
+    float32x4_t b0 = vld1q_f32(b), b1 = vld1q_f32(b + 4), b2 = vld1q_f32(b + 8);
+    for (int r = 0; r < 3; r++) {
+        float32x4_t ar = vld1q_f32(a + 4 * r);
+        float32x4_t v = vmulq_laneq_f32(b0, ar, 0);
+        v = vfmaq_laneq_f32(v, b1, ar, 1);
+        v = vfmaq_laneq_f32(v, b2, ar, 2);
+        v = vsetq_lane_f32(vgetq_lane_f32(v, 3) + vgetq_lane_f32(ar, 3), v, 3);
+        vst1q_f32(o + 4 * r, v);
+    }
+#elif defined(HAVE_D2)
     D2 B[3][2];
     for (int k = 0; k < 3; k++) {
         B[k][0] = d2_ld(b + 4 * k);
@@ -303,6 +315,44 @@ static uint64_t i_FUN_8005b564(Ctx *c, uint8_t *M, ARGS) {
     uint32_t src = ld32(c, M, data + 0x18);
     uint32_t idx = ld32(c, M, cl + 0x18);
     uint32_t zero = ld32(c, M, r2 - 0x79cc);
+#ifdef MKDD_MTX_NEON
+    /* Everything in RAM, signs the usual +1/-1 and a modest key count: the same sums on three
+     * lanes, the tables resolved once. Otherwise the general loops below. */
+    uint32_t sgv[2] = {ld32(c, M, r2 - 0x79d4), ld32(c, M, r2 - 0x79d0)};
+    const uint8_t *ktab[32], *wp = NULL;
+    bool fast = sgv[0] == 0x3F800000u && sgv[1] == 0xBF800000u && zero == 0 && keys <= 32 && IS_RAM(idx) && IS_RAM(idx + 2 * n) &&
+                IS_RAM(wt) && IS_RAM(wt + 4 * keys) && IS_RAM(src) && IS_RAM(src + 0x1FFF * 12 + 16) && IS_RAM(dst) &&
+                IS_RAM(dst + 0x10000u * 12 + 16) && IS_RAM(key) && IS_RAM(key + 12 * keys);
+    for (uint32_t j = 0; fast && j < keys; j++) {
+        uint32_t t = ld32(c, M, key + 12 * j + 4);
+        fast = IS_RAM(t) && IS_RAM(t + 2 * n);
+        if (fast) ktab[j] = M + (t & RAM_MASK);
+    }
+    if (fast) {
+        const uint8_t *ip = M + (idx & RAM_MASK), *sb = M + (src & RAM_MASK);
+        uint8_t *db = M + (dst & RAM_MASK);
+        wp = M + (wt & RAM_MASK);
+        float wv[32];
+        for (uint32_t j = 0; j < keys; j++) { uint32_t u = (uint32_t)get_be(wp + 4 * j, 4); memcpy(&wv[j], &u, 4); }
+        for (uint32_t k = 0; k < n; k++) memset(db + get_be(ip + 2 * k, 2) * 12, 0, 12);
+        for (uint32_t i = 0; i < n; i++) {
+            uint8_t *dp = db + get_be(ip + 2 * i, 2) * 12;
+            /* the fourth lane is the next vertex's x: never stored */
+            float32x4_t v = vreinterpretq_f32_u8(vrev32q_u8(vld1q_u8(dp)));
+            for (uint32_t j = 0; j < keys; j++) {
+                uint32_t e = (uint32_t)get_be(ktab[j] + 2 * i, 2);
+                uint32x4_t s = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(sb + (e & 0x1FFF) * 12)));
+                const uint32_t neg[4] = {(e >> 15) << 31, ((e >> 14) & 1) << 31, ((e >> 13) & 1) << 31, 0};
+                s = veorq_u32(s, vld1q_u32(neg));
+                v = vfmaq_n_f32(v, vreinterpretq_f32_u32(s), wv[j]);
+            }
+            uint8x16_t b = vrev32q_u8(vreinterpretq_u8_f32(v));
+            vst1_u8(dp, vget_low_u8(b));
+            vst1q_lane_u32((uint32_t *)(void *)(dp + 8), vreinterpretq_u32_u8(b), 2);
+        }
+        return 0;
+    }
+#endif
     for (uint32_t k = 0; k < n; k++) {
         uint32_t d = dst + ld16(c, M, idx + 2 * k) * 12;
         mst(c, M, d, 4, zero);
@@ -410,6 +460,27 @@ static uint64_t i_J3DGetKeyFrameInterpolation_s___FfP18J3DAnmKeyTableBasePs(Ctx 
 static uint64_t i_J3DMtxProjConcat__FPA4_fPA4_fPA4_f(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t a = (uint32_t)a0, b = (uint32_t)a1, o = (uint32_t)a2;
+#ifdef MKDD_MTX_NEON
+    /* b read once: only an output overlapping b could see the difference (see mtx_concat_h for
+     * the rounding) */
+    if (o + 0x30 <= b || b + 0x40 <= o) {
+        float B[16];
+        ldfn(c, M, b, B, 16);
+        float32x4_t b0 = vld1q_f32(B), b1 = vld1q_f32(B + 4), b2 = vld1q_f32(B + 8), b3 = vld1q_f32(B + 12);
+        for (int r = 0; r < 3; r++) {
+            float ar[4], res[4];
+            ldfn(c, M, a + 0x10 * r, ar, 4);
+            float32x4_t A = vld1q_f32(ar);
+            float32x4_t v = vmulq_laneq_f32(b0, A, 0);
+            v = vfmaq_laneq_f32(v, b1, A, 1);
+            v = vfmaq_laneq_f32(v, b2, A, 2);
+            v = vfmaq_laneq_f32(v, b3, A, 3);
+            vst1q_f32(res, v);
+            stfn(c, M, o + 0x10 * r, res, 4);
+        }
+        return 0;
+    }
+#endif
     for (int r = 0; r < 3; r++) {
         float ar[4], col[4][2], res[2];
         ldfn(c, M, a + 0x10 * r, ar, 4);
@@ -625,7 +696,7 @@ static void mtxcalc_calc(Ctx *c, uint8_t *M, uint32_t calc) {
  * the children. */
 static uint64_t i_recursiveCalc__8J3DJointFv(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
-    const uint32_t CUR = 0x803AD134u, S0 = 0x803AD164u, S1 = 0x803AD170u;
+    const uint32_t CUR = 0x803AD134u;
     uint32_t r13 = (uint32_t)RD(c, REG_R13, 4);
     /* the original's 0xb0-byte frame: callees run at the same stack addresses */
     uint32_t old_sp = ctx_gpr(c, 1), sp = old_sp - 0xb0;
@@ -633,11 +704,10 @@ static uint64_t i_recursiveCalc__8J3DJointFv(Ctx *c, uint8_t *M, ARGS) {
     ctx_set_gpr(c, 1, sp);
     uint32_t j = (uint32_t)a0;
     {
-        uint8_t saved[48];
-        uint32_t sv[6];
-        for (int i = 0; i < 12; i++) put_be(saved + 4 * i, 4, ld32(c, M, CUR + 4 * i));
+        /* CUR, S0, S1 are 72 contiguous bytes of RAM */
+        uint8_t saved[72];
+        memcpy(saved, M + (CUR & RAM_MASK), sizeof saved);
         uint32_t prev = 0, calc = ld32(c, M, j + 0x54);
-        for (int i = 0; i < 3; i++) { sv[i] = ld32(c, M, S0 + 4 * i); sv[3 + i] = ld32(c, M, S1 + 4 * i); }
         if (calc) {
             prev = ld32(c, M, r13 - 0x6670);
             mst(c, M, r13 - 0x6674, 4, j);
@@ -654,8 +724,7 @@ static uint64_t i_recursiveCalc__8J3DJointFv(Ctx *c, uint8_t *M, ARGS) {
         if (cb) guest2(c, cb, j, 0);
         uint32_t child = ld32(c, M, j + 0xc);
         if (child) i_recursiveCalc__8J3DJointFv(c, M, child, 0, 0, 0, 0, 0, 0, 0);
-        for (int i = 0; i < 12; i++) mst(c, M, CUR + 4 * i, 4, get_be(saved + 4 * i, 4));
-        for (int i = 0; i < 3; i++) { mst(c, M, S0 + 4 * i, 4, sv[i]); mst(c, M, S1 + 4 * i, 4, sv[3 + i]); }
+        memcpy(M + (CUR & RAM_MASK), saved, sizeof saved);
         if (prev) mst(c, M, r13 - 0x6670, 4, prev);
         if (cb) guest2(c, cb, j, 1);
         uint32_t sib = ld32(c, M, j + 0x10);
@@ -750,6 +819,15 @@ static uint64_t i_FUN_800089e4(Ctx *c, uint8_t *M, ARGS) {
 }
 
 /* ---- CrsGround (course collision) ---- */
+/* From here to the GX natives: only game data in MEM1 (collision, joints), no hardware addresses. */
+ALWAYS_INLINE float ldf_ram(uint8_t *M, uint32_t a) { uint32_t u = (uint32_t)mld_s(M, a, 4); float f; memcpy(&f, &u, 4); return f; }
+ALWAYS_INLINE void stf_ram(uint8_t *M, uint32_t a, float f) { uint32_t u; memcpy(&u, &f, 4); mst_s(M, a, 4, u); }
+#define ldf(c, M, a) ldf_ram(M, a)
+#define stf(c, M, a, f) stf_ram(M, a, f)
+#define ld32(c, M, a) ((uint32_t)mld_s(M, a, 4))
+#define ld16(c, M, a) ((uint32_t)mld_s(M, a, 2))
+#define mld(c, M, a, s) mld_s(M, a, s)
+#define mst(c, M, a, s, v) mst_s(M, a, s, v)
 /* Moving ground (obj->@0x4dc->@4->u8 @4 set): vectors go through the ground's matrix. */
 ALWAYS_INLINE bool crs_moving(Ctx *c, uint8_t *M, uint32_t obj) { return mld(c, M, ld32(c, M, ld32(c, M, obj + 0x4dc) + 4) + 4, 1) != 0; }
 
@@ -1886,6 +1964,12 @@ out:
     return 0;
 }
 
+#undef ldf
+#undef stf
+#undef ld32
+#undef ld16
+#undef mld
+#undef mst
 /* ---- GX ---- */
 /* FUN_80067bc8(Mtx m, u32 id): XF load of m's 3x3 part with a zero (r2-0x797c) translation
  * column at XF id * 4. */
@@ -4556,6 +4640,7 @@ static bool sel_ours(uint32_t md) {
     return false;
 }
 /* back to the game's own models, then everything built so far gone (the heap full) */
+static void kart_wipe(Ctx *c, uint8_t *M, uint32_t cs);
 static void sel_wipe(Ctx *c, uint8_t *M, uint32_t cs) {
     for (int b = 0; b < CP_BASES && IS_RAM(cs); b++) {
         uint32_t slot = cs + 0x28 + 0x30 * (CP_CHAR_ID[b] - 1);
@@ -5183,6 +5268,7 @@ static void chartest_step(Ctx *c, uint8_t *M, uint32_t menu, const int cells[4][
         if ((unsigned)v >= charpack_count()) { rt_log("chartest: done"); g_chartest_start = -1, g_chartest_btn = 0; return; }
         if (charpack_pool_left() < (2u << 20)) { /* as a new screen: a visit's files are kept until then */
             if (s_nsel) sel_wipe(c, M, ld32(c, M, menu + 0x2014));
+            kart_wipe(c, M, ld32(c, M, menu + 0x2014));
             charpack_pool_reset();
         }
         int page, cell;
@@ -5233,6 +5319,7 @@ static uint64_t i_character__9SceneMenuFv(Ctx *c, uint8_t *M, ARGS) {
         rt_log("charpack: select screen opened anew");
         charpack_page_first();
         if (s_nsel) sel_wipe(c, M, ld32(c, M, menu + 0x2014));
+        kart_wipe(c, M, ld32(c, M, menu + 0x2014));
         charpack_pool_reset();
         s_sel_flags_sig = ~0u;
         memset(s_sel_wrote, 0, sizeof s_sel_wrote);
@@ -6580,9 +6667,196 @@ static int classic_side(const float m[12], float w, float h) {
  * is still locked (tstSecretKart(kart ID from the table at 0x8032E464, the save's flags at
  * 0x803BC1C4)). g_any_kart (the - menu's ANY KART): every unlocked kart, whatever the class. */
 volatile uint32_t g_any_kart;
+/* Extra karts (mods/karts, charpack.c): LEFT / RIGHT also stops at those next to the kart they are added
+ * to, per team (s_kart_v, -1 the kart itself); the game's kart number stays that kart's, so its name,
+ * class, stats and the race are the stock kart's and only the models differ: on the kart screen, its
+ * blocks in CharacterSelect3D, per EKartID: +0x5cc + 4 * kart the body's ExModel, +0x620 / +0x818 / +0xa10
+ * + 0x18 * kart + 4 * wheel the arms', shocks' and tires' (the even wheels' the right tire), and the
+ * J3DModelData those show as the constructor made them, in a heap of ours; in the race, the
+ * ResMgr::getPtr(KartDataId, kart) while that team's KartLoader::load runs. Two teams on one kart show
+ * the same model on this screen (one block), each races its own. Not in LAN play: a kart's joints
+ * could matter to the other console's game. */
+#define KART_HEAP_SIZE (3u << 20)
+#define KART_SLOTS 19 /* a body, then 6 each of arms, shocks and tires */
+#define KART_BUILT 32
+typedef struct { int v; uint32_t ex[KART_SLOTS]; } KartModel;
+static int s_kart_v[4] = {-1, -1, -1, -1};
+static KartModel s_kart_built[KART_BUILT];
+static int s_kart_nbuilt;
+static uint32_t s_kart_heap, s_kart_heap_mem, s_kart_base[21][KART_SLOTS];
+static bool s_kart_bad[256];
+char g_kart_label[4][56];
+volatile uint64_t g_kart_label_at[4];
+/* IS_RAM alone passes address 0, and a kart without shocks has a null part */
+#define KART_OK(a) ((a) != 0 && IS_RAM(a))
+static uint32_t kart_slot(uint32_t cs, int kart, int i) {
+    return i == 0 ? cs + 0x5cc + 4 * (uint32_t)kart
+                  : cs + (i <= 6 ? 0x620u : i <= 12 ? 0x818u : 0xa10u) + 0x18 * (uint32_t)kart + 4 * (uint32_t)((i - 1) % 6);
+}
+static bool kart_ours(uint32_t a) { return s_kart_heap_mem && a >= s_kart_heap_mem && a < s_kart_heap_mem + KART_HEAP_SIZE; }
+/* the game's own back in their blocks, and the models and the pool's files free */
+static void kart_wipe(Ctx *c, uint8_t *M, uint32_t cs) {
+    if (!s_kart_nbuilt) return;
+    for (int k = 0; k < 21 && KART_OK(cs); k++)
+        for (int i = 0; i < KART_SLOTS; i++)
+            if (kart_ours(ld32(c, M, kart_slot(cs, k, i)))) mst(c, M, kart_slot(cs, k, i), 4, s_kart_base[k][i]);
+    if (KART_OK(s_kart_heap)) sel_call(c, 0x80014CB8u, s_kart_heap, 0, 0, 0, 0); /* JKRHeap::freeAll */
+    s_kart_nbuilt = 0;
+}
+/* as CharacterSelect3D's constructor loads a kart's part: its file, else the stock kart's; 0 none */
+static uint32_t kart_part(Ctx *c, uint8_t *M, int v, int data) {
+    uint32_t size = 0, f = kartpack_file(v, data, &size);
+    if (!f) f = sel_call(c, 0x801CEE54u, (uint32_t)data, (uint32_t)kartpack_kart(v), 0, 0, 0); /* ResMgr::getPtr(KartDataId, kart) */
+    if (!KART_OK(f)) return 0;
+    uint32_t md = sel_call(c, 0x80060588u, f, 0x18020010u, 0, 0, 0); /* J3DModelLoaderDataBase::load */
+    if (!KART_OK(md)) return 0;
+    sel_call(c, 0x8018244Cu, md, 0, 0, 0, 0); /* ExModel::disableTexLOD */
+    sel_call(c, 0x80182610u, md, 2, 0, 0, 0);
+    sel_call(c, 0x80074A58u, md, 0x40000, 0, 0, 0); /* J3DModelData::newSharedDisplayList */
+    sel_call(c, 0x80074C4Cu, md, 0, 0x8032872Cu, 0, 0); /* simpleCalcMaterial(j3dDefaultMtx) */
+    sel_call(c, 0x80074BD8u, md, 0, 0, 0, 0); /* makeSharedDL */
+    return md;
+}
+static uint32_t kart_ex(Ctx *c, uint8_t *M, uint32_t md) {
+    uint32_t ex = KART_OK(md) ? sel_call(c, 0x8001563Cu, 0x8c, s_kart_heap, 0, 0, 0) : 0; /* operator new(size, heap, align) */
+    if (!KART_OK(ex)) return 0;
+    sel_call(c, 0x80182164u, ex, 1, 0, 0, 0); /* ExModel::ExModel(1) */
+    sel_call(c, 0x80182298u, ex, md, 0, 0, 0); /* ExModel::setModelData */
+    return ex;
+}
+static KartModel *kart_model(Ctx *c, uint8_t *M, uint32_t cs, int v) {
+    for (int i = 0; i < s_kart_nbuilt; i++)
+        if (s_kart_built[i].v == v) return &s_kart_built[i];
+    if (s_kart_bad[v & 255]) return NULL;
+    if (!s_kart_heap) {
+        uint32_t root = ld32(c, M, (uint32_t)RD(c, REG_R13, 4) - 0x67b0);
+        s_kart_heap_mem = charpack_reserve(KART_HEAP_SIZE);
+        s_kart_heap = s_kart_heap_mem && KART_OK(root) ? sel_call(c, 0x8001287Cu, s_kart_heap_mem, KART_HEAP_SIZE, root, 0, 0) : 0; /* JKRExpHeap::create */
+        if (!KART_OK(s_kart_heap)) { s_kart_heap = 0, s_kart_bad[v & 255] = true; rt_log("kartpack: no heap for the kart screen's models"); return NULL; }
+    }
+    /* a kart's parts take a few hundred KiB at most */
+    if (sel_call(c, 0x80014D3Cu, s_kart_heap, 0, 0, 0, 0) < (1u << 20) || s_kart_nbuilt == KART_BUILT) kart_wipe(c, M, cs);
+    uint32_t prev = sel_call(c, 0x80014B28u, s_kart_heap, 0, 0, 0, 0); /* becomeCurrentHeap */
+    int kart = kartpack_kart(v), wheels = kart == 7 || kart == 9 ? 6 : 4;
+    uint32_t body = kart_part(c, M, v, 0), arm = kart_part(c, M, v, 1), shock = kart_part(c, M, v, 2), right = kart_part(c, M, v, 5), left = kart_part(c, M, v, 4);
+    KartModel *m = &s_kart_built[s_kart_nbuilt];
+    memset(m, 0, sizeof *m);
+    m->v = v;
+    bool ok = KART_OK(m->ex[0] = kart_ex(c, M, body)) && KART_OK(arm) && KART_OK(right) && KART_OK(left);
+    for (int w = 0; ok && w < wheels; w++) {
+        m->ex[1 + w] = kart_ex(c, M, arm);
+        m->ex[7 + w] = kart_ex(c, M, shock); /* 0 on the karts without shocks */
+        m->ex[13 + w] = kart_ex(c, M, w & 1 ? left : right);
+        ok = KART_OK(m->ex[1 + w]) && KART_OK(m->ex[13 + w]);
+    }
+    sel_call(c, 0x80014B28u, prev, 0, 0, 0, 0);
+    rt_log("kartpack: %s's kart screen models %s", kartpack_name(v), ok ? "built" : "failed");
+    if (!ok) { s_kart_bad[v & 255] = true; return NULL; }
+    s_kart_nbuilt++;
+    return m;
+}
+/* the blocks as the teams' choices have them */
+static void kart_show(Ctx *c, uint8_t *M, uint32_t menu) {
+    uint32_t cs = KART_OK(menu) ? ld32(c, M, menu + 0x2014) : 0;
+    if (!KART_OK(cs) || !kartpack_count()) return;
+    uint32_t lr = (uint32_t)RD(c, 0x1020, 4);
+    int want[21];
+    for (int k = 0; k < 21; k++) want[k] = -1;
+    for (int t = 0; t < 4; t++)
+        if (s_kart_v[t] >= 0 && kartpack_kart(s_kart_v[t]) >= 0) want[kartpack_kart(s_kart_v[t])] = s_kart_v[t];
+    for (int k = 0; k < 21; k++) {
+        for (int i = 0; i < KART_SLOTS; i++) { /* the game's own: a new screen's */
+            uint32_t cur = ld32(c, M, kart_slot(cs, k, i));
+            if (!kart_ours(cur)) s_kart_base[k][i] = cur;
+        }
+        KartModel *m = want[k] >= 0 ? kart_model(c, M, cs, want[k]) : NULL;
+        for (int i = 0; i < KART_SLOTS; i++) {
+            uint32_t to = m ? m->ex[i] : s_kart_base[k][i], at = kart_slot(cs, k, i);
+            if (ld32(c, M, at) != to) mst(c, M, at, 4, to);
+        }
+    }
+    WR(c, 0x1020, 4, lr);
+}
+/* the team whose drivers these are, -1 none */
+static int kart_team(Ctx *c, uint8_t *M, uint32_t menu, int32_t d1, int32_t d2) {
+    for (uint32_t t = 0; t < 4; t++)
+        if ((int32_t)ld32(c, M, menu + 0x1c * t + 0x2138) == d1 && (int32_t)ld32(c, M, menu + 0x1c * t + 0x213c) == d2) return (int)t;
+    return -1;
+}
+static void kart_choose(Ctx *c, uint8_t *M, uint32_t menu, int team, int v) {
+    s_kart_v[team] = v;
+    if (v >= 0) {
+        snprintf(g_kart_label[team], sizeof g_kart_label[team], "P%d  %s", team + 1, kartpack_name(v));
+        g_kart_label_at[team] = plat_now_ns();
+    } else g_kart_label_at[team] = 0;
+    kart_show(c, M, menu);
+}
+volatile int g_kart_test_right, g_kart_test_shot;
+static uint64_t i_changeKart__9SceneMenuFiiii(Ctx *c, uint8_t *M, ARGS);
+/* SceneMenu::getKart(d1, d2): the pair's first kart on the screen, the stock one */
+static uint64_t i_getKart__9SceneMenuFii(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    int team = kartpack_count() ? kart_team(c, M, (uint32_t)a0, (int32_t)a1, (int32_t)a2) : -1;
+    ctx_call_orig(c, g_native_addr[NAT_getKart__9SceneMenuFii]);
+    uint32_t kart = (uint32_t)ctx_gpr(c, 3);
+    if (team < 0) {
+        if (kartpack_count()) rt_log("kartpack: no team has drivers %d, %d", (int)a1, (int)a2);
+        return kart;
+    }
+    kart_choose(c, M, (uint32_t)a0, team, -1);
+    /* tools/fpv_test.sh: RIGHT until the Nth extra kart, then a look at the screen */
+    for (int n = 0, seen = 0; seen < g_kart_test_right && !g_lan_play && n < 2000; n++) {
+        kart = (uint32_t)i_changeKart__9SceneMenuFiiii(c, M, a0, a1, a2, kart, 1, 0, 0, 0);
+        if (s_kart_v[team] >= 0) seen++;
+    }
+    if (g_kart_test_right) {
+        rt_log("kart test: team %d on kart %u, %s", team, kart, kartpack_name(s_kart_v[team]));
+        g_kart_test_shot = 120;
+    }
+    return kart;
+}
+/* KartLoader::load: the team loading its kart (a player's: their kart number is their team) */
+static int s_kart_loading = -1;
+static uint64_t i_FUN_801841f4(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t loader = (uint32_t)a0, info = KART_OK(loader) ? ld32(c, M, loader + 4) : 0;
+    int was = s_kart_loading;
+    bool human = KART_OK(info) && (ld32(c, M, info + 4) != 0 || ld32(c, M, info + 0xc) != 0);
+    int kart = KART_OK(loader) ? (int)ld32(c, M, loader) : -1;
+    s_kart_loading = human && kart >= 0 && kart < 4 ? kart : -1;
+    ctx_call_orig(c, g_native_addr[NAT_FUN_801841f4]);
+    s_kart_loading = was;
+    return 0;
+}
+static uint64_t i_getPtr__6ResMgrFQ26ResMgr10KartDataId7EKartID(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    int v = s_kart_loading >= 0 ? s_kart_v[s_kart_loading] : -1;
+    if (v >= 0 && kartpack_kart(v) == (int)a1) {
+        uint32_t size, f = kartpack_file(v, (int)a0, &size);
+        if (f) {
+            rt_log("kartpack: kart %d's part %d from %s", s_kart_loading, (int)a0, kartpack_name(v));
+            return f;
+        }
+    }
+    ctx_call_orig(c, g_native_addr[NAT_getPtr__6ResMgrFQ26ResMgr10KartDataId7EKartID]);
+    return ctx_gpr(c, 3);
+}
+
 static uint64_t i_changeKart__9SceneMenuFiiii(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t self = (uint32_t)a0;
+    /* the extra karts next to this one first: the game's kart number stays */
+    int team = kartpack_count() && !g_lan_play && (int32_t)a4 ? kart_team(c, M, self, (int32_t)a1, (int32_t)a2) : -1;
+    int kid = (int32_t)a3 >= 0 && (int32_t)a3 < 21 ? (int)ld32(c, M, 0x8032E464u + 4 * (uint32_t)a3) : -1;
+    if (team >= 0 && kid >= 0 && ((int32_t)a4 > 0 || s_kart_v[team] >= 0)) {
+        int v = kartpack_step(kid, s_kart_v[team], (int32_t)a4);
+        if (v >= 0 || s_kart_v[team] >= 0) { /* (back from the first: the kart itself) */
+            if ((int32_t)a4 < 0 || v >= 0) {
+                kart_choose(c, M, self, team, v);
+                return (uint32_t)a3;
+            }
+        }
+    }
     int d = (int)ld32(c, M, self + 0x10 + 12 * (uint32_t)a1) > (int)ld32(c, M, self + 0x10 + 12 * (uint32_t)a2) ? (int)a1 : (int)a2;
     int32_t weight = (int32_t)ld32(c, M, self + 0x10 + 12 * (uint32_t)d), k = (int32_t)a3, steps = (int32_t)a4;
     bool any = g_any_kart != 0;
@@ -6597,6 +6871,11 @@ static uint64_t i_changeKart__9SceneMenuFiiii(Ctx *c, uint8_t *M, ARGS) {
         if (ctx_gpr(c, 3) & 0xFF) break;
     }
     frame_pop(c, old_sp);
+    /* on to another kart: going back lands on its last extra one */
+    if (team >= 0) {
+        int to = k >= 0 && k < 21 ? (int)ld32(c, M, 0x8032E464u + 4 * (uint32_t)k) : -1;
+        kart_choose(c, M, self, team, steps < 0 && to >= 0 ? kartpack_step(to, -1, -1) : -1);
+    }
     return (uint32_t)k;
 }
 
@@ -7166,6 +7445,120 @@ static uint64_t i_FUN_80085f48(Ctx *c, uint8_t *M, ARGS) {
 }
 
 /* ---- batch 1: small per-frame helpers ---- */
+/* FUN_801915dc, every traffic car against every other, each frame: virtual calls and two stack
+ * copies per pair for hit tests that nearly always miss. This walks the same pairs and only proves
+ * that nothing happens. Any pair that could do something, or any object it doesn't know, returns
+ * false and the game's own function runs from the start, so the results stay the game's.
+ * Reads only, apart from the flag clear the game's function begins with. CAR_MARGIN keeps a rounding
+ * difference from the game's float maths on the side of asking the game. */
+#define CAR_MARGIN 1.001f
+#define CAR_GAP 1.0f /* the same for heights, in world units */
+#define GETPATHID 0x80192B60u      /* GeoCar::getPathID */
+#define GETPATHID_VIA 0x8019B9D4u  /* the same on the object at +0x264 */
+#define CYL_ISHITCYL 0x801F8E7Cu   /* ObjColCylinder::IsHitCylinder */
+#define CYL_ISHITSPHERE 0x801F8D9Cu /* ObjColCylinder::IsHitSphere */
+#define SPH_ISHITCYL 0x801F8CACu   /* ObjColSphere::IsHitCylinder */
+static bool car_path(Ctx *c, uint8_t *M, uint32_t o, uint32_t *id) {
+    uint32_t fn = ld32(c, M, ld32(c, M, o) + 0xa4);
+    if (fn == GETPATHID_VIA) {
+        o = ld32(c, M, o + 0x264);
+        fn = ld32(c, M, ld32(c, M, o) + 0xa4);
+    }
+    if (fn != GETPATHID) return false;
+    uint32_t path = ld32(c, M, o + 0xe8);
+    *id = path ? (uint32_t)mld(c, M, path + 0x26, 2) : 0xFFFF;
+    return true;
+}
+/* B's first bound against A's: true if the game's IsHitObject is sure to answer 0 without writing. */
+static bool car_miss(Ctx *c, uint8_t *M, uint32_t a, uint32_t b) {
+    uint32_t oa = ld32(c, M, ld32(c, M, a + 0x134)), ob = ld32(c, M, ld32(c, M, b + 0x134));
+    uint32_t type = ld32(c, M, oa + 8), fn = ld32(c, M, ld32(c, M, ob) + (type == 1 ? 0xc : 8));
+    float bx = ldf(c, M, b + 4), by = ldf(c, M, b + 8), bz = ldf(c, M, b + 0xc);
+    float ax = ldf(c, M, a + 4), ay = ldf(c, M, a + 8), az = ldf(c, M, a + 0xc);
+    float dx = ax - bx, dz = az - bz, d2 = dx * dx + dz * dz;
+    float scale = ldf(c, M, ob + 0xc), reach = ldf(c, M, ob + 0x24) * scale;
+    if (type == 1 && fn == CYL_ISHITCYL) {
+        float oscale = ldf(c, M, oa + 0xc);
+        reach += ldf(c, M, oa + 0x24) * oscale;
+        if (d2 >= reach * reach * CAR_MARGIN) return true;
+        float atop = ay + oscale * ldf(c, M, oa + 0x28), btop = by + scale * ldf(c, M, ob + 0x28);
+        return by >= atop + CAR_GAP || btop <= ay - CAR_GAP;
+    }
+    if (type == 1 && fn == SPH_ISHITCYL) { /* B a sphere, A a cylinder */
+        float r = ldf(c, M, ob + 4) * scale, oscale = ldf(c, M, oa + 0xc);
+        reach = r + ldf(c, M, oa + 0x24) * oscale;
+        if (d2 >= reach * reach * CAR_MARGIN) return true;
+        float atop = ay + oscale * ldf(c, M, oa + 0x28);
+        return by - r >= atop + CAR_GAP || by + r <= ay - CAR_GAP;
+    }
+    if (type == 0 && fn == CYL_ISHITSPHERE) {
+        float r = ldf(c, M, oa + 4);
+        reach += r;
+        if (d2 >= reach * reach * CAR_MARGIN) return true;
+        float btop = by + scale * ldf(c, M, ob + 0x28);
+        return ay + r <= by - CAR_GAP || ay - r >= btop + CAR_GAP;
+    }
+    return false;
+}
+/* True: every pair proved quiet. Otherwise what stopped it: 0 unknown car, 1 close on one path, 2 hit test. */
+static unsigned s_car_why[3];
+static uint32_t s_car_a, s_car_b;
+#define CAR_STOP(why, x, y) do { s_car_why[why]++; s_car_a = (x); s_car_b = (y); return false; } while (0)
+static bool car_pairs_quiet(Ctx *c, uint8_t *M, uint32_t mgr, unsigned *pairs) {
+    float close = ldf(c, M, ctx_gpr(c, 13) - 0x792c), close2 = close * close * CAR_MARGIN;
+    for (uint32_t i = ld32(c, M, mgr + 0x40); i; i = ld32(c, M, i + 0xc)) {
+        uint32_t a = ld32(c, M, i);
+        if (!(mld(c, M, a + 0x1e0, 2) & 1)) continue;
+        uint32_t tag = (uint32_t)mld(c, M, a + 0x1c0, 2), ida;
+        if (!car_path(c, M, a, &ida)) CAR_STOP(0, a, a);
+        for (uint32_t j = ld32(c, M, i + 0xc); j; j = ld32(c, M, j + 0xc)) {
+            uint32_t b = ld32(c, M, j), idb;
+            if ((uint32_t)mld(c, M, b + 0x1c0, 2) == tag || !(mld(c, M, b + 0x1e0, 2) & 1)) continue;
+            ++*pairs;
+            if (!car_path(c, M, b, &idb)) CAR_STOP(0, a, b);
+            if (ida == idb) {
+                float dx = ldf(c, M, b + 4) - ldf(c, M, a + 4), dy = ldf(c, M, b + 8) - ldf(c, M, a + 8), dz = ldf(c, M, b + 0xc) - ldf(c, M, a + 0xc);
+                if (!(dx * dx + dy * dy + dz * dz >= close2)) CAR_STOP(1, a, b); /* close on one path: the game slows them */
+            }
+            if (!car_miss(c, M, a, b)) CAR_STOP(2, a, b);
+        }
+    }
+    return true;
+}
+bool g_car_verify, g_car_check;
+bool car_pairs(Ctx *c, uint32_t addr) {
+    if (!g_car_check) return false;
+    static unsigned calls, asked, wrong;
+    static uint64_t pairs;
+    uint8_t *M = c->ram;
+    uint32_t mgr = ctx_gpr(c, 3);
+    unsigned n = 0;
+    bool quiet = car_pairs_quiet(c, M, mgr, &n);
+    pairs += n;
+    calls++;
+    if (!quiet) asked++;
+    if (quiet && g_car_verify) { /* the game's own run must set no flag either */
+        ctx_call_orig(c, addr);
+        for (uint32_t i = ld32(c, M, mgr + 0x40); i; i = ld32(c, M, i + 0xc))
+            if (mld(c, M, ld32(c, M, i) + 0x1e2, 2)) { wrong++; rt_log("car check: flags %#x on car %#010x, native said quiet", (unsigned)mld(c, M, ld32(c, M, i) + 0x1e2, 2), ld32(c, M, i)); }
+    }
+    if (calls % 1800 == 0 && (g_log_mask & LOG_GAME)) {
+        rt_log("car check: %u frames, %u left to the game's code, %llu pairs%s", calls, asked, (unsigned long long)pairs, g_car_verify ? "; verifying" : "");
+        if (asked) {
+            uint32_t oa = ld32(c, M, ld32(c, M, s_car_a + 0x134)), ob = ld32(c, M, ld32(c, M, s_car_b + 0x134));
+            uint32_t ty = ld32(c, M, oa + 8);
+            rt_log("car check: stopped by unknown car %u, close %u, hit test %u; last %#x (vt %#x, path fn %#x, tag %d) and %#x (vt %#x, path fn %#x, tag %d), bound type %u fn %#x, %.0f %.0f %.0f / %.0f %.0f %.0f",
+                   s_car_why[0], s_car_why[1], s_car_why[2], s_car_a, ld32(c, M, s_car_a), ld32(c, M, ld32(c, M, s_car_a) + 0xa4), (int)(int16_t)mld(c, M, s_car_a + 0x1c0, 2),
+                   s_car_b, ld32(c, M, s_car_b), ld32(c, M, ld32(c, M, s_car_b) + 0xa4), (int)(int16_t)mld(c, M, s_car_b + 0x1c0, 2),
+                   ty, ld32(c, M, ld32(c, M, ob) + (ty == 1 ? 0xc : 8)), ldf(c, M, s_car_a + 4), ldf(c, M, s_car_a + 8), ldf(c, M, s_car_a + 0xc), ldf(c, M, s_car_b + 4), ldf(c, M, s_car_b + 8), ldf(c, M, s_car_b + 0xc));
+        }
+        if (g_car_verify) rt_log("car check: %u wrong", wrong);
+    }
+    if (!quiet) return false;
+    for (uint32_t i = ld32(c, M, mgr + 0x40); i; i = ld32(c, M, i + 0xc)) mst(c, M, ld32(c, M, i) + 0x1e2, 2, 0);
+    return true;
+}
+
 /* GeographyObjManager::Calc_norm(it): the object's calc_norm (its calc, vtable +0x2c, then
  * FUN_801f7684); with flag 0x10 at +0xec, FUN_80183820(+0x5c), flags 1 and 2 cleared, +0xf0 = 0. */
 static uint64_t i_Calc_norm__19GeographyObjManagerFRC31JSUListIterator_12GeographyObj_(Ctx *c, uint8_t *M, ARGS) {

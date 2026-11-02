@@ -35,11 +35,21 @@
     "ldp x9, x10, [sp], #16\n ldp x7, x8, [sp], #16\n ldp x5, x6, [sp], #16\n"            \
     "ldp x3, x4, [sp], #16\n ldp x1, x2, [sp], #16\n ldp x29, x30, [sp], #16\n"
 
+/* MKDD_MMIO_CENSUS (tools/mmio_census.py): rt_mmio_* record the generated code's call site. */
+#ifdef MKDD_MMIO_CENSUS
+#define CENSUS_SITE "adrp x16, g_mmio_site\n str x30, [x16, :lo12:g_mmio_site]\n"
+#define CENSUS_GATHER "b 9f\n"
+#else
+#define CENSUS_SITE
+#define CENSUS_GATHER
+#endif
+
 __asm__(
     ".text\n"
     ".global rt_mmio_read_tramp\n .hidden rt_mmio_read_tramp\n .type rt_mmio_read_tramp, %function\n"
     ".p2align 4\n"
     "rt_mmio_read_tramp:\n"
+    CENSUS_SITE
     SAVE_ALL
     "bl rt_mmio_read\n"
     RESTORE_ALL
@@ -49,8 +59,10 @@ __asm__(
     ".global rt_mmio_write_tramp\n .hidden rt_mmio_write_tramp\n .type rt_mmio_write_tramp, %function\n"
     ".p2align 4\n"
     "rt_mmio_write_tramp:\n"
+    CENSUS_SITE
     /* gather pipe (0xCC008000..7), not capturing: append big-endian at stage + staged + gathered
      * (hw.c g_gx_gp: stage_len at +0, gather_len at +8, pending at +12) */
+    CENSUS_GATHER
     "and w16, w1, #0xfffffff8\n"
     "mov w17, #0x8000\n movk w17, #0xcc00, lsl #16\n"
     "cmp w16, w17\n b.ne 9f\n"

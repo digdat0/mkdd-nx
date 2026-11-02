@@ -189,6 +189,25 @@ static unsigned find_mods(void) {
     return found;
 }
 
+/* The folder of mods/audio with .ast files, in the layouts a copy can land in: its download's files/ folder
+ * as it comes, the folder's contents or the streams alone. NULL: none. */
+static const char *find_audio(void) {
+    static const char *const DIRS[] = {MODS_DIR "/audio/files/AudioRes/Stream", MODS_DIR "/audio/AudioRes/Stream", MODS_DIR "/audio"};
+    for (unsigned i = 0; i < sizeof DIRS / sizeof *DIRS; i++) {
+        DIR *d = opendir(DIRS[i]);
+        if (!d) continue;
+        unsigned n = 0;
+        struct dirent *e;
+        while ((e = readdir(d))) {
+            const char *dot = strrchr(e->d_name, '.');
+            if (dot && !strcasecmp(dot, ".ast")) n++;
+        }
+        closedir(d);
+        if (n) { rt_log("mod: stereo music: %u streams in %s", n, DIRS[i]); return DIRS[i]; }
+    }
+    return NULL;
+}
+
 /* A choice of two on the loading screen: up/down, then A. */
 static int choose(const char *title, const char *a, const char *b, int sel, const char *hint) {
     const char *opts[2] = {a, b};
@@ -598,6 +617,7 @@ static void map_gc(PadState *pad, u64 b, PadStatus *p) {
  * saved for each (logs/fpv_N_K.ppm; no eye lines: the table's, K = -1); A is pressed all the way through. */
 #define FPV_EYES 16
 static struct { bool on, loaded; int kart, eyes, eye[FPV_EYES][3], at, wait; uint32_t steps; } s_fpvt;
+static int g_kart_test_n;
 static void fpv_test_load(void) {
     s_fpvt.loaded = true;
     FILE *f = fopen("sdmc:/switch/MKDD-NX/config/fpv_test", "r");
@@ -609,6 +629,7 @@ static void fpv_test_load(void) {
     while (fgets(l, sizeof l, f)) {
         int *e = s_fpvt.eyes < FPV_EYES ? s_fpvt.eye[s_fpvt.eyes] : NULL;
         if (sscanf(l, "kart %d", &s_fpvt.kart) == 1) continue;
+        if (!strncmp(l, "kartright", 9)) { g_kart_test_right = sscanf(l + 9, "%d", &g_kart_test_n) == 1 ? g_kart_test_n : 1; continue; }
         if (e && sscanf(l, "eye %d %d %d", &e[0], &e[1], &e[2]) == 3) s_fpvt.eyes++;
     }
     fclose(f);
@@ -616,6 +637,7 @@ static void fpv_test_load(void) {
 }
 static void fpv_test_step(PadStatus *s) {
     uint32_t t = s_fpvt.steps++;
+    if (g_kart_test_shot > 0 && --g_kart_test_shot == 0) render_capture("sdmc:/switch/MKDD-NX/logs/fpv_kartscreen.ppm");
     /* the same way into a race as pc/bench.sh: START twice after the intro, then A */
     if (t > 600) s->button |= t < 720 ? (t % 60 < 10 ? PAD_START : 0) : t % 90 < 10 ? PAD_A : 0;
     /* gRaceInfo.mKartInfo[0].mKartDB; the karts' SKartDBs, 0x10 each (the same in every mod) */
@@ -927,8 +949,12 @@ static const float *auto_steps(bool docked, int *n) {
 static float render_scale(bool docked) {
     int n;
     if (auto_on(docked)) return auto_steps(docked, &n)[s_auto.level < n ? s_auto.level : n - 1];
-    if (docked) return g_set.docked_res == DOCKED_NATIVE ? 1.0f : g_set.docked_res == DOCKED_1_5X ? 1.5f : 2.0f;
-    return g_set.handheld_res == HANDHELD_1_25X ? 1.25f : g_set.handheld_res == HANDHELD_1_5X ? 1.5f : 1.0f;
+    if (docked) {
+        static const float SCALE[] = {[DOCKED_NATIVE] = 1.0f, [DOCKED_2X] = 2.0f, [DOCKED_1_5X] = 1.5f, [DOCKED_3X] = 3.0f, [DOCKED_4X] = 4.0f};
+        return SCALE[g_set.docked_res];
+    }
+    static const float SCALE[] = {[HANDHELD_NATIVE] = 1.0f, [HANDHELD_1_25X] = 1.25f, [HANDHELD_1_5X] = 1.5f, [HANDHELD_2X] = 2.0f, [HANDHELD_3X] = 3.0f};
+    return SCALE[g_set.handheld_res];
 }
 
 static void auto_res_update(bool docked, u64 p0, u64 s1, bool got, bool paused) {
@@ -1029,6 +1055,7 @@ int main(int argc, char **argv) {
     mkdir(SAVE_DIR, 0777);
     mkdir(MODS_DIR, 0777);
     mkdir(MODS_DIR "/characters", 0777);
+    mkdir(MODS_DIR "/karts", 0777);
     chdir(APP_DIR);
     s_boot_tick = armGetSystemTick();
     /* Keep the previous session's logs (newlib's rename does not replace an existing file). */
@@ -1064,6 +1091,7 @@ int main(int argc, char **argv) {
     SDL_Init(SDL_INIT_AUDIO);
     /* 1920x1080 on the TV, 1280x720 in handheld; follows docking (see the loop) */
     bool tv = appletGetOperationMode() == AppletOperationMode_Console;
+    render_set_gpu_test(g_set.gpu_test);
     if (!gfx_open(tv ? 1920 : 1280, tv ? 1080 : 720)) return 1;
     rt_log("%s", gfx_describe());
 
@@ -1083,6 +1111,7 @@ int main(int argc, char **argv) {
          * left as it was) */
         if (MOD_COUNT) install_mods();
         unsigned found = find_mods(), pick = mods_pick(found);
+        const char *audio = find_audio();
         if (found && !pick) rt_log("mod: none picked in the menu (MODS: %s); playing the standard game", g_set.mod);
         if (pick) {
             const ModInfo *mi = &MODS[pick - 1];
@@ -1091,6 +1120,7 @@ int main(int argc, char **argv) {
             snprintf(line, sizeof line, "LOADING %s", mi->name);
             for (char *t = line; *t; t++) *t = (char)toupper((unsigned char)*t);
             screen(line, NULL, 0.1f);
+            if (audio && g_set.audio && mod_is_plus(pick)) disc_overlay_set_streams(audio);
             if (disc_overlay(dir, err, sizeof err)) {
                 rt_log("mod: playing %s", mi->name);
                 s_mod_key = mi->key;
@@ -1109,6 +1139,13 @@ int main(int argc, char **argv) {
             }
         }
         menu_set_mods(found, pick);
+        {
+            struct stat st;
+            bool kf = stat(MODS_DIR "/karts", &st) == 0 && S_ISDIR(st.st_mode);
+            if (kf && g_set.karts) kartpack_scan(MODS_DIR "/karts");
+            menu_set_karts(kf, kf && g_set.karts);
+        }
+        menu_set_audio(audio != NULL, disc_overlay_stream_count() != 0);
         pause_art_init();  /* the pause screen's controller picture, drawn as a Pro Controller */
         /* driver variants, unless EXTRA CHARACTERS is off (then nothing of them is read) */
         {
@@ -1173,6 +1210,9 @@ int main(int argc, char **argv) {
     /* An empty file "novcache" in config/ turns the converted-vertex cache off (for comparisons). */
     g_gx_vcache = access(CFG_DIR "/novcache", F_OK) != 0;
     rt_log("gx: vertex cache %s", g_gx_vcache ? "on" : "off (novcache file)");
+    g_car_verify = access(CFG_DIR "/car_verify", F_OK) == 0;
+    g_car_check = g_car_verify || access(CFG_DIR "/car_check", F_OK) == 0;
+    g_gx_vjobs = access(CFG_DIR "/novjobs", F_OK) != 0;
     /* Sampling profiler (mkdd_prof.bin, tools/prof_report.py): profiler=1 in settings.ini. Off by default:
      * it pauses the game thread 500 times a second and shares the GX decoder's core. */
     if (g_set.profiler) {
@@ -1396,6 +1436,7 @@ int main(int argc, char **argv) {
             render_stats(&nb, &nv, &nt);
             rt_log("present: %.1f fps, %u game frames rendered, last frame %u batches %u verts, %u textures, late audio callbacks %llu",
                    300.0 * 1e9 / (double)armTicksToNs(now - stat_tick), rendered, nb, nv, nt, (unsigned long long)g_audio_late_cb);
+            clocks_log(docked ? "docked" : "handheld"); /* an overclock tool can change them at any time */
             unsigned progs;
             double cms;
             render_shader_stats(&progs, &cms);

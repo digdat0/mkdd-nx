@@ -37,7 +37,7 @@ Note: This is an AI assisted project.
 - Camera options: rear view on Y, camera height and distance, and a free camera on the right stick
   that turns 360° around your kart.
 - Texture filtering: 2x, 4x, 8x or 16x anisotropic.
-- Higher  resolution: up to 2x docked (1080p output) and 1.5x handheld, with an Auto mode
+- Higher  resolution: up to 4x docked (1080p output) and 3x handheld, with an Auto mode
   that lowers it only when the frame rate would drop.
 - Colour options: Accurate, Vivid, or your own brightness, contrast and saturation.
 - Up to 4 players, controller syncing from the game menu, single Joy-Cons held sideways, and
@@ -56,10 +56,13 @@ Note: This is an AI assisted project.
 
 - **Handheld:** the 1280×720 screen. By default (Auto) the game renders at 1.5× (960×720) and steps
   down to 1.25× or the original GameCube resolution (about 640×480) when the frame rate would drop.
+  2× and 3× are fixed choices that don't step down: 3× runs at about 30 fps at stock clocks and needs an overclock for 60.
   4:3 shows a picture with bars at the sides. 16:9 fills the screen with a
   wider camera, not a stretch; the field of view setting picks how wide.
 - **Docked:** the output is 1080p. By default (Auto) the game renders at 2× (1280×960) and steps
   down to 1.75×, 1.5× or 1.25× when the frame rate would drop.
+  3× and 4× are fixed choices that don't step down. At stock clocks 4× holds about 60 fps with one player
+  (N64 Toad's Turnpike, the heaviest track, about 56); with 2 to 4 players the CPU is the limit and it runs slower.
 
 **Mods**
 
@@ -107,6 +110,7 @@ sdmc:/switch/MKDD-NX/
     mods/Baby Mode 1_4.xdelta          (optional: RTGP Baby Mode, the same way)
     mods/Mario Kart Double Dash RTGP Classic OST 1_4.xdelta   (optional: RTGP Classic, the same way)
     mods/characters/         (optional: character packs)
+    mods/audio/              (optional: MKDD Plus Expansion Pack, stereo music)
 ```
 
 The first start takes longer while shaders are compiled; later starts reuse them. Press **-** at
@@ -158,12 +162,12 @@ described on the [Options Menu wiki page](https://github.com/digdat0/mkdd-nx/wik
 ## Battle mode
 
 The GameCube game only has battles for 2 to 4 players. MKDD-NX adds **single player battles** against
-three computer karts (on by default: **Mods > Single player battle mode**). With one player, the mode
+three computer karts (on by default: **Game > Single player battle mode**). With one player, the mode
 page shows **Battle**; pick Balloon Battle, Shine Thief or Bob-omb Blast and an arena as usual. In 2
 and 3 player battles, computer karts fill the empty places up to 4.
 
-**Mods > Battle karts** sets how many karts a single player battle has, 4 to 8 (you and up to seven
-computer karts). The computer karts can be any character, unlocked or not. **Mods > Bob-omb hits to
+**Game > Single player battle mode > Battle karts** sets how many karts a single player battle has, 4 to 8 (you and up to seven
+computer karts). The computer karts can be any character, unlocked or not. **Bob-omb hits to
 win** makes a single player Bob-omb Blast last longer, 4 (the game's own) to 20 hits: the score still shows 4 stars,
 each lighting after its share of the hits, and being hit takes one hit off.
 
@@ -205,12 +209,15 @@ and your disc image is never changed. Step-by-step instructions are on the wiki.
 | Mod | What you get | On the SD card | Instructions |
 |---|---|---|---|
 | [MKDD Plus](https://mkdd.org/wiki/Mario_Kart:_Double_Dash!!_Plus) 3.3 NTSC | extra cups, courses and 24 battle arenas | `mods/plus/files`, `sys` | [wiki: MKDD Plus](https://github.com/digdat0/mkdd-nx/wiki/MKDD-Plus) |
+| [MKDD Plus Expansion Pack](https://mkdd.org/wiki/Mario_Kart:_Double_Dash!!_Plus) | Plus's track music in stereo (Plus only, about 720 MB; **Mods > Stereo Music**, on by default) | the download's `files` folder in `mods/audio/` | [wiki: Stereo Music](https://github.com/digdat0/mkdd-nx/wiki/Stereo-Music) |
 | [Retro Track Grand Prix](https://gamebanana.com/mods/594415) 2.1 (`mario_kart_double_dash_rtgp_2_1.zip`) | retro cups and courses | `mods/MKDD RTGP 2.1 Update.xdelta`, installed on the Switch at the next start | [wiki: Retro Track Grand Prix](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix) |
 | [RTGP Baby Mode](https://gamebanana.com/mods/download/594415) 1.4 (`rtgp_baby_mode_1_4.zip`) | RTGP made easier, for newcomers | `mods/Baby Mode 1_4.xdelta`, installed the same way | [wiki: Baby Mode and Classic](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix#baby-mode-and-classic) |
 | [RTGP Classic](https://gamebanana.com/mods/download/594415) 1.4 (`mario_kart_double_dash_rtgp_classic_ost.zip`) | RTGP with the classic soundtrack | `mods/Mario Kart Double Dash RTGP Classic OST 1_4.xdelta`, installed the same way | [wiki: Baby Mode and Classic](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix#baby-mode-and-classic) |
 | [MKDD HD texture pack](https://sites.google.com/view/mkddhd/home-page) (English) | the game's textures in HD | `mods/hd/hd-textures.bin`, converted once on a computer | [wiki: HD Textures](https://github.com/digdat0/mkdd-nx/wiki/HD-Textures-App) |
 | Custom characters from [GameBanana](https://gamebanana.com/games/6555) and the [MKDD wiki](https://mkdd.org/wiki/List_of_Custom_Characters/) | up to 256 extra characters on more select screen pages | `mods/characters/` | [wiki: Characters App](https://github.com/digdat0/mkdd-nx/wiki/Characters-App) |
 | Mario Kart Wii drivers (`.szs`) | Wii characters, converted on a computer | `mods/characters/` | [wiki: Wii Characters](https://github.com/digdat0/mkdd-nx/wiki/Wii-Characters) |
+| Kart mods (MKDD Patcher layout) from [GameBanana](https://gamebanana.com/games/6555) and the [MKDD wiki](https://mkdd.org/wiki/List_of_Custom_Characters/Vehicles#Vehicles) | Extra karts next to the game's, driving like the kart they are added to (**Mods > Extra Karts**); no conversion needed | `mods/karts/` | [wiki: Extra Karts](https://github.com/digdat0/mkdd-nx/wiki/Extra-Karts) |
+| Mario Kart Wii karts (`.szs`, not bikes) | Extra karts, converted on a computer | `mods/karts/` | [wiki: Wii Karts](https://github.com/digdat0/mkdd-nx/wiki/Wii-Karts) |
 
 - **Level packs:** each keeps its own saves (`save/plus/`, `save/rtgp/`, `save/rtgpbaby/`,
   `save/rtgpclassic/`). Pick one with **Level pack** on the − menu's **Mods** page (OFF: the standard
@@ -219,7 +226,8 @@ and your disc image is never changed. Step-by-step instructions are on the wiki.
   (`MKDD-NX-Tools.exe`, or `MKDD-NX-Tools-arm64.dmg` / `-x86_64.dmg`), a tab for each tool:
   **HD Textures** (converts the texture pack), **Export MKDD Characters** (prepares character mods),
   **Convert WiiMK Characters** (beta: Mario Kart Wii drivers; drivers only, no karts, and Mii outfits
-  aren't supported) and **Battle Routes** (edits the battle CPUs' routes).
+  aren't supported), **Convert WiiMK Karts** (beta: Mario Kart Wii karts, no bikes) and **Battle Routes**
+  (edits the battle CPUs' routes).
 
 ## Reporting bugs
 

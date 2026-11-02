@@ -26,6 +26,9 @@
 
 #define NATIVE_LIST(X) \
     X(changeKart__9SceneMenuFiiii, "rrrrr", 'r', 1) \
+    X(getKart__9SceneMenuFii, "rrr", 'r', 1) \
+    X(FUN_801841f4, "r", '-', 1) \
+    X(getPtr__6ResMgrFQ26ResMgr10KartDataId7EKartID, "rr", 'r', 1) \
     X(FUN_8018c878, "rrrrrr", '-', 1) \
     X(FUN_8018712c, "rrr", '-', 1) \
     X(loadCrsData__6CourseFb, "rr", '-', 1) \

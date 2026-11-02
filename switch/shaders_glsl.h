@@ -290,20 +290,66 @@ __attribute__((unused)) static const char *BLIT_FS =
     "layout(binding=0) uniform sampler2D xfb;\n"
     /* u_adj: colour option, gamma exponent, saturation, contrast (1,1,1 = as rendered); u_dim: 0 = as
      * is, the backdrop beside a 4:3 picture is dimmed */
-    "layout(std140, binding=0) uniform Blit { vec3 u_adj; float u_dim; };\n"
+    /* u_rect: the picture's part of the texture (offset, size): the XFB's whole image or the EFB's copy rectangle */
+    "layout(std140, binding=0) uniform Blit { vec3 u_adj; float u_dim; vec4 u_rect; };\n"
     "layout(location=0) in vec2 v_uv;\n"
     "out vec4 o_color;\n"
     "void main() {\n"
+    "    vec2 uv = u_rect.xy + v_uv * u_rect.zw;\n"
     /* shrinking (the picture is larger than the screen area): average 4 taps; enlarging: 1 */
-    "    vec2 fw = fwidth(v_uv), qd = fw * 0.25;\n"
+    "    vec2 fw = fwidth(uv), qd = fw * 0.25;\n"
     "    vec3 c;\n"
-    "    if (max(fw.x * float(textureSize(xfb, 0).x), fw.y * float(textureSize(xfb, 0).y)) <= 1.0) c = texture(xfb, v_uv).rgb;\n"
-    "    else c = (texture(xfb, v_uv + vec2(-qd.x, -qd.y)).rgb + texture(xfb, v_uv + vec2(qd.x, -qd.y)).rgb\n"
-    "            + texture(xfb, v_uv + vec2(-qd.x, qd.y)).rgb + texture(xfb, v_uv + vec2(qd.x, qd.y)).rgb) * 0.25;\n"
-    "    c = pow(c, vec3(u_adj.x));\n"
-    "    c = mix(vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), c, u_adj.y);\n"
-    "    c = (c - 0.5) * u_adj.z + 0.5;\n"
-    "    o_color = vec4(clamp(c, 0.0, 1.0) * (1.0 - u_dim), 1.0);\n"
+    "    if (max(fw.x * float(textureSize(xfb, 0).x), fw.y * float(textureSize(xfb, 0).y)) <= 1.0) c = texture(xfb, uv).rgb;\n"
+    "    else c = (texture(xfb, uv + vec2(-qd.x, -qd.y)).rgb + texture(xfb, uv + vec2(qd.x, -qd.y)).rgb\n"
+    "            + texture(xfb, uv + vec2(-qd.x, qd.y)).rgb + texture(xfb, uv + vec2(qd.x, qd.y)).rgb) * 0.25;\n"
+    "    if (u_adj != vec3(1.0)) {\n"
+    "        c = pow(c, vec3(u_adj.x));\n"
+    "        c = mix(vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), c, u_adj.y);\n"
+    "        c = clamp((c - 0.5) * u_adj.z + 0.5, 0.0, 1.0);\n"
+    "    }\n"
+    "    o_color = vec4(c * (1.0 - u_dim), 1.0);\n"
+    "}\n";
+
+/* A half-size colour copy of the EFB in one bilinear read, without COPY_FS's branches. u_xf: EFB position
+ * of the target's origin and EFB texels per target texel, in texture coordinates. */
+__attribute__((unused)) static const char *COPY_HALF_FS =
+    "#version 320 es\n"
+    "precision highp float;\n"
+    "layout(std140, binding=0) uniform Copy { vec4 u_xf; float u_opaque; };\n"
+    "layout(binding=0) uniform sampler2D efb_linear;\n"
+    "out vec4 o_color;\n"
+    "void main() {\n"
+    "    vec4 t = texture(efb_linear, u_xf.xy + gl_FragCoord.xy * u_xf.zw);\n"
+    "    o_color = vec4(t.rgb, max(t.a, u_opaque));\n"
+    "}\n";
+
+/* COPY_HALF_FS for an alpha-only copy (GX_CTF_A8). */
+__attribute__((unused)) static const char *COPY_HALF_ALPHA_FS =
+    "#version 320 es\n"
+    "precision highp float;\n"
+    "layout(std140, binding=0) uniform Copy { vec4 u_xf; float u_opaque; };\n"
+    "layout(binding=0) uniform sampler2D efb_linear;\n"
+    "out vec4 o_color;\n"
+    "void main() { o_color = vec4(texture(efb_linear, u_xf.xy + gl_FragCoord.xy * u_xf.zw).a); }\n";
+
+/* BLIT_FS for a picture larger than its screen area: two diagonal bilinear reads, u_q apart from the
+ * centre, and no size arithmetic per pixel. */
+__attribute__((unused)) static const char *BLIT_SHRINK_FS =
+    "#version 320 es\n"
+    "precision highp float;\n"
+    "layout(binding=0) uniform sampler2D xfb;\n"
+    "layout(std140, binding=0) uniform Blit { vec3 u_adj; float u_dim; vec4 u_rect; vec4 u_q; };\n"
+    "layout(location=0) in vec2 v_uv;\n"
+    "out vec4 o_color;\n"
+    "void main() {\n"
+    "    vec2 uv = u_rect.xy + v_uv * u_rect.zw;\n"
+    "    vec3 c = (texture(xfb, uv - u_q.xy).rgb + texture(xfb, uv + u_q.xy).rgb) * 0.5;\n"
+    "    if (u_adj != vec3(1.0)) {\n"
+    "        c = pow(c, vec3(u_adj.x));\n"
+    "        c = mix(vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), c, u_adj.y);\n"
+    "        c = clamp((c - 0.5) * u_adj.z + 0.5, 0.0, 1.0);\n"
+    "    }\n"
+    "    o_color = vec4(c, 1.0);\n"
     "}\n";
 
 /* Movie frames (THP: the picture as Y, U, V I8 planes, colour at half size), redrawn at twice the

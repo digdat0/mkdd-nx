@@ -33,6 +33,8 @@ typedef struct {
     int logging;       /* 0 disabled, 1 game, 2 game + audio, 3 audio, 4 game + battle AI */
     bool hd_textures;  /* use the HD texture file (HD_FILE) when there is one */
     bool characters;   /* EXTRA CHARACTERS: load mods/characters (character packs), from the next start */
+    bool karts;        /* EXTRA KARTS: load mods/karts, from the next start */
+    bool audio;        /* STEREO MUSIC: MKDD Plus plays the streams in mods/audio, from the next start */
     char mod[16];      /* the mod to play, from the next start: "auto" (the first found), "off" or a MODS key */
     int fov[2];        /* race camera field of view for 4:3 / 16:9: 0 normal (the game's), 1 wide, 2 wider, 3 widest, 4 wideee */
     int aniso;         /* texture filtering: 0 normal, 1-4 anisotropic 2x / 4x / 8x / 16x */
@@ -46,21 +48,22 @@ typedef struct {
     int kart_up, kart_forward, kart_tilt; /* KART view if the kart can't be read: eye above and ahead of the driver's head, degrees down */
     int kart_add[21][3]; /* KART view, by EKartID: up, forward, degrees down, added to kart_eye.h */
     bool profiler;     /* sampling profiler (logs/mkdd_prof.bin), from the next start */
+    bool gpu_test;     /* GPU TEST: the renderer's in-race comparison and profile in the log, from the next start */
     bool game_clocks;  /* CLOCKS: GAME, the port raises the handheld profile and boosts the CPU while
                         * booting; off (SYSTEM, the default) leaves clocks alone, for overclock tools. Next start */
     bool lan;          /* LAN play over Wi-Fi: a Broadband Adapter (eth.c), from the next start (MULTIPLAYER > LAN PLAY) */
     char lan_peer[64]; /* "a.b.c.d[:port]": the other console's address, for networks that drop broadcasts ("" none; MULTIPLAYER > LAN PEER) */
-    int docked_res;    /* docked (TV), 1080p output: DOCKED_NATIVE (the game's 640x480-ish frame), _2X, _1_5X or
+    int docked_res;    /* docked (TV), 1080p output: DOCKED_NATIVE (the game's 640x480-ish frame), _1_5X, _2X, _3X, _4X or
                         * _AUTO (2x, stepping down while the GPU can't keep up). Values kept from when it was on/off. */
     int handheld_res;  /* handheld, 1280x720 screen: HANDHELD_NATIVE (640x480-ish), _1_25X, _1_5X (960x720, the
-                        * screen's own lines) or _AUTO (1.5x, stepping down while the GPU can't keep up) */
+                        * screen's own lines), _2X, _3X or _AUTO (1.5x, stepping down while the GPU can't keep up) */
     uint64_t map[MAP_COUNT]; /* Switch buttons (HidNpadButton_*) that press each GameCube button: the
                              * BUTTON MAPPING page's actions (menu.c ACTIONS), one per Switch button */
     uint64_t jmap[MAP_COUNT]; /* the same for a single Joy-Con held sideways (JOY-CON SIDEWAYS), its buttons
                                * as main_switch.c sideways_buttons names them */
 } Settings;
-enum { DOCKED_NATIVE, DOCKED_2X, DOCKED_1_5X, DOCKED_AUTO };
-enum { HANDHELD_NATIVE, HANDHELD_1_25X, HANDHELD_1_5X, HANDHELD_AUTO };
+enum { DOCKED_NATIVE, DOCKED_2X, DOCKED_1_5X, DOCKED_AUTO, DOCKED_3X, DOCKED_4X };
+enum { HANDHELD_NATIVE, HANDHELD_1_25X, HANDHELD_1_5X, HANDHELD_AUTO, HANDHELD_2X, HANDHELD_3X };
 
 extern Settings g_set;
 /* The standard layout: what every screen outside driving uses, whatever BUTTON MAPPING says */
@@ -112,6 +115,13 @@ void menu_char_hint(int w, int h);
 void menu_set_mods(unsigned found, unsigned running);
 /* At start-up: whether mods/characters exists and whether its characters were loaded. */
 void menu_set_chars(bool found, bool running);
+/* At start-up: whether mods/karts holds karts and whether they were loaded. */
+void menu_set_karts(bool found, bool running);
+/* At start-up: whether mods/audio holds streams and whether this session plays them. */
+void menu_set_audio(bool found, bool running);
+/* Mod n (mods_pick) is MKDD Plus, the only one mods/audio's streams belong to: the Retro Track
+ * mods use the same file names for other music. */
+bool mod_is_plus(unsigned n);
 /* The mod the MOD setting picks among the found ones (bit mask as above): 0 none, n = MODS[n - 1]. */
 unsigned mods_pick(unsigned found);
 /* Open the menu (game paused) on its main page, with notice as the hint until the cursor moves. */

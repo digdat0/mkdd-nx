@@ -44,6 +44,7 @@
 #define CMD_SIZE (1u << 20)          /* per-slot command memory, more added on demand */
 #define CMD_SLACK 256                /* deko3d 0.5.0 writes a few words past a piece's end */
 #define PROF_MAX 2048                /* GPU profile reports per frame */
+static bool s_gpu_test; /* DEBUG > GPU TEST */
 #define SUBMIT_DRAWS 128             /* submit the commands recorded so far every N draws */
 
 #define ALIGN(x, a) (((x) + (a) - 1) & ~((uint64_t)(a) - 1))
@@ -58,7 +59,8 @@ typedef struct {
     DkFence fence;
     bool fenced;
     DkMemBlock query;    /* GPU timer reports (begin, mid, end) */
-    bool timed;
+    bool timed, test_ok;
+    uint8_t test;
     DkMemBlock prof;     /* config/dk_profile: a timestamp after each draw, copy and clear of one frame */
     unsigned nprof;      /* reports written this frame (0: not profiled) */
 } Slot;
@@ -72,7 +74,7 @@ static struct {
     uint64_t frame;      /* present frames started */
     bool recording;      /* a frame's commands are being recorded */
     bool lost;           /* the queue is in an error state: draw nothing more */
-    bool zcull, zcomp, mips, tiled, profile, blit_xfb; /* GPU switches (cfg_flag, read in gfx_open) */
+    bool zcull, zcomp, mips, tiled, profile, blit_xfb, xfb_direct, copy_cap, out4, z24, test; /* GPU switches (cfg_flag, read in gfx_open) */
     unsigned draws_since_submit;
     /* swapchain */
     DkSwapchain swap;
@@ -236,7 +238,7 @@ static bool img_mem(uint32_t size, uint32_t align, ImgAlloc *out) {
 }
 
 /* ---- images: one descriptor slot each (the id) ---- */
-enum { IF_R8, IF_RG8, IF_RGBA8, IF_BC1, IF_BC7, IF_Z32 };
+enum { IF_R8, IF_RG8, IF_RGBA8, IF_BC1, IF_BC7, IF_Z32, IF_Z24 };
 typedef struct {
     DkImage img;
     ImgAlloc mem;
@@ -268,7 +270,7 @@ static void tile_size_fix(DkImageLayoutMaker *m, uint32_t rows) {
 
 static DkImageFormat dk_format(uint8_t f) {
     static const DkImageFormat m[] = {DkImageFormat_R8_Unorm, DkImageFormat_RG8_Unorm, DkImageFormat_RGBA8_Unorm,
-                                      DkImageFormat_RGBA_BC1, DkImageFormat_RGBA_BC7_Unorm, DkImageFormat_ZF32};
+                                      DkImageFormat_RGBA_BC1, DkImageFormat_RGBA_BC7_Unorm, DkImageFormat_ZF32, DkImageFormat_Z24S8};
     return m[f];
 }
 
@@ -289,7 +291,7 @@ static uint32_t img_create(uint32_t w, uint32_t h, uint8_t fmt, uint32_t levels,
     m.dimensions[0] = w;
     m.dimensions[1] = h;
     m.mipLevels = levels;
-    if (render) m.flags |= DkImageFlags_UsageRender | (fmt != IF_Z32 ? DkImageFlags_Usage2DEngine | DkImageFlags_HwCompression : D.zcomp ? DkImageFlags_HwCompression : 0);
+    if (render) m.flags |= DkImageFlags_UsageRender | (fmt != IF_Z32 && fmt != IF_Z24 ? DkImageFlags_Usage2DEngine | DkImageFlags_HwCompression : D.zcomp ? DkImageFlags_HwCompression : 0);
     bool bc = fmt == IF_BC1 || fmt == IF_BC7;
     tile_size_fix(&m, bc ? (h + 3) / 4 : h);
     DkImageLayout lay;
@@ -540,7 +542,7 @@ typedef struct { uint32_t id, w, h, addr; uint64_t used; } Target;
 typedef struct { uint32_t id; uint16_t subst; uint8_t wrap_s, wrap_t, chans, hd, movie, enh_set, levels; bool linear; uint64_t used, key; uint32_t w, h, hd_bytes, enh_gen; } DkTexture;
 
 static struct {
-    Shd vs, fs_uber, vs_full, fs_copy, fs_blit, fs_deblock, fs_luma, fs_chroma;
+    Shd vs, fs_uber, vs_full, fs_copy, fs_copy_half, fs_copy_alpha, fs_blit, fs_blit_shrink, fs_deblock, fs_luma, fs_chroma;
     bool xf_gpu;
     /* specialised TEV fragment shaders: key -> index + 1 into progs (0 failed) */
     U64Map tev;
@@ -560,6 +562,7 @@ static struct {
     uint64_t hd_bytes;
     uint32_t white;
     uint32_t efb_color, efb_depth, efb_w, efb_h;
+    bool efb_z24;
     Target xfb;
     bool have_xfb;
     /* since the last Fragments or Full barrier: the EFB was drawn or cleared; a copy target was written
@@ -686,8 +689,10 @@ static void frame_begin(void) {
     state_forget();
 }
 
+static void queue_failed_report(void);
 static void submit(void) {
     if (!D.recording) return;
+    if (dkQueueIsInErrorState(D.q)) queue_failed_report(); /* deko3d aborts below: the log must reach the card first */
     dkQueueSubmitCommands(D.q, dkCmdBufFinishList(D.cmd));
     dkQueueFlush(D.q);
     D.draws_since_submit = 0;
@@ -779,6 +784,12 @@ bool gfx_open(int w, int h) {
     D.tiled = cfg_flag("dk_tiled");
     D.blit_xfb = !cfg_flag("dk_noblit");
     D.profile = cfg_flag("dk_profile");
+    D.xfb_direct = !cfg_flag("dk_noxfbdirect");
+    D.copy_cap = !cfg_flag("dk_nocopycap");
+    D.out4 = cfg_flag("dk_output4");
+    D.z24 = cfg_flag("dk_z24");
+    D.test = s_gpu_test; /* the GPU comparison, with the profile: see gpu_test */
+    if (D.test) D.profile = true;
     DkDeviceMaker dm;
     dkDeviceMakerDefaults(&dm);
     dm.cbDebug = dk_log;
@@ -1094,7 +1105,9 @@ bool render_init(void) {
         if (!shader_get(&R.vs, false, PRE_VS, "pre-vs")) return false;
     }
     bool ok = shader_get(&R.fs_uber, true, TEV_FS, "tev") && shader_get(&R.vs_full, false, FULL_VS, "full-vs") &&
-              shader_get(&R.fs_copy, true, COPY_FS, "copy") && shader_get(&R.fs_blit, true, BLIT_FS, "blit");
+              shader_get(&R.fs_copy, true, COPY_FS, "copy") && shader_get(&R.fs_copy_half, true, COPY_HALF_FS, "copy-half") &&
+              shader_get(&R.fs_copy_alpha, true, COPY_HALF_ALPHA_FS, "copy-half-alpha") &&
+              shader_get(&R.fs_blit, true, BLIT_FS, "blit") && shader_get(&R.fs_blit_shrink, true, BLIT_SHRINK_FS, "blit-shrink");
     if (!ok) return false;
     rt_log("render: fixed shaders ready in %.2f s (%u KB of code)", (double)(plat_now_ns() - t0) / 1e9, D.code_used >> 10);
     static const uint8_t white[4] = {255, 255, 255, 255};
@@ -1126,13 +1139,17 @@ void render_shader_cache(const char *path, void (*progress)(unsigned done, unsig
            (double)(plat_now_ns() - t0) / 1e9);
 }
 
+/* The picture is shown from the EFB itself (see xfb_direct) */
+static struct { bool on, clear; uint32_t src[2], size[2]; float gamma; unsigned seen, direct; } s_direct;
+
 static void ensure_efb(uint32_t w, uint32_t h) {
-    if (R.efb_w == w && R.efb_h == h) return;
+    if (R.efb_w == w && R.efb_h == h && R.efb_z24 == D.z24) return;
     img_free(&R.efb_color);
     img_free(&R.efb_depth);
     R.efb_color = img_create(w, h, IF_RGBA8, 1, true);
-    R.efb_depth = img_create(w, h, IF_Z32, 1, true);
-    R.efb_w = w, R.efb_h = h;
+    R.efb_depth = img_create(w, h, D.z24 ? IF_Z24 : IF_Z32, 1, true);
+    R.efb_w = w, R.efb_h = h, R.efb_z24 = D.z24;
+    s_direct.on = s_direct.clear = false; /* the picture was in the old image */
     if (!R.efb_color || !R.efb_depth) return;
     /* power-on state: black, depth at the far plane */
     DkImageView c, z;
@@ -1564,6 +1581,7 @@ typedef struct {
     uint32_t regs[8];
     uint32_t mode[4];
     float vfilter[4];
+    float half_scale; /* not 0: COPY_HALF_FS, from the EFB at this scale's size */
 } CopyOp;
 static inline uint32_t bitsu(uint32_t v, uint32_t lo, uint32_t n) { return (v >> lo) & ((1u << n) - 1); }
 static uint32_t efb_px(uint32_t v, float scale) { return (uint32_t)((float)v * scale + 0.5f); }
@@ -1578,13 +1596,20 @@ static void decode_copy(const EfbCopy *e, float scale, CopyOp *c) {
     c->src[1] = bitsu(e->src, 10, 10);
     c->src[2] = bitsu(e->size, 0, 10) + 1;
     c->src[3] = bitsu(e->size, 10, 10) + 1;
+    memcpy(c->regs, e->regs, sizeof c->regs);
     bool half = !c->xfb && (cmd >> 9) & 1;
-    uint32_t sw = efb_px(c->src[0] + c->src[2], scale) - efb_px(c->src[0], scale);
-    uint32_t sh = efb_px(c->src[1] + c->src[3], scale) - efb_px(c->src[1], scale);
+    /* Half-size colour and alpha copies feed the game's blurs and glows. The console's are half its own
+     * size: above 2x the extra pixels only cost, so they stop growing there. (An alpha copy needs an
+     * alpha channel in the EFB, pixel format 1. It was the frame's costliest copy at 4x: 3.2 ms.) */
+    uint32_t cfmt = bitsu(cmd, 4, 3) | bitsu(cmd, 3, 1) << 3, cpix = c->regs[0] & 7;
+    bool fast = D.copy_cap && half && cpix != 3 && !((cmd >> 15) & 1) && (cfmt == 4 || cfmt == 6 || (cfmt == 7 && cpix == 1));
+    float cs = fast && scale > 2.0f ? 2.0f : scale;
+    if (fast) c->half_scale = cs;
+    uint32_t sw = efb_px(c->src[0] + c->src[2], cs) - efb_px(c->src[0], cs);
+    uint32_t sh = efb_px(c->src[1] + c->src[3], cs) - efb_px(c->src[1], cs);
     c->dst_w = half ? (sw / 2 ? sw / 2 : 1) : sw;
     c->dst_h = half ? (sh / 2 ? sh / 2 : 1) : sh;
     c->addr = gx_phys(e->dst);
-    memcpy(c->regs, e->regs, sizeof c->regs);
     uint32_t fmt = c->xfb ? 6 : bitsu(cmd, 4, 3) | bitsu(cmd, 3, 1) << 3;
     uint32_t pixfmt = c->regs[0] & 7;
     uint32_t gamma = c->xfb ? (cmd >> 7) & 3 : 0;
@@ -1739,6 +1764,36 @@ static bool xfb_blit(const CopyOp *c, float scale, const Target *dst) {
     return true;
 }
 
+/* The frame's last copy is the TV picture, with nothing drawn after it, and the next frame starts by
+ * clearing: then nothing overwrites the EFB before the present, which can read the picture there. A
+ * copy of the whole image is saved, the largest single read and write of the frame at high resolution.
+ * The vertical filter is dropped (the console's blends neighbouring rows of its low resolution) and so
+ * is the pixel format's rounding to fewer bits. The copy's gamma is applied by the present. */
+static bool xfb_direct(const CopyOp *c, size_t batches) {
+    if (!D.xfb_direct || !c->xfb || c->at < batches || c->mode[2] || (c->mode[3] & 1)) return false;
+    return true;
+}
+
+static void efb_clear(const CopyOp *c, float scale, size_t next, unsigned k) {
+    uint32_t x = efb_px(c->src[0], scale), y = efb_px(c->src[1], scale);
+    uint32_t x1 = efb_px(c->src[0] + c->src[2], scale), y1 = efb_px(c->src[1] + c->src[3], scale);
+    if (x1 > R.efb_w) x1 = R.efb_w;
+    if (y1 > R.efb_h) y1 = R.efb_h;
+    if (x1 <= x || y1 <= y) return;
+    uint32_t z = c->regs[4], bl = c->regs[5], ar = c->regs[1], gb = c->regs[2], cz = c->regs[3];
+    bind_efb();
+    if (R.copy_written) sync_rendered();
+    R.efb_written = true;
+    set_scissor(x, y, x1 - x, y1 - y);
+    bool cu = (bl >> 3) & 1, au = (bl >> 4) & 1, zu = (z >> 4) & 1;
+    uint32_t mask = (cu ? DkColorMask_RGB : 0) | (au ? DkColorMask_A : 0);
+    if (mask)
+        dkCmdBufClearColorFloat(D.cmd, 0, mask, (float)(ar & 0xFF) / 255.0f, (float)((gb >> 8) & 0xFF) / 255.0f,
+                                (float)(gb & 0xFF) / 255.0f, (float)((ar >> 8) & 0xFF) / 255.0f);
+    if (zu) dkCmdBufClearDepthStencil(D.cmd, true, (float)(cz & 0xFFFFFF) / 16777215.0f, 0, 0);
+    prof_mark(PK_CLEAR, NULL, next, k, (x1 - x) * (y1 - y));
+}
+
 /* Two players side by side (Frame.vseam): a thin light line where the two 3D pictures meet, before
  * the HUD. (A blur around it, as the GL renderer had, showed as a pale band beside the line.) */
 static void seam_line(const Frame *f, float scale) {
@@ -1793,16 +1848,29 @@ bool render_update(float scale_in) {
         R.white_rt = R.white_tex = 0;
     }
     else if (R.tick % 30 == 0 && R.ntex > 768) evict_textures(120);
-    float scale = scale_in < 1.0f ? 1.0f : scale_in > 4.0f ? 4.0f : scale_in;
+    /* a scale the memory can't hold steps down for good, not a black screen */
+    static float cap = 4.0f;
+    float scale = scale_in < 1.0f ? 1.0f : scale_in > cap ? cap : scale_in;
     ensure_efb(efb_px(f->efb[0], scale), efb_px(f->efb[1], scale));
-    if (!R.efb_color || !R.efb_depth) { gx_frame_release(f); return false; }
+    if (!R.efb_color || !R.efb_depth) {
+        if (scale > 1.0f) {
+            cap = scale - 0.5f < 1.0f ? 1.0f : scale - 0.5f;
+            R.efb_w = R.efb_h = 0;
+            rt_log("render: no memory for %.2fx: at most %.2fx from now on", (double)scale, (double)cap);
+        }
+        gx_frame_release(f);
+        return false;
+    }
 
     unsigned ncopies = f->copies.len < MAX_COPIES ? (unsigned)f->copies.len : MAX_COPIES;
     static CopyOp copies[MAX_COPIES];
+    static CopyOp direct_clear;
+    bool direct = false;
     for (unsigned k = 0; k < ncopies; k++) {
         decode_copy(&f->copies.data[k], scale, &copies[k]);
         CopyOp *c = &copies[k];
-        if (c->xfb) {
+        if (k + 1 == ncopies && xfb_direct(c, f->batches.len)) direct = true;
+        else if (c->xfb) {
             if (!R.have_xfb || R.xfb.w != c->dst_w || R.xfb.h != c->dst_h) { target_init(&R.xfb, c->dst_w, c->dst_h); R.have_xfb = R.xfb.id != 0; }
         } else rt_for(c->addr, c->dst_w, c->dst_h);
     }
@@ -1856,8 +1924,33 @@ bool render_update(float scale_in) {
         }
         listed++;
     }
+    if (s_direct.on && !direct) {
+        /* This frame ends differently: last frame's picture moves to the XFB before the EFB changes. */
+        if (!R.have_xfb || R.xfb.w != s_direct.size[0] || R.xfb.h != s_direct.size[1]) {
+            target_init(&R.xfb, s_direct.size[0], s_direct.size[1]);
+            R.have_xfb = R.xfb.id != 0;
+        }
+        if (R.have_xfb) {
+            barrier(DkBarrier_Full, DkInvalidateFlags_Image);
+            DkImageView sv, dv;
+            img_view(R.efb_color, &sv);
+            img_view(R.xfb.id, &dv);
+            DkImageRect sr = {s_direct.src[0], s_direct.src[1], 0, s_direct.size[0], s_direct.size[1], 1};
+            DkImageRect dr = {0, 0, 0, s_direct.size[0], s_direct.size[1], 1};
+            dkCmdBufBlitImage(D.cmd, &sv, &sr, &dv, &dr, DkBlitFlag_FilterNearest, 0);
+            barrier(DkBarrier_Full, DkInvalidateFlags_Image);
+        }
+        s_direct.on = false;
+    }
+    s_direct.seen++;
+    s_direct.direct += direct;
+    if (s_direct.seen == 600) {
+        rt_log("render: %u of the last 600 frames shown directly from the EFB", s_direct.direct);
+        s_direct.seen = s_direct.direct = 0;
+    }
     movie_prepass(f);
     sync_before_use();
+    if (s_direct.clear) { s_direct.clear = false; efb_clear(&direct_clear, scale, 0, 0); }
     dkCmdBufBindVtxBuffer(D.cmd, 0, vb, (uint32_t)f->vb.len + 16);
     dkCmdBufBindIdxBuffer(D.cmd, DkIdxFormat_Uint32, ib);
     if (R.xf_gpu) dkCmdBufBindStorageBuffer(D.cmd, DkStage_Vertex, 0, xb, xn);
@@ -1922,8 +2015,49 @@ bool render_update(float scale_in) {
         }
         if (k == ncopies) break;
         CopyOp *c = &copies[k];
+        if (direct && k + 1 == ncopies) {
+            /* no copy; the clear waits until the present has read the picture */
+            uint32_t gidx = (c->mode[3] >> 16) & 3;
+            s_direct.src[0] = efb_px(c->src[0], scale), s_direct.src[1] = efb_px(c->src[1], scale);
+            s_direct.size[0] = c->dst_w, s_direct.size[1] = c->dst_h;
+            if (s_direct.src[0] + s_direct.size[0] > R.efb_w) s_direct.size[0] = R.efb_w - s_direct.src[0];
+            if (s_direct.src[1] + s_direct.size[1] > R.efb_h) s_direct.size[1] = R.efb_h - s_direct.src[1];
+            s_direct.gamma = gidx == 1 ? 1.0f / 1.7f : gidx >= 2 ? 1.0f / 2.2f : 1.0f;
+            s_direct.on = true;
+            if (c->clear) { direct_clear = *c; s_direct.clear = true; }
+            if (R.have_xfb) { img_free(&R.xfb.id); R.have_xfb = false; R.xfb.w = R.xfb.h = 0; }
+            static bool logged;
+            if (!logged) {
+                logged = true;
+                rt_log("render: the picture is shown from the EFB (%ux%u at %u,%u; pixel format %u, gamma %u, filter %.2f/%.2f/%.2f)",
+                       s_direct.size[0], s_direct.size[1], s_direct.src[0], s_direct.src[1], (c->mode[3] >> 8) & 7, gidx,
+                       (double)c->vfilter[0], (double)c->vfilter[1], (double)c->vfilter[2]);
+            }
+            continue;
+        }
         Target *dst = c->xfb ? (R.have_xfb ? &R.xfb : NULL) : rt_for(c->addr, c->dst_w, c->dst_h);
         if (dst && dst->id && xfb_blit(c, scale, dst)) prof_mark(PK_COPY, NULL, next, k, dst->w * dst->h);
+        else if (dst && dst->id && c->half_scale) {
+            if (R.efb_written) sync_rendered();
+            pass_state(false);
+            bind_shaders2(&R.vs_full, c->mode[0] == 7 ? &R.fs_copy_alpha : &R.fs_copy_half);
+            float step = 2.0f * scale / c->half_scale;
+            struct { float xf[4]; float opaque, pad[3]; } u = {
+                {(float)efb_px(c->src[0], scale) / (float)R.efb_w, (float)efb_px(c->src[1], scale) / (float)R.efb_h,
+                 step / (float)R.efb_w, step / (float)R.efb_h},
+                c->mode[0] == 4 || ((c->mode[3] >> 8) & 7) != 1 ? 1.0f : 0.0f, {0, 0, 0}};
+            DkGpuAddr g = ubo_put(&u, sizeof u);
+            if (g) {
+                dkCmdBufBindUniformBuffer(D.cmd, DkStage_Fragment, 0, g, sizeof u);
+                unit_bind(0, th(R.efb_color, smp_id(0, 0, 1)));
+                pass_target(dst->id, dst->w, dst->h);
+                dkCmdBufDraw(D.cmd, DkPrimitive_Triangles, 3, 1, 0, 0);
+            }
+            static bool logged;
+            if (!logged && c->mode[0] == 7) { logged = true; rt_log("render: half-size alpha copies are capped (%ux%u at scale %.2f)", dst->w, dst->h, (double)scale); }
+            R.copy_written = true;
+            prof_mark(PK_COPY, NULL, next, k, dst->w * dst->h);
+        }
         else if (dst && dst->id) {
             /* copies in a row share one barrier: each reads the EFB and writes its own target */
             if (R.efb_written) sync_rendered();
@@ -1946,26 +2080,7 @@ bool render_update(float scale_in) {
             R.copy_written = true; /* sync_before_use waits for it before the EFB is drawn over or it is sampled */
             prof_mark(PK_COPY, NULL, next, k, dst->w * dst->h);
         }
-        if (c->clear) {
-            uint32_t x = efb_px(c->src[0], scale), y = efb_px(c->src[1], scale);
-            uint32_t x1 = efb_px(c->src[0] + c->src[2], scale), y1 = efb_px(c->src[1] + c->src[3], scale);
-            if (x1 > R.efb_w) x1 = R.efb_w;
-            if (y1 > R.efb_h) y1 = R.efb_h;
-            if (x1 > x && y1 > y) {
-                uint32_t z = c->regs[4], bl = c->regs[5], ar = c->regs[1], gb = c->regs[2], cz = c->regs[3];
-                bind_efb();
-                if (R.copy_written) sync_rendered();
-                R.efb_written = true;
-                set_scissor(x, y, x1 - x, y1 - y);
-                bool cu = (bl >> 3) & 1, au = (bl >> 4) & 1, zu = (z >> 4) & 1;
-                uint32_t mask = (cu ? DkColorMask_RGB : 0) | (au ? DkColorMask_A : 0);
-                if (mask)
-                    dkCmdBufClearColorFloat(D.cmd, 0, mask, (float)(ar & 0xFF) / 255.0f, (float)((gb >> 8) & 0xFF) / 255.0f,
-                                            (float)(gb & 0xFF) / 255.0f, (float)((ar >> 8) & 0xFF) / 255.0f);
-                if (zu) dkCmdBufClearDepthStencil(D.cmd, true, (float)(cz & 0xFFFFFF) / 16777215.0f, 0, 0);
-                prof_mark(PK_CLEAR, NULL, next, k, (x1 - x) * (y1 - y));
-            }
-        }
+        if (c->clear) efb_clear(c, scale, next, k);
     }
     gx_frame_release(f);
     return true;
@@ -1980,6 +2095,7 @@ void render_set_aniso(float level) {
     s_aniso = level;
     samplers_write();
 }
+void render_set_gpu_test(bool on) { s_gpu_test = on; }
 void render_set_hd(bool on) {
     on = on && hdtex_available();
     if (on != R.hd_on) { R.hd_on = on; R.hd_flush = true; }
@@ -1994,12 +2110,39 @@ unsigned render_hd_in_use(void) {
 /* GPU timer: timestamps (16-byte reports) at begin, mid and end, about once a second, read back when
  * the slot comes round again. deko3d's dkTimestampToNs already scales the 19.2 MHz counter. */
 static struct { unsigned frames, n; double sum, max, part[2]; bool logged; } s_gt;
+
+/* DEBUG > GPU TEST: in races, every second switches between the normal settings and one change, so one
+ * race compares them all over the same stretches of road. GPU time per loop is sampled every 4 loops. */
+static const char *const TEST_NAME[] = {"normal", "XFB copy back", "uncapped half copies", "4-tap output"};
+enum { TEST_N = sizeof TEST_NAME / sizeof *TEST_NAME };
+static struct { unsigned loops, step, cur; double sum[TEST_N]; unsigned n[TEST_N]; bool base_direct, base_cap, base_out4; } s_test;
+static void gpu_test_set(unsigned v) {
+    D.xfb_direct = v == 1 ? false : s_test.base_direct;
+    D.copy_cap = v == 2 ? false : s_test.base_cap;
+    D.out4 = v == 3 ? true : s_test.base_out4;
+    s_test.cur = v;
+}
+static void gpu_test_tick(void) {
+    if (!s_test.loops++) s_test.base_direct = D.xfb_direct, s_test.base_cap = D.copy_cap, s_test.base_out4 = D.out4;
+    if (s_test.loops % 60 == 0) {
+        s_test.step++;
+        unsigned odd = s_test.step % 2 ? (s_test.step / 2) % (TEST_N - 1) + 1 : 0;
+        gpu_test_set(odd);
+    }
+    if (s_test.loops % 1800 == 0) {
+        for (unsigned i = 0; i < TEST_N; i++)
+            if (s_test.n[i]) rt_log("gpu test: %s: %.2f ms (%u samples)", TEST_NAME[i], s_test.sum[i] / s_test.n[i], s_test.n[i]);
+        memset(s_test.sum, 0, sizeof s_test.sum);
+        memset(s_test.n, 0, sizeof s_test.n);
+    }
+}
 static void gt_report(int i) {
     Slot *s = &D.slots[D.slot];
     dkCmdBufReportCounter(D.cmd, DkCounter_Timestamp, dkMemBlockGetGpuAddr(s->query) + 16u * (unsigned)i);
 }
 void render_gpu_timer_begin(void) {
     if (!s_gt.logged) { s_gt.logged = true; rt_log("render: GPU timer available"); }
+    if (D.test) gpu_test_tick(); /* (before frame_begin: the tiled cache is set there) */
     frame_begin();
     Slot *s = &D.slots[D.slot];
     if (s->timed) { /* this slot's last timed frame is done (frame_begin waited for it) */
@@ -2012,12 +2155,16 @@ void render_gpu_timer_begin(void) {
             s_gt.part[1] += y;
             if (x + y > s_gt.max) s_gt.max = x + y;
             s_gt.n++;
+            /* a race (many batches), not in the first frames of a setting: its targets are new */
+            if (D.test && R.stat_batches >= 150 && s->test_ok) { s_test.sum[s->test] += x + y; s_test.n[s->test]++; }
         }
         s->timed = false;
     }
-    if (++s_gt.frames < 60) return;
+    if (++s_gt.frames < (D.test ? 4u : 60u)) return;
     s_gt.frames = 0;
     s->timed = true;
+    s->test = s_test.cur;
+    s->test_ok = s_test.loops % 60 >= 12;
     gt_report(0);
 }
 void render_gpu_timer_mid(void) { if (D.recording && D.slots[D.slot].timed) gt_report(1); }
@@ -2041,21 +2188,27 @@ void render_present(int w, int h, const float adj[3], bool wide) {
     if (vw / vh > aspect) vw = vh * aspect;
     else vh = vw / aspect;
     int vx = (int)(((float)w - vw) / 2), vy = (int)(((float)h - vh) / 2);
-    if (R.have_xfb) barrier(DkBarrier_Full, DkInvalidateFlags_Image); /* (the backdrop's blits too) */
-    if (R.have_xfb && R.backdrop && vx > 0) {
-        uint32_t src = R.xfb.id, sw = R.xfb.w, sh = R.xfb.h;
+    bool direct = s_direct.on && R.efb_color, have = direct || R.have_xfb;
+    uint32_t pic = direct ? R.efb_color : R.xfb.id;
+    uint32_t pw = direct ? s_direct.size[0] : R.xfb.w, ph = direct ? s_direct.size[1] : R.xfb.h;
+    uint32_t px = direct ? s_direct.src[0] : 0, py = direct ? s_direct.src[1] : 0;
+    float tw = direct ? (float)R.efb_w : (float)pw, th_ = direct ? (float)R.efb_h : (float)ph;
+    float gamma = direct ? adj[0] * s_direct.gamma : adj[0];
+    if (have) barrier(DkBarrier_Full, DkInvalidateFlags_Image); /* (the backdrop's blits too) */
+    if (have && R.backdrop && vx > 0) {
+        uint32_t src = pic, sx = px, sy = py, sw = pw, sh = ph;
         for (int i = 0; i < 4 && sw > 100; i++) {
             uint32_t bw = sw / 2 ? sw / 2 : 1, bh = sh / 2 ? sh / 2 : 1;
             if (R.bd[i].w != bw || R.bd[i].h != bh) target_init(&R.bd[i], bw, bh);
             if (!R.bd[i].id) break;
-            blit(src, 0, 0, sw, sh, R.bd[i].id, 0, 0, bw, bh);
-            src = R.bd[i].id, sw = bw, sh = bh;
+            blit(src, sx, sy, sw, sh, R.bd[i].id, 0, 0, bw, bh);
+            src = R.bd[i].id, sx = sy = 0, sw = bw, sh = bh;
         }
         barrier(DkBarrier_Full, DkInvalidateFlags_Image);
         bind_screen();
         pass_state(false);
         bind_shaders2(&R.vs_full, &R.fs_blit);
-        float u[4] = {adj[0], adj[1], adj[2], 0.55f};
+        float u[8] = {gamma, adj[1], adj[2], 0.55f, 0, 0, 1, 1};
         DkGpuAddr g = ubo_put(u, sizeof u);
         if (g) {
             dkCmdBufBindUniformBuffer(D.cmd, DkStage_Fragment, 0, g, sizeof u);
@@ -2069,7 +2222,7 @@ void render_present(int w, int h, const float adj[3], bool wide) {
             dkCmdBufDraw(D.cmd, DkPrimitive_Triangles, 3, 1, 0, 0);
         }
     } else bind_screen();
-    if (!R.have_xfb) { dkCmdBufClearColorFloat(D.cmd, 0, DkColorMask_RGBA, 0, 0, 0, 1); return; }
+    if (!have) { dkCmdBufClearColorFloat(D.cmd, 0, DkColorMask_RGBA, 0, 0, 0, 1); return; }
     /* clear only the bars beside / above the picture */
     if (vx > 0 && !R.backdrop) {
         set_scissor(0, 0, (uint32_t)vx, (uint32_t)h);
@@ -2084,20 +2237,32 @@ void render_present(int w, int h, const float adj[3], bool wide) {
         dkCmdBufClearColorFloat(D.cmd, 0, DkColorMask_RGBA, 0, 0, 0, 1);
     }
     pass_state(false);
-    bind_shaders2(&R.vs_full, &R.fs_blit);
-    float u[4] = {adj[0], adj[1], adj[2], 0.0f};
+    bool shrink = !D.out4 && (float)pw > vw && (float)ph > vh;
+    bind_shaders2(&R.vs_full, shrink ? &R.fs_blit_shrink : &R.fs_blit);
+    float u[12] = {gamma, adj[1], adj[2], 0.0f, (float)px / tw, (float)py / th_, (float)pw / tw, (float)ph / th_,
+                   0.25f * (float)pw / (tw * vw), 0.25f * (float)ph / (th_ * vh), 0, 0};
     DkGpuAddr g = ubo_put(u, sizeof u);
     if (!g) return;
     dkCmdBufBindUniformBuffer(D.cmd, DkStage_Fragment, 0, g, sizeof u);
-    unit_bind(0, th(R.xfb.id, smp_id(0, 0, 1)));
+    unit_bind(0, th(pic, smp_id(0, 0, 1)));
     DkViewport vp = {(float)vx, (float)vy, vw, vh, 0, 1};
     dkCmdBufSetViewports(D.cmd, 0, &vp, 1);
     set_scissor((uint32_t)vx, (uint32_t)vy, (uint32_t)vw, (uint32_t)vh);
     dkCmdBufDraw(D.cmd, DkPrimitive_Triangles, 3, 1, 0, 0);
+    if (direct) R.copy_written = true; /* the next frame's first draw or clear of the EFB waits for this read */
     /* the overlay draws next with the whole screen */
     set_scissor(0, 0, (uint32_t)w, (uint32_t)h);
     DkViewport full = {0, 0, (float)w, (float)h, 0, 1};
     dkCmdBufSetViewports(D.cmd, 0, &full, 1);
+}
+
+static void queue_failed_report(void) {
+    rt_log("render: the GPU queue failed: frame %llu slot %u, %u draws since the last submit, last frame %u batches %u verts, "
+           "%u textures, image heap %llu MB in %d chunks, ring %u MB, EFB %ux%u, direct %d, XFB %d, HD upload %ux%u level %u row %u",
+           (unsigned long long)D.frame, D.slot, D.draws_since_submit, R.stat_batches, R.stat_verts, R.ntex,
+           (unsigned long long)(H.bytes >> 20), H.nchunks, D.slots[D.slot].ring.size >> 20, R.efb_w, R.efb_h, s_direct.on, R.have_xfb,
+           s_up.w, s_up.h, s_up.level, s_up.row);
+    diag_flush();
 }
 
 void render_stats(uint32_t *batches, uint32_t *verts, uint32_t *textures) {

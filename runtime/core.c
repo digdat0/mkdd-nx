@@ -52,6 +52,7 @@ static struct { uint32_t addr; GuestFn fn; } s_dcache[DCACHE];
 
 void ctx_call(Ctx *c, uint64_t target) {
     g_calls++;
+    g_last_fn = (uint32_t)target; /* for crash reports: only calls through here and hooked functions set it */
     unsigned h = ((uint32_t)target >> 2) & (DCACHE - 1);
     if (LIKELY(s_dcache[h].addr == (uint32_t)target && s_dcache[h].fn && c->depth <= 20000)) {
         c->depth++;

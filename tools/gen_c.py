@@ -82,6 +82,34 @@ NONVOL = ({(4 * r, 4) for r in range(14, 32)}
           | {(0x4000 + 8 * r, 8) for r in range(14, 32)} | {(0x5000 + 8 * r, 8) for r in range(14, 32)}
           | {(0x902, 1), (0x903, 1), (0x904, 1)})
 SAFE_BASE = re.compile(r"\((r1|r2|r13)\)")
+# Functions that keep the hardware-address check on every load and store; all others go straight to
+# MEM1 (mld_s / mst_s). Kept: the SDK (below), any function with a hardware or locked-cache address in
+# a "lis", those tools/mmio_keep.txt lists (tools/mmio_census.py: seen reaching hardware at run time),
+# and code the game doesn't have (a mod's own). --mmio-checks: all of them, as before.
+SDK_RANGE = (0x800A1F00, 0x80100000)
+GAME_TEXT = (0x80003100, 0x802D8500)
+HW_LIS = re.compile(r"^lis r\d+,(-?0x[0-9a-f]+|\d+)")
+MMIO_KEEP = set()
+
+
+def mmio_scan(by_func):
+    """MMIO_KEEP from the instructions and tools/mmio_keep.txt."""
+    path = Path(__file__).resolve().parent / "mmio_keep.txt"
+    listed = {int(l.split()[0], 16) for l in path.read_text().splitlines() if l.strip() and not l.startswith("#")} if path.exists() else None
+    if listed is None or "--mmio-checks" in FLAGS:
+        MMIO_KEEP.update(by_func)
+        print("mmio: every function keeps its checks", flush=True)
+        return
+    for e, rows in by_func.items():
+        hw = False
+        for r in rows:
+            m = HW_LIS.match(r["asm"])
+            if m:
+                hi = int(m[1], 16) & 0xFFFF
+                hw |= 0xCC00 <= hi <= 0xCDFF or 0xE000 <= hi <= 0xE001
+        if hw or e in listed or SDK_RANGE[0] <= e < SDK_RANGE[1] or not GAME_TEXT[0] <= e < GAME_TEXT[1]:
+            MMIO_KEEP.add(e)
+    print(f"mmio: {len(MMIO_KEEP)} of {len(by_func)} functions keep their checks", flush=True)
 # Functions the runtime may hook (sheets/hle.csv, plus the handlers runtime/hle.c binds by name):
 # only these take the HLE check at entry (ctx_enter); every other function uses ctx_enter_nh.
 HOOKABLE = set()
@@ -732,8 +760,17 @@ class Gen:
         else:
             self.succ[label] = (self.keep, set(self.D))
 
+    @staticmethod
+    def is_fp(o, s):
+        """FPR and ps1 locals are C doubles: as uint64_t they sat in integer registers, with an fmov
+        each way around every floating-point operation."""
+        return s == 8 and (FPR <= o < FPR + 256 or PS1 <= o < PS1 + 256)
+
+    def val(self, o, s):
+        return f"ps_u(x{o:x})" if self.is_fp(o, s) else f"x{o:x}"
+
     def flush(self):
-        out = "".join(f"WR(c,0x{o:x},{s},x{o:x});" for o, s in sorted(self.D))
+        out = "".join(f"WR(c,0x{o:x},{s},{self.val(o, s)});" for o, s in sorted(self.D))
         self.D = set()
         self.keep = set()
         return out
@@ -746,7 +783,7 @@ class Gen:
         if "--no-lazy" in FLAGS:
             return self.flush()
         vol = {r for r in self.D if r not in NONVOL or r[0] in NV_IN.get(target, ())}
-        out = "".join(f"WR(c,0x{o:x},{s},x{o:x});" for o, s in sorted(vol - kill))
+        out = "".join(f"WR(c,0x{o:x},{s},{self.val(o, s)});" for o, s in sorted(vol - kill))
         if "--abi-check" in FLAGS:  # a callee reading a skipped store sees the poison
             out += "".join(f"WR(c,0x{o:x},{s},ABI_POISON({s}));" for o, s in sorted(vol & kill))
         self.D -= vol  # reloaded after the call (the killed ones are dead there)
@@ -763,7 +800,7 @@ class Gen:
     def load_all(self, after_call=False, mod=None):
         """Load the locals from c->regs. After a call only the volatile ones, and with mod (a
         callee write set, see MOD) only those the callee can change."""
-        return "".join(f"x{o:x}=RD(c,0x{o:x},{s});" for o, s in self.conts
+        return "".join((f"x{o:x}=ps_d(RD(c,0x{o:x},{s}));" if self.is_fp(o, s) else f"x{o:x}=RD(c,0x{o:x},{s});") for o, s in self.conts
                        if not (after_call and (o, s) in NONVOL) and not self.private((o, s))
                        and (mod is None or mod & _bytes(o, s)))
 
@@ -779,9 +816,9 @@ class Gen:
                 return f"RD(c,0x{off:x},{s})"
             co, cs = cont
             if (off, s) == cont:
-                return f"x{co:x}"
+                return self.val(co, cs)
             sh = 8 * (co + cs - off - s)
-            return f"((x{co:x}>>{sh})&0x{mask(-1, s):x}ull)"
+            return f"(({self.val(co, cs)}>>{sh})&0x{mask(-1, s):x}ull)"
         if k == "U":
             return f"u{off:x}"
         return f"mld(c,M,0x{off:x},{s})"
@@ -798,9 +835,12 @@ class Gen:
             if not self.private(cont):
                 self.D.add(cont)
             if (off, s) == cont:
+                if self.is_fp(co, cs):
+                    return f"x{co:x}=ps_d({expr});"
                 return f"x{co:x}=({expr})&0x{mask(-1, s):x}ull;" if s < 8 else f"x{co:x}={expr};"
             sh, m = 8 * (co + cs - off - s), mask(-1, s)
-            return f"x{co:x}=(x{co:x}&~(0x{m:x}ull<<{sh}))|((({expr})&0x{m:x}ull)<<{sh});"
+            merged = f"({self.val(co, cs)}&~(0x{m:x}ull<<{sh}))|((({expr})&0x{m:x}ull)<<{sh})"
+            return f"x{co:x}=ps_d({merged});" if self.is_fp(co, cs) else f"x{co:x}={merged};"
         if k == "U":
             return f"u{off:x}={expr};"
         if k == "M":
@@ -955,7 +995,7 @@ class Gen:
         if mnem == "RETURN":
             if ABI["on"] and self.fn not in ABI["hooks"]:  # --abi: volatile candidates are not handed back (EABI)
                 kill = abi_kill(_ABI_RET)
-                out = "".join(f"WR(c,0x{o:x},{s},x{o:x});" for o, s in sorted(self.D - kill))
+                out = "".join(f"WR(c,0x{o:x},{s},{self.val(o, s)});" for o, s in sorted(self.D - kill))
                 if "--abi-check" in FLAGS:  # poison what was skipped: abi_after() spots a caller reading it
                     out += "".join(f"WR(c,0x{o:x},{s},ABI_POISON({s}));" for o, s in sorted(self.D & kill))
                 self.D, self.keep = set(), set()
@@ -1057,7 +1097,7 @@ class Gen:
                 return "{" + body + "}"
             return f"{self.flush()}ctx_ps(c,0x{ins['bytes']}u);{self.load_all()}"
         # Memory operands based on r1 / r2 / r13 (stack, small-data areas) are always in MEM1.
-        self.safe_mem = SAFE_BASE.search(ins["asm"]) is not None
+        self.safe_mem = self.fn not in MMIO_KEEP or SAFE_BASE.search(ins["asm"]) is not None
         ops = [p for p in ins["pcode"].split(" | ") if p]
         uniq = sorted({int(m.group(2), 16) for m in VN.finditer(ins["pcode"]) if m.group(1) == "U"})
         decl = "".join(f"uint64_t u{u:x}=0;" for u in uniq)
@@ -1159,8 +1199,10 @@ class Gen:
                         d_in[j] |= out
                         changed = True
         # Pass 2.
-        local_decl = ("uint64_t " + ",".join(f"x{o:x}" + ("=0" if self.private((o, s)) else "") for o, s in self.conts)
-                      + ";") if self.conts else ""
+        ints = [(o, s) for o, s in self.conts if not self.is_fp(o, s)]
+        fps = [o for o, s in self.conts if self.is_fp(o, s)]
+        local_decl = ("uint64_t " + ",".join(f"x{o:x}" + ("=0" if self.private((o, s)) else "") for o, s in ints) + ";") if ints else ""
+        local_decl += ("double " + ",".join(f"x{o:x}" for o in fps) + ";") if fps else ""
         cases = "".join(f"case 0x{a:x}u:" for a in lead)
         jcases = "".join(f"case 0x{a:x}u:goto B{i + 1};" for i, a in enumerate(lead))
         if inline:  # direct calls only: always entered at entry, no bookkeeping (see INLINE)
@@ -1257,6 +1299,7 @@ def main():
     if "--no-abi" not in FLAGS:  # on by default (it was opt-in, and a build without it lost ~6%)
         rounds = abi_analyze(by_func, leaders)
         print(f"abi: {rounds} rounds; read by indirect callees: {abi_names(ABI['ind_use']) or '-'}", flush=True)
+    mmio_scan(by_func)
     nonvol_analyze(by_func)
     mod_analyze(by_func, funcs)
     g = Gen(entry_set, leaders)

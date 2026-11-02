@@ -150,9 +150,28 @@ The 2-player seam blur, carried over from GL, left a pale band beside the centre
 
 Keeping GL buildable beside deko3d made every comparison possible and kept a way back until hardware runs had covered enough. We removed it after that. v1.7.1 in git is the last release with it.
 
+## 4x docked at stock clocks (v1.8.1)
+
+Measured on the console: docked, 4x (2432x1792), stock clocks, HD textures, 16x anisotropic filtering, Plus. DEBUG > GPU TEST switches one change at a time during a race, so each is compared over the same road.
+
+| GPU test, two races | GPU time per frame |
+|---|---|
+| Normal | 14.60 ms |
+| Final copy back in | 16.56 ms |
+| Half-size copies uncapped | 14.33 ms |
+| 4-tap output | 14.74 ms |
+
+- **Skipping the final copy is the real gain.** Using the 2D engine for that copy gained nothing (see above), so the copy is gone: when nothing is drawn after it, the picture is shown from the EFB and the next frame's clear waits until then.
+- **The 2x cap on half-size copies has shown no measurable gain** in two runs. It stays until it is tested on its own, and may go.
+- **Races hold about 60 on screen, but game frames are the honest number:** about 98.5% new frames on most tracks, about 92% (roughly 55 fps) on N64 Toad's Turnpike. GPU time is under budget there, so the CPU is the limit.
+- **Multiplayer is CPU limited.** 2-player Turnpike makes about 39-53 game frames a second with 11-12 ms of GPU time.
+
+A helper thread copying kept vertex lists caused a crash we nearly shipped: normal draws grew the frame's index buffer without waiting for it, so on the largest frame so far it could write through a stale pointer. The symptom was a GPU queue error about 11.8 s into 2-player Turnpike, every time. Turning features off one at a time found it in two runs, after reading the renderer's diff had not.
+
 ## Still open
 
-- **Awaiting hardware checks:** docked mode, HOME and sleep, pause screen, and movies.
+- **3 and 4 players:** on most tracks the course or the insides of item boxes and dash panels draw black. v1.8.0 does this too. Cause unknown.
+- **Awaiting hardware checks:** HOME and sleep, and movies.
 - **Later:** replace SDL audio and input, and remove the 2D copy path if it never shows a gain.
 
 ## Credits

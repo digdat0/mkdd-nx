@@ -756,8 +756,12 @@ def build(model, skel, wii_tex, notes, what):
         ob = model.objs[oi]
         mat = out.mats[mat_new[mi]]
         env = mat["env"]
-        multi = ob.single < 0
-        if not multi and drw_of(ob.single) is None:
+        slotted = ob.single < 0
+        # matrix slots that all come to one joint here (a kart's joints joined to its root): a part on that joint
+        places = {drw_of(pk.slots[s]) for pk in ob.packets for s in pk.slots if pk.slots[s] is not None} if slotted else set()
+        one = places.pop() if len(places) == 1 and None not in places else None
+        multi = slotted and one is None
+        if not slotted and drw_of(ob.single) is None:
             raise ConvertError(f"{what}: {ob.name} is bound to matrix {ob.single}, which no joint has")
         attrs = [(PNMTX, 1)] if multi else []
         if multi and env:
@@ -780,21 +784,21 @@ def build(model, skel, wii_tex, notes, what):
         for pk in ob.packets:
             table = []
             slot_tab = {}
-            if multi:
+            if slotted:
                 for slot in range(10):
                     mid = pk.slots.get(slot)
                     d = drw_of(mid) if mid is not None else None
                     table.append(0xFFFF if d is None else d)
                     slot_tab[slot] = mid
-            else:
-                table = [drw_of(ob.single)]
+            if not multi:
+                table = [one if slotted else drw_of(ob.single)]
             while multi and table and table[-1] == 0xFFFF:
                 table.pop()
             dl = bytearray()
             for kind, verts in pk.prims:
                 dl += struct.pack(">BH", PRIM_CODE[kind], len(verts))
                 for v in verts:
-                    mid = slot_tab.get(v.get(PNMTX, 0) // 3) if multi else ob.single
+                    mid = slot_tab.get(v.get(PNMTX, 0) // 3) if slotted else ob.single
                     if mid not in joint_of and mid not in mix_of:
                         raise ConvertError(f"{what}: {ob.name} uses a matrix slot nothing was loaded in")
                     if mid in mix_of:  # weighted: in the rest pose, as J3D's are

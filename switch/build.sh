@@ -32,7 +32,7 @@ DKDEBUG=OFF
 [ "${MKDD_DEKO3D_DEBUG:-0}" = 1 ] && DKDEBUG=ON
 "${RUN[@]}" cmake -S switch -B "$BUILD" -G "Unix Makefiles" \
     -DCMAKE_TOOLCHAIN_FILE="$DKP/cmake/Switch.cmake" -DGEN_DIR="$GEN" \
-    -DMKDD_DEKO3D_DEBUG="$DKDEBUG"
+    -DMKDD_DEKO3D_DEBUG="$DKDEBUG" -DMKDD_HOT_ORDER="${MKDD_HOT_ORDER:-ON}" -DMKDD_MMIO_CENSUS="${MKDD_MMIO_CENSUS:-OFF}"
 # main_switch.c carries the build stamp (boot.txt, the menu's BUILD HHMM): always recompile it.
 touch switch/main_switch.c
 "${RUN[@]}" cmake --build "$BUILD" -j"$(nproc)" -- "$@"

@@ -663,6 +663,88 @@ uint32_t charpack_reserve(uint32_t n) {
 
 /* A variant's driver file in MEM1 (read from the SD card the first time), or 0 when it has none. */
 static uint32_t load_file(const char *path, uint32_t *size);
+
+/* ---- mods/karts: extra karts ----
+ * Any folder under it named as a kart's in MRAM.arc (wario_all, ...) holding that kart's <name>_k_*.bmd,
+ * however deep (the MKDD Patcher's <mod>/files/MRAM.arc/mram/kart/wario_all, as a zip unpacks). Files
+ * it doesn't have are the stock kart's. The name: modname in the nearest modinfo.ini, else the top
+ * folder's. Only a kart's looks: its stats, class and unlock are the stock kart's it is added next to. */
+#define KP_MAX 128
+#define KP_KARTS 21
+static const char *const KP_NAMES[KP_KARTS] = {"mario", "dk", "yoshi", "noko", "peach", "baby", "wario", "koopa", "luigi", "diddy", "cathy",
+                                               "pata", "daisy", "bblui", "walui", "jr", "kpio", "kpico", "teres", "pakku", "extra"};
+typedef struct { char name[48], dir[256]; int kart; } KartVar;
+static KartVar *s_kv;
+static unsigned s_nkv;
+
+static void kart_scan(const char *dir, const char *ini_name, int depth) {
+    DIR *d = opendir(dir);
+    if (!d) return;
+    char name[48], path[512];
+    snprintf(name, sizeof name, "%s", ini_name);
+    snprintf(path, sizeof path, "%s/modinfo.ini", dir);
+    char got[48];
+    if (ini_get(path, "modname", got, sizeof got)) snprintf(name, sizeof name, "%s", got);
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        if (snprintf(path, sizeof path, "%s/%s", dir, e->d_name) >= (int)sizeof path || !is_dir(path)) continue;
+        int kart = -1;
+        size_t n = strlen(e->d_name);
+        for (int k = 0; n > 4 && !strcasecmp(e->d_name + n - 4, "_all") && k < KP_KARTS; k++)
+            if (strlen(KP_NAMES[k]) == n - 4 && !strncasecmp(e->d_name, KP_NAMES[k], n - 4)) kart = k;
+        if (kart < 0) {
+            if (depth < 6) kart_scan(path, name, depth + 1);
+            continue;
+        }
+        char body[560];
+        snprintf(body, sizeof body, "%s/%s_k_body.bmd", path, KP_NAMES[kart]);
+        if (!is_file(body)) { rt_log("kartpack: %s has no %s_k_body.bmd: not used", path, KP_NAMES[kart]); continue; }
+        if (s_nkv == KP_MAX || strlen(path) >= sizeof s_kv->dir) { rt_log("kartpack: %s: no room", path); continue; }
+        KartVar *v = &s_kv[s_nkv++];
+        snprintf(v->name, sizeof v->name, "%s", name);
+        snprintf(v->dir, sizeof v->dir, "%s", path);
+        v->kart = kart;
+        rt_log("kartpack: %s, next to %s's kart (%s)", v->name, KP_NAMES[kart], path);
+    }
+    closedir(d);
+}
+void kartpack_scan(const char *dir) {
+    if (!s_kv && !(s_kv = calloc(KP_MAX, sizeof *s_kv))) return;
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        char path[512];
+        if (e->d_name[0] == '.' || snprintf(path, sizeof path, "%s/%s", dir, e->d_name) >= (int)sizeof path || !is_dir(path)) continue;
+        kart_scan(path, e->d_name, 0);
+    }
+    closedir(d);
+    rt_log("kartpack: %u extra karts", s_nkv);
+}
+unsigned kartpack_count(void) { return s_nkv; }
+int kartpack_kart(int v) { return v >= 0 && (unsigned)v < s_nkv ? s_kv[v].kart : -1; }
+const char *kartpack_name(int v) { return v >= 0 && (unsigned)v < s_nkv ? s_kv[v].name : ""; }
+int kartpack_step(int kart, int v, int dir) {
+    if (dir > 0) {
+        for (int i = v + 1; (unsigned)i < s_nkv; i++)
+            if (s_kv[i].kart == kart) return i;
+    } else {
+        for (int i = v < 0 ? (int)s_nkv - 1 : v - 1; i >= 0; i--)
+            if (s_kv[i].kart == kart) return i;
+    }
+    return -1;
+}
+uint32_t kartpack_file(int v, int data, uint32_t *size) {
+    static const char *const FILES[6] = {"body", "arm", "shock", "tire", "tire_l", "tire_r"};
+    if (v < 0 || (unsigned)v >= s_nkv || data < 0 || data >= 6) return 0;
+    char path[320];
+    snprintf(path, sizeof path, "%s/%s_k_%s.bmd", s_kv[v].dir, KP_NAMES[s_kv[v].kart], FILES[data]);
+    if (!is_file(path)) return 0;
+    uint32_t a = load_file(path, size);
+    if (a && (*size < 0x20 || memcmp(g_ram + (a & RAM_MASK), "J3D2", 4))) { rt_log("kartpack: %s is not a model", path); return 0; }
+    return a;
+}
 uint32_t charpack_file(int v, const char *file, uint32_t *size) {
     char path[224];
     if (strchr(file, '/') || strlen(file) > 48 || !charpack_path(v, 'd', file, path, sizeof path)) return 0;

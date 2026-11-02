@@ -115,7 +115,28 @@ static void apply_gx_events(void) {
 
 static uint32_t ai_rate(void) { return get32(AI_CR) & 0x40 ? 32000 : 48000; }
 
+#ifdef MKDD_MMIO_CENSUS
+/* tools/mmio_census.py: each host call site that reached a hardware address, once, as an offset from
+ * rt_mmio_read (the symbol tells which guest function it is in). */
+uint64_t g_mmio_site;
+static void census(uint32_t addr) {
+    static uint64_t seen[8192];
+    uint64_t s = g_mmio_site;
+    for (uint32_t i = (uint32_t)(s >> 2) & 8191, n = 0; n < 8192; i = (i + 1) & 8191, n++) {
+        if (seen[i] == s) return;
+        if (!seen[i]) {
+            seen[i] = s;
+            rt_log("mmio site %lld addr %#x", (long long)(s - (uint64_t)(uintptr_t)rt_mmio_read), addr);
+            return;
+        }
+    }
+}
+#else
+#define census(a) ((void)0)
+#endif
+
 uint64_t rt_mmio_read(Ctx *c, uint32_t addr, unsigned size) {
+    census(addr);
     hw_gx_flush();
     (void)c;
     if (addr >= LC_BASE && addr < LC_BASE + LC_SIZE) {
@@ -333,6 +354,7 @@ void hw_gather_copy(const uint8_t *src, size_t n) {
 
 void rt_mmio_write(Ctx *c, uint32_t addr, unsigned size, uint64_t v) {
     (void)c;
+    census(addr);
     if (addr == GX_FIFO || (addr & 0xFFFFFFF8u) == GX_FIFO) { gather_write(size, v); return; }
     hw_gx_flush();
     if (addr >= LC_BASE && addr < LC_BASE + LC_SIZE) {

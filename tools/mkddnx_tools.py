@@ -6,6 +6,7 @@ others are shown:
     HD Textures   tools/hdtex_app/hdtex_gui.py   the Dolphin HD texture pack -> hd-textures.bin
     Characters    tools/charpack.py              character mods -> MKDD-NX character folders
     Wii Characters tools/wiichar.py              a Mario Kart Wii driver (.szs) -> a character folder
+    Wii Karts     tools/wiikart.py               a Mario Kart Wii kart (.szs) -> an extra kart folder
     Battle Routes tools/route_editor.py          the routes the computer karts drive in battles
 
     py -3 tools/mkddnx_tools.py                  the window (from source)
@@ -36,6 +37,8 @@ TOOLS = [
                    "checks each one and writes the folders for the SD card.", "Characters-App", "characters"),
     ("Convert WiiMK Characters (beta)", "Convert a Mario Kart Wii driver (.szs) into a character: its model on the game's skeleton, "
                        "with a preview. Drivers only, not karts.", "Wii-Characters", "wiichar"),
+    ("Convert WiiMK Karts (beta)", "Convert a Mario Kart Wii kart (.szs) into an extra kart, added next to a Double Dash one and "
+                       "driving like it, with a preview. Karts only, not bikes.", "Wii-Karts", "wiikart"),
     ("Battle Routes", "Edit the routes the computer karts drive in single player battles, on the game's arena maps.",
      "Route-Editor", "routes"),
 ]
@@ -49,6 +52,9 @@ def make_tool(kind, frame):
     if kind == "wiichar":
         import wiichar
         return wiichar.gui(frame)
+    if kind == "wiikart":
+        import wiikart
+        return wiikart.gui(frame)
     if kind == "hdtex":
         import hdtex_gui
         return hdtex_gui.App(frame)

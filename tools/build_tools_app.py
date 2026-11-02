@@ -32,7 +32,7 @@ def main():
     lib = WORK / hdtex_pack.LIB.name
     hdtex_pack.build_encoder(lib, native=False)  # any CPU of this architecture, not just this one
     extra = ["--paths", a.zstd_from] if a.zstd_from else []
-    hidden = ["charpack", "wiichar", "route_editor", "battle_routes", "build_from_iso", "rvz", "zstandard", "hdtex_gui", "hdtex_pack"]
+    hidden = ["charpack", "wiichar", "wiikart", "route_editor", "battle_routes", "build_from_iso", "rvz", "zstandard", "hdtex_gui", "hdtex_pack"]
     # optional imports of Pillow and the standard library the tools never use (numpy alone was ~30 MB)
     unused = ["numpy", "clr", "clr_loader", "pythonnet", "pyreadline3", "pydoc", "pydoc_data", "unittest", "doctest"]
     pyi_app.build("MKDD-NX Tools", "MKDD-NX-Tools", ROOT / "tools" / "mkddnx_tools.py", WORK, "io.github.digdat0.mkddnx.tools",

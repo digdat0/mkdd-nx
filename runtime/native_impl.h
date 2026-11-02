@@ -3,6 +3,10 @@
 #pragma once
 #include <string.h>
 #include "native.h"
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#define MKDD_MTX_NEON 1 /* matrix natives on NEON single lanes (the PC stays on the verified double path) */
+#endif
 
 #define ARGS uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7
 #define UNUSED_ARGS (void)a0, (void)a1, (void)a2, (void)a3, (void)a4, (void)a5, (void)a6, (void)a7
@@ -21,7 +25,11 @@ ALWAYS_INLINE void stf(Ctx *c, uint8_t *M, uint32_t a, float f) {
 ALWAYS_INLINE void ldfn(Ctx *c, uint8_t *M, uint32_t a, float *v, int n) {
     if (LIKELY(IS_RAM(a) && IS_RAM(a + 4u * n - 1))) {
         const uint8_t *p = M + (a & RAM_MASK);
-        for (int i = 0; i < n; i++) { uint32_t u = (uint32_t)get_be(p + 4 * i, 4); memcpy(&v[i], &u, 4); }
+        int i = 0;
+#ifdef MKDD_MTX_NEON
+        for (; i + 4 <= n; i += 4) vst1q_u8((uint8_t *)&v[i], vrev32q_u8(vld1q_u8(p + 4 * i)));
+#endif
+        for (; i < n; i++) { uint32_t u = (uint32_t)get_be(p + 4 * i, 4); memcpy(&v[i], &u, 4); }
     } else {
         for (int i = 0; i < n; i++) v[i] = ldf(c, M, a + 4 * i);
     }
@@ -29,7 +37,11 @@ ALWAYS_INLINE void ldfn(Ctx *c, uint8_t *M, uint32_t a, float *v, int n) {
 ALWAYS_INLINE void stfn(Ctx *c, uint8_t *M, uint32_t a, const float *v, int n) {
     if (LIKELY(IS_RAM(a) && IS_RAM(a + 4u * n - 1))) {
         uint8_t *p = M + (a & RAM_MASK);
-        for (int i = 0; i < n; i++) { uint32_t u; memcpy(&u, &v[i], 4); put_be(p + 4 * i, 4, u); }
+        int i = 0;
+#ifdef MKDD_MTX_NEON
+        for (; i + 4 <= n; i += 4) vst1q_u8(p + 4 * i, vrev32q_u8(vld1q_u8((const uint8_t *)&v[i])));
+#endif
+        for (; i < n; i++) { uint32_t u; memcpy(&u, &v[i], 4); put_be(p + 4 * i, 4, u); }
     } else {
         for (int i = 0; i < n; i++) stf(c, M, a + 4 * i, v[i]);
     }

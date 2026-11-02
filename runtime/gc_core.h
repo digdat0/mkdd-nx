@@ -244,8 +244,7 @@ ALWAYS_INLINE bool ctx_enter(Ctx *c, uint32_t addr, uint32_t entry) {
 
 /* Same for functions that are never hooked (the generator knows them). */
 ALWAYS_INLINE bool ctx_enter_nh(Ctx *c, uint32_t addr, uint32_t entry) {
-    (void)entry;
-    g_last_fn = addr;
+    (void)entry; (void)addr;
     if (UNLIKELY(g_attention) && !c->in_irq && (RD(c, REG_MSR, 4) & MSR_EE)) rt_deliver(c);
     return false;
 }
