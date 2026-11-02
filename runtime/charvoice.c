@@ -18,8 +18,11 @@
  * The replacements apply while their variant stands in for its base: the select screen's previewed
  * or chosen one (charpack_model), in a race the driver of that character who last started a voice
  * line (charpack_voice_on: two drivers of one character, as a variant and the game's own or two
- * variants, each speak as their own). A variant's files are read from the SD card
- * the first time it is active and kept (host memory, VOICE_BUDGET at most in all).
+ * variants, each speak as their own). A variant's files are read from the SD card once and kept
+ * (host memory, VOICE_BUDGET at most in all): all of them by a thread at start-up
+ * (charvoice_preload), as reading one variant's (a .wav and two disc reads a sound) took the game
+ * thread 150-550 ms, a stall on the select screen; one the thread hasn't reached yet is read when
+ * it is first active, as before, and one it is reading is waited for (s_load_lock).
  *
  * Wave tables: GCKart.baa holds a WSYS per wave archive: +0x10 WINF, +0x14 WBCT (offsets from the
  * WSYS). WINF: count, group offsets; a group: the .aw's name (0x70 bytes), count, wave offsets; a
@@ -33,7 +36,7 @@
 #include "charpack.h"
 
 #define MATCH 32
-#define VOICE_BUDGET (48u << 20)
+#define VOICE_BUDGET (128u << 20)
 #define TABLE_MAX 512
 
 /* the Patcher's folder names, each its .aw */
@@ -70,6 +73,8 @@ typedef struct {
 static VarVoice *s_var;
 static unsigned s_nvar;
 static size_t s_used;
+/* the tables, s_var and s_used: load() runs on the game thread and the preload thread */
+static PMutex s_load_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* what plays now: two tables, the DSP reading the one s_cur points at while the other is rebuilt */
 typedef struct {
@@ -185,8 +190,8 @@ done:
     return out;
 }
 
-/* variant v's sounds, read once */
-static VarVoice *load(int v) {
+/* variant v's sounds, read once (s_load_lock held) */
+static VarVoice *load_locked(int v) {
     if (v < 0 || (unsigned)v >= charpack_count()) return NULL;
     if (!s_var) {
         s_nvar = charpack_count();
@@ -259,6 +264,36 @@ static VarVoice *load(int v) {
     }
     rt_log("charvoice: %s: %u sounds from %s", charpack_name(v), vv->n, dir);
     return vv;
+}
+
+static VarVoice *load(int v) {
+    pmutex_lock(&s_load_lock);
+    VarVoice *vv = load_locked(v);
+    pmutex_unlock(&s_load_lock);
+    return vv;
+}
+
+/* the preload thread: every variant with a voice, in folder order (the select screen's) */
+static void preload(void *arg) {
+    (void)arg;
+    uint64_t t0 = plat_now_ns();
+    unsigned n = 0;
+    for (unsigned v = 0; v < charpack_count(); v++)
+        if (charpack_voice_dir((int)v, NULL, 0) && load((int)v)) n++;
+    pmutex_lock(&s_load_lock);
+    size_t used = s_used;
+    pmutex_unlock(&s_load_lock);
+    rt_log("charvoice: %u voices read ahead in %llu ms (%zu KiB)", n,
+           (unsigned long long)((plat_now_ns() - t0) / 1000000), used >> 10);
+}
+
+/* The disc must be open: tables() read before it would turn the voices off for the session. */
+void charvoice_preload(void) {
+    if (!disc_present()) return;
+    unsigned n = 0;
+    for (unsigned v = 0; v < charpack_count(); v++) n += charpack_voice_dir((int)v, NULL, 0);
+    if (!n) return;
+    if (!pthread_start("charvoice", preload, NULL, 0, -1, 1)) rt_log("charvoice: no preload thread: voices read when first active");
 }
 
 void charvoice_update(void) {

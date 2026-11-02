@@ -976,6 +976,7 @@ int main(int argc, char **argv) {
             menu_set_chars(found, found && g_set.characters);
         }
         charpack_art_init();
+        charvoice_preload();
         render_set_subst(subst_texture);
         render_set_below(pause_art_below);
         render_set_shift(pause_art_shift);
