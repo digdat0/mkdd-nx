@@ -2833,6 +2833,7 @@ bool gx_dump_frame(const char *path) {
                 (e->size & 0x3FF) + 1, ((e->size >> 10) & 0x3FF) + 1, gx_phys(e->dst));
     }
     static uint8_t *pix;
+    static U64Map seen; /* textures averaged already: a slow decode each on the console */
     for (size_t i = 0; i < f->batches.len; i++) {
         const Batch *b = &f->batches.data[i];
         const TevState *t = &b->tev;
@@ -2853,13 +2854,16 @@ bool gx_dump_frame(const char *path) {
             if ((k & 0xFFFF000000000000ull) == RT_TAG) { fprintf(o, "  tex %d: render target %#x mode %#x\n", m, (uint32_t)k, (uint32_t)(k >> 32) & 0xFFFF); continue; }
             GxTexture *tx = gx_texture_acquire(k);
             if (!tx) { fprintf(o, "  tex %d: key %#llx NOT IN STORE\n", m, (unsigned long long)k); continue; }
+            uint64_t was;
+            if (u64map_get(&seen, k, &was)) { fprintf(o, "  tex %d: key %#llx as above\n", m, (unsigned long long)k); gx_texture_release(tx); continue; }
+            u64map_put(&seen, k, 1);
             double sum[4] = {0};
             size_t n = (size_t)tx->width * tx->height;
             pix = realloc(pix, n * 4);
             if (pix && gx_texture_decode(tx, pix))
                 for (size_t p = 0; p < n; p++) for (int c = 0; c < 4; c++) sum[c] += pix[p * 4 + c];
-            fprintf(o, "  tex %d: key %#llx fmt %u %ux%u tlut %u wrap %u/%u subst %u movie %u avg %.0f %.0f %.0f %.0f\n", m, (unsigned long long)k,
-                    tx->fmt, tx->width, tx->height, tx->tlut_fmt, tx->wrap_s, tx->wrap_t, tx->subst, tx->movie,
+            fprintf(o, "  tex %d: key %#llx fmt %u %ux%u levels %u filter %u tlut %u wrap %u/%u subst %u movie %u avg %.0f %.0f %.0f %.0f\n", m, (unsigned long long)k,
+                    tx->fmt, tx->width, tx->height, tx->levels, tx->linear, tx->tlut_fmt, tx->wrap_s, tx->wrap_t, tx->subst, tx->movie,
                     sum[0] / (double)(n ? n : 1), sum[1] / (double)(n ? n : 1), sum[2] / (double)(n ? n : 1), sum[3] / (double)(n ? n : 1));
             gx_texture_release(tx);
         }
@@ -2894,6 +2898,7 @@ bool gx_dump_frame(const char *path) {
         }
     }
     fclose(o);
+    u64map_clear(&seen);
     gx_frame_release(f);
     return true;
 }

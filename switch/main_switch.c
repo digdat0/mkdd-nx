@@ -695,8 +695,63 @@ static void battle_test_step(PadStatus *s) {
         render_capture(path);
     }
 }
+/* Debug: while config/mp_test exists (tools/mp_test.sh), all four pads connected and scripted: "POLL BUTTONS" lines
+ * (hex, held 10 polls, in order), A pressed every 90 polls after the last, a screen saved every 300 (logs/mp_N.ppm). */
+#define MP_EVENTS 64
+static struct { int n, at; uint32_t t, when[MP_EVENTS], btn[MP_EVENTS]; bool on; } s_mpt;
+static void mp_test_load(void) {
+    FILE *f = fopen("sdmc:/switch/MKDD-NX/config/mp_test", "r");
+    if (!f) return;
+    s_mpt.on = true;
+    while (s_mpt.n < MP_EVENTS && fscanf(f, "%u %x", &s_mpt.when[s_mpt.n], &s_mpt.btn[s_mpt.n]) == 2) s_mpt.n++;
+    fclose(f);
+    rt_log("mp test: %d events", s_mpt.n);
+}
+static void mp_test_tick(void) {
+    uint32_t t = ++s_mpt.t;
+    while (s_mpt.at < s_mpt.n && t >= s_mpt.when[s_mpt.at] + 10) s_mpt.at++;
+    if (t % 300 == 0) {
+        static char path[64];
+        snprintf(path, sizeof path, "sdmc:/switch/MKDD-NX/logs/mp_%04u.ppm", (unsigned)(t / 300));
+        render_capture(path);
+    }
+}
+static void mp_test_step(PadStatus *s) {
+    s->connected = true;
+    if (s_mpt.at < s_mpt.n) {
+        if (s_mpt.t >= s_mpt.when[s_mpt.at]) {
+            uint32_t b = s_mpt.btn[s_mpt.at];
+            s->button |= (uint16_t)b;
+            if (b & PAD_DOWN) s->stick_y = -80; /* the menus read the stick */
+            if (b & PAD_UP) s->stick_y = 80;
+            if (b & PAD_LEFT) s->stick_x = -80;
+            if (b & PAD_RIGHT) s->stick_x = 80;
+        }
+    } else if (s_mpt.t % 90 < 10) s->button |= PAD_A;
+}
+/* Debug: while config/frame_dump exists, after 10 s of driving and every 20 s after (up to 12 a run), the latest frame
+ * as text and the screen: logs/frame_N.txt, logs/frame_N.ppm (gx_dump_frame). */
+static void frame_dump_tick(void) {
+    static int on = -1, count;
+    static uint32_t polls, next = 600;
+    if (on < 0) { on = access(CFG_DIR "/frame_dump", F_OK) == 0; if (on) rt_log("frame dump: on"); }
+    if (!on || count >= 12) return;
+    if (g_race_drive != 1 || ++polls < next) return;
+    uint32_t f = polls;
+    next = polls + 1200;
+    count++;
+    char path[64];
+    snprintf(path, sizeof path, "sdmc:/switch/MKDD-NX/logs/frame_%02d.txt", count);
+    bool ok = gx_dump_frame(path);
+    static char shot[64];
+    snprintf(shot, sizeof shot, "sdmc:/switch/MKDD-NX/logs/frame_%02d.ppm", count);
+    render_capture(shot);
+    rt_log("frame dump %d at driving poll %u: %s", count, (unsigned)f, ok ? "written" : "FAILED");
+}
 static void update_pads(void) {
-    if (!s_fpvt.loaded) fpv_test_load(), char_test_load(), battle_test_load();
+    if (!s_fpvt.loaded) fpv_test_load(), char_test_load(), battle_test_load(), mp_test_load();
+    frame_dump_tick();
+    if (s_mpt.on) mp_test_tick();
     int n = 0, src_of[4] = {-1, -1, -1, -1};
     for (int i = 0; i < NSRC; i++) padUpdate(&s_src[i]);
     for (int k = 1; k <= NSRC; k++) { /* 1-4, then 0: handheld */
@@ -877,6 +932,7 @@ static void update_pads(void) {
         if (p == 0 && s_fpvt.on) fpv_test_step(&s);
         if (p == 0 && (g_chartest_start >= 0 || g_chartest_in)) char_test_step(&s);
         if (p == 0 && g_bt_kind >= 0) battle_test_step(&s);
+        if (s_mpt.on) mp_test_step(&s);
         pad_set(p, &s);
     }
     g_jump_held = jump;
