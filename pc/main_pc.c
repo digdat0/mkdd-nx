@@ -45,6 +45,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "boot failed: %s\n", err);
         return 1;
     }
+    charvoice_preload(); /* the disc is open now */
     diag_start_watchdog("mkdd_trace.log");
     if (getenv("MKDD_WIDE")) g_aspect_scale = 4.0f / 3.0f;
     if (getenv("MKDD_HUD_HIDE")) g_hud_hide = (uint32_t)strtoul(getenv("MKDD_HUD_HIDE"), NULL, 0);

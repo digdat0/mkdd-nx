@@ -226,6 +226,7 @@ typedef struct {
 } CharVoiceSound;
 extern volatile unsigned g_charvoice_on; /* any sound replaced now */
 void charvoice_update(void);             /* after charpack_model may have changed (charpack.c) */
+void charvoice_preload(void);            /* after charpack_scan: every variant's voice read on a thread */
 bool charvoice_match(uint32_t wave, CharVoiceSound *out); /* a channel starting on the wave at ARAM address wave */
 /* Select screen page buttons, set by the front end, taken by SceneMenu::character: bit p player p's
  * next page (ZR / X), bit 4 + p previous (ZL / Y). */
