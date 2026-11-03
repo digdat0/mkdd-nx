@@ -44,8 +44,10 @@ Note: This is an AI assisted project.
   button remapping (full controllers and single Joy-Cons separately).
 - Clocks are left to the system by default, so overclock tools work as set (**Debug > Clocks**).
 - Unlock-all option that never touches your save.
-- Race HUD options: a MODERN style for 1 to 4 players, MPH or KM/H, and hiding the position, items,
-  laps, map, speedometer or race order one by one.
+- Race HUD options: a MODERN style for 1 to 4 players, a DASHBOARD style for 1 player (one bar
+  across the top with a speed dial, a rear-view mirror, every kart's place along the bottom; more
+  players get MODERN), MPH or KMH, and hiding the position, items, laps, map, speedometer, race
+  order, timer or (DASHBOARD) mirror one by one.
 - Jump button, and 1 to 7 laps per Grand Prix or Versus race.
 - Cheats: no weight classes, any special item for any character, stronger mini-turbos (fewer
   sweeps, more speed, longer boosts, for CPUs too if you like) and perfect starts.
@@ -156,7 +158,8 @@ Rumble works on controllers with HD Rumble and on GameCube controllers.
 
 Press **-** at any time for the options menu: **Game**, **Graphics**, **Camera**, **Controls**,
 **Multiplayer**, **Mods**, **Cheats**, **Update** and **Debug**. The game pauses while it is open
-(except in LAN play, where the game carries on behind it). Every option is
+(except in LAN play, where the game carries on behind it). To keep cheats away from children,
+**Controls > Open Menu** can require holding **-** for 3 or 5 seconds (off by default). Every option is
 described on the [Options Menu wiki page](https://github.com/digdat0/mkdd-nx/wiki/Options-Menu). Settings are saved to `config/settings.ini`.
 
 ## Battle mode

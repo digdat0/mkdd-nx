@@ -179,6 +179,7 @@ static void defaults(void) {
     g_set.handheld_res = HANDHELD_AUTO;
     g_set.profiler = false;
     g_set.gpu_test = false;
+    g_set.menu_hold = 0;
     g_set.game_clocks = false;
     g_set.lan = false;
     g_set.lan_peer[0] = 0;
@@ -255,8 +256,8 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "fov_16_9")) g_set.fov[1] = atoi(v) < 0 ? 0 : atoi(v) > 4 ? 4 : atoi(v);
         else if (!strcmp(k, "aniso")) g_set.aniso = atoi(v) < 0 ? 0 : atoi(v) > 4 ? 4 : atoi(v);
         else if (!strcmp(k, "border")) g_set.border = atoi(v) != 0;
-        else if (!strcmp(k, "hud_hide")) g_set.hud_hide = (unsigned)atoi(v) & HUD_ALL;
-        else if (!strcmp(k, "hud_style")) g_set.hud_style = atoi(v) == 1;
+        else if (!strcmp(k, "hud_hide")) g_set.hud_hide = (unsigned)atoi(v) & (HUD_ALL | HUD_MIRROR);
+        else if (!strcmp(k, "hud_style")) g_set.hud_style = atoi(v) == 3 ? 2 : atoi(v) >= 0 && atoi(v) <= 2 ? atoi(v) : 1; /* 3: PILLS + MIRROR before, the mirror now an asset */
         else if (!strcmp(k, "speed_kmh")) g_set.speed_kmh = atoi(v) != 0;
         else if (!strcmp(k, "split_side_by_side")) g_set.vsplit = atoi(v) != 0;
         else if (!strcmp(k, "camera_view")) g_set.camera = atoi(v) < 0 || atoi(v) > 2 ? 0 : atoi(v), view_seen = true;
@@ -277,6 +278,7 @@ void settings_load(const char *path) {
         }
         else if (!strcmp(k, "profiler")) g_set.profiler = atoi(v) != 0;
         else if (!strcmp(k, "gpu_test")) g_set.gpu_test = atoi(v) != 0;
+        else if (!strcmp(k, "menu_hold")) g_set.menu_hold = atoi(v) == 3 || atoi(v) == 5 ? atoi(v) : 0;
         else if (!strcmp(k, "game_clocks")) g_set.game_clocks = atoi(v) != 0;
         else if (!strcmp(k, "lan")) g_set.lan = atoi(v) != 0;
         else if (!strcmp(k, "lan_peer")) snprintf(g_set.lan_peer, sizeof g_set.lan_peer, "%s", v);
@@ -323,6 +325,7 @@ void settings_save(void) {
             g_set.logging, g_set.rumble, g_set.unlock_all, g_set.hd_textures, g_set.fov[0], g_set.fov[1], g_set.aniso, g_set.border, g_set.docked_res,
             g_set.profiler, g_set.mod, g_set.handheld_res, g_set.hud_hide, g_set.hud_style, g_set.speed_kmh, g_set.camera, g_set.drv_up, g_set.drv_forward, g_set.drv_tilt, g_set.kart_up, g_set.kart_forward, g_set.kart_tilt, g_set.any_kart);
     fprintf(f, "gpu_test=%d\n", g_set.gpu_test);
+    fprintf(f, "menu_hold=%d\n", g_set.menu_hold);
     fprintf(f, "mt_cpu=%d\nsingle_battle=%d\nbattle_karts=%d\nbomb_hits=%d\nperfect_start=%d\n", g_set.mt_cpu, g_set.battle_cpus, g_set.battle_karts, g_set.bomb_hits, g_set.perfect_start);
     fprintf(f, "mt_sweeps=%d\nmt_speed=%d\nmt_length=%d\njump=%d\nlaps=%d\nfree_camera=%d\ncamera_height=%d\ncamera_distance=%d\n", g_set.mt_sweeps, g_set.mt_speed,
             g_set.mt_length, g_set.jump, g_set.laps, g_set.free_cam, g_set.cam_height, g_set.cam_dist);
@@ -495,7 +498,7 @@ static void upper(char *dst, size_t size, const char *s) {
     for (; s[i] && i + 1 < size; i++) dst[i] = (char)toupper((unsigned char)s[i]);
     dst[i] = 0;
 }
-enum { C_MAP, C_JOYMAP, C_SYNC, C_BACK, C_COUNT };
+enum { C_MAP, C_JOYMAP, C_SYNC, C_HOLD, C_BACK, C_COUNT };
 enum { GM_STYLE, GM_UNITS, GM_HUD, GM_JUMP, GM_RUMBLE, GM_BATTLE, GM_BACK, GM_COUNT };
 /* SINGLE PLAYER BATTLE MODE's page (A on GAME's row while it is on) */
 enum { BT_KARTS, BT_HITS, BT_BACK, BT_COUNT };
@@ -575,10 +578,17 @@ static const char *CAMERA_NAMES[3] = {"NORMAL", "DRIVER FPV", "KART FPV"};
 enum { U_THIS, U_LATEST, U_ACTION, U_BACK, U_COUNT };
 enum { G_WIDE, G_BORDER, G_DOCKED, G_HANDHELD, G_ANISO, G_COLOR, G_BACK, G_COUNT };
 /* HUD ASSETS page: one row per element (HUD_* bit 1 << row), single player races */
-enum { HU_PLACE, HU_ITEMS, HU_LAPS, HU_MAP, HU_SPEED, HU_ORDER, HU_TIME, HU_BACK, HU_COUNT };
-static const char *HUD_LABELS[HU_COUNT] = {"POSITION", "ITEMS", "LAPS", "MAP", "SPEEDOMETER", "RACE ORDER", "RACE TIMER", "BACK"};
-static const char *HUD_STYLES[2] = {"CLASSIC", "MODERN"};
-static const char *hud_value(void) { return !g_set.hud_hide ? "ON" : g_set.hud_hide == HUD_ALL ? "OFF" : "CUSTOM"; }
+enum { HU_PLACE, HU_ITEMS, HU_LAPS, HU_MAP, HU_SPEED, HU_ORDER, HU_TIME, HU_MIRROR, HU_BACK, HU_COUNT };
+static const char *HUD_LABELS[HU_COUNT] = {"POSITION", "ITEMS", "LAPS", "MAP", "SPEEDOMETER", "RACE ORDER", "RACE TIMER", "REAR-VIEW MIRROR", "BACK"};
+static const char *HUD_STYLES[3] = {"CLASSIC", "MODERN", "DASHBOARD"};
+/* the mirror's row only under DASHBOARD (its setting kept under the others); a shown row's HU_ */
+static uint32_t hud_mask(void) { return HUD_ALL | (g_set.hud_style == 2 ? HUD_MIRROR : 0); }
+static int hud_rows(void) { return g_set.hud_style == 2 ? HU_COUNT : HU_COUNT - 1; }
+static int hud_row(int i) { return g_set.hud_style != 2 && i >= HU_MIRROR ? i + 1 : i; }
+static const char *hud_value(void) {
+    uint32_t h = g_set.hud_hide & hud_mask();
+    return !h ? "ON" : h == hud_mask() ? "OFF" : "CUSTOM";
+}
 static const char *FOV_NAMES[5] = {"NORMAL", "WIDE", "WIDER", "WIDEST", "WIDEEE"};
 static const char *ANISO_NAMES[5] = {"NORMAL", "2X", "4X", "8X", "16X"};
 enum { D_FPS, D_LOG, D_PROF, D_GPUTEST, D_CLOCKS, D_BACK, D_COUNT };
@@ -650,7 +660,7 @@ static int page_rows(int page) {
     case PAGE_LAN: return LN_COUNT; /* the most it shows */
     case PAGE_UPDATE: return U_COUNT;
     case PAGE_CTRL: return C_COUNT;
-    case PAGE_HUD: return HU_COUNT;
+    case PAGE_HUD: return hud_rows();
     default: return 1;
     }
 }
@@ -662,9 +672,12 @@ static int page_parent(int page) {
            : page == PAGE_SPECIAL ? PAGE_CHEATS : page == PAGE_KART ? PAGE_CAM : page == PAGE_LAN ? PAGE_MULTI : PAGE_MAIN;
 }
 
+static bool s_close_only; /* opened by menu_open with OPEN MENU on hold: a dropped controller must not hand over the options */
+
 void menu_open(const char *notice) {
     s_open = true;
     s_page = PAGE_MAIN;
+    s_close_only = g_set.menu_hold != 0;
     snprintf(s_notice, sizeof s_notice, "%s", notice ? notice : "");
 }
 
@@ -677,9 +690,16 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         cam_idle = cam != cam_last ? 0 : cam_idle < 100 ? cam_idle + 1 : cam_idle;
         cam_last = cam;
         s_in_race = cam_idle < 4;
-        if (down & HidNpadButton_Minus) { s_open = true; s_page = PAGE_MAIN; s_pressed = HidNpadButton_Minus; }
+        /* OPEN MENU on hold: from a fresh press, so holding on after closing the menu doesn't reopen it */
+        static uint64_t hold_from;
+        bool minus = down & HidNpadButton_Minus;
+        if (!(held & HidNpadButton_Minus)) hold_from = 0;
+        else if (minus) hold_from = plat_now_ns();
+        if (g_set.menu_hold) minus = hold_from && plat_now_ns() - hold_from >= (uint64_t)g_set.menu_hold * 1000000000ull;
+        if (minus) { s_open = true; s_page = PAGE_MAIN; s_pressed = HidNpadButton_Minus; s_close_only = false; hold_from = 0; }
         return s_open;
     }
+    if (s_close_only) down &= HidNpadButton_Minus | HidNpadButton_B;
     s_pressed |= down;
     const uint64_t UP = HidNpadButton_Up | HidNpadButton_StickLUp, DOWN = HidNpadButton_Down | HidNpadButton_StickLDown;
     const uint64_t SIDE = HidNpadButton_Left | HidNpadButton_Right | HidNpadButton_StickLLeft | HidNpadButton_StickLRight;
@@ -773,8 +793,8 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         return true;
     }
     if (s_page == PAGE_HUD && (ok || side)) {
-        if (*sel == HU_BACK) { if (ok) s_page = PAGE_GAME; }
-        else { g_set.hud_hide ^= 1u << *sel; settings_save(); }
+        if (hud_row(*sel) == HU_BACK) { if (ok) s_page = PAGE_GAME; }
+        else { g_set.hud_hide ^= 1u << hud_row(*sel); settings_save(); }
         return true;
     }
     if (s_page == PAGE_CTRL && (ok || side)) {
@@ -782,6 +802,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         case C_SYNC: if (ok) { s_want_controllers = true; s_open = false; s_block = s_pressed & held; } break;
         case C_MAP:
         case C_JOYMAP: if (ok) { s_mset = *sel == C_JOYMAP; s_page = PAGE_MAP; s_sel[PAGE_MAP] = 0; } break;
+        case C_HOLD: g_set.menu_hold = left ? (g_set.menu_hold == 0 ? 5 : g_set.menu_hold == 5 ? 3 : 0) : (g_set.menu_hold == 0 ? 3 : g_set.menu_hold == 3 ? 5 : 0); settings_save(); break;
         case C_BACK: if (ok) s_page = PAGE_MAIN; break;
         }
         return true;
@@ -853,11 +874,11 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
     }
     if (s_page == PAGE_GAME && (ok || side)) {
         switch (*sel) {
-        case GM_STYLE: g_set.hud_style = !g_set.hud_style; settings_save(); break;
+        case GM_STYLE: g_set.hud_style = (g_set.hud_style + (left ? 2 : 1)) % 3; settings_save(); break;
         case GM_UNITS: g_set.speed_kmh = !g_set.speed_kmh; settings_save(); break;
         case GM_HUD:
             if (ok) { s_page = PAGE_HUD; s_sel[PAGE_HUD] = 0; }
-            else { g_set.hud_hide = g_set.hud_hide ? 0 : HUD_ALL; settings_save(); } /* LEFT/RIGHT: all on / all off */
+            else { g_set.hud_hide = g_set.hud_hide & hud_mask() ? g_set.hud_hide & ~hud_mask() : g_set.hud_hide | hud_mask(); settings_save(); } /* LEFT/RIGHT: all on / all off */
             break;
         case GM_RUMBLE: g_set.rumble = (g_set.rumble + (left ? 2 : 1)) % 3; settings_save(); break;
         case GM_JUMP: g_set.jump = (g_set.jump + (left ? 3 : 1)) & 3; cheats_apply(); settings_save(); break;
@@ -1295,13 +1316,14 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s_sel[PAGE_MAIN] == M_EXIT   ? "A: EXIT THE GAME   RIGHT: UPDATE, DEBUG"
                                                   : "GAME PAUSED   A: SELECT   B OR -: CLOSE";
         } else if (s_page == PAGE_CTRL) {
-            static const char *labels[C_COUNT] = {"BUTTON MAPPING", "JOY-CON SIDEWAYS", "SYNC CONTROLLERS", "BACK"};
-            const char *values[C_COUNT] = {NULL, NULL, NULL, NULL};
-            static const bool more[C_COUNT] = {false, false, true, false};
+            static const char *labels[C_COUNT] = {"BUTTON MAPPING", "JOY-CON SIDEWAYS", "SYNC CONTROLLERS", "OPEN MENU", "BACK"};
+            const char *values[C_COUNT] = {NULL, NULL, NULL, g_set.menu_hold == 3 ? "HOLD 3 SEC" : g_set.menu_hold == 5 ? "HOLD 5 SEC" : "PRESS", NULL};
+            static const bool more[C_COUNT] = {false, false, true, false, false};
             for (int i = 0; i < C_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, C_COUNT), pw, rh, k, s_sel[PAGE_CTRL] == i, labels[i], values[i], more[i]);
             hint = s_sel[PAGE_CTRL] == C_SYNC     ? "PAIR CONTROLLERS, SET THE PLAYER ORDER, SINGLE JOY-CONS"
                    : s_sel[PAGE_CTRL] == C_MAP    ? "CHOOSE WHAT EACH SWITCH BUTTON DOES"
                    : s_sel[PAGE_CTRL] == C_JOYMAP ? "BUTTONS OF ONE JOY-CON HELD SIDEWAYS"
+                   : s_sel[PAGE_CTRL] == C_HOLD   ? "HOLD - TO OPEN THIS MENU, TO KEEP CHEATS FROM CHILDREN"
                                                   : "B: BACK";
         } else if (s_page == PAGE_GFX) {
             static const char *labels[G_COUNT] = {"WIDESCREEN", "4:3 EDGE BORDER", "DOCKED RESOLUTION", "HANDHELD RESOLUTION",
@@ -1384,11 +1406,11 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                                                    : "B: BACK";
         } else if (s_page == PAGE_GAME) {
             static const char *labels[GM_COUNT] = {"RACE HUD", "SPEED", "HUD ASSETS", "JUMP HEIGHT", "RUMBLE STRENGTH", "SINGLE PLAYER BATTLE MODE", "BACK"};
-            const char *values[GM_COUNT] = {HUD_STYLES[g_set.hud_style & 1], g_set.speed_kmh ? "KM/H" : "MPH", hud_value(),
+            const char *values[GM_COUNT] = {HUD_STYLES[g_set.hud_style], g_set.speed_kmh ? "KMH" : "MPH", hud_value(),
                                             JUMP_NAMES[g_set.jump & 3], RUMBLE_NAMES[g_set.rumble % 3], g_set.battle_cpus ? "ON" : "OFF", NULL};
             const bool more[GM_COUNT] = {false, false, true, false, false, g_set.battle_cpus, false};
             for (int i = 0; i < GM_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, GM_COUNT), pw, rh, k, s_sel[PAGE_GAME] == i, labels[i], values[i], more[i]);
-            hint = s_sel[PAGE_GAME] == GM_STYLE ? "MODERN: SMALLER, IN THE CORNERS. 1 TO 4 PLAYERS"
+            hint = s_sel[PAGE_GAME] == GM_STYLE ? (g_set.hud_style == 2 ? "ONE BAR ACROSS THE TOP, REAR-VIEW MIRROR, RACE ORDER BELOW. 1 PLAYER" : g_set.hud_style == 1 ? "MODERN: SMALLER, IN THE CORNERS. 1 TO 4 PLAYERS" : "THE GAME'S OWN")
                    : s_sel[PAGE_GAME] == GM_UNITS ? "SPEEDOMETER IN MILES OR KILOMETRES PER HOUR"
                    : s_sel[PAGE_GAME] == GM_HUD  ? "A: CHOOSE   LEFT/RIGHT: ALL ON, ALL OFF"
                    : s_sel[PAGE_GAME] == GM_BATTLE ? (g_set.battle_cpus ? "A: BATTLE KARTS, BOB-OMB HITS   LEFT/RIGHT: OFF"
@@ -1499,12 +1521,14 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : us.state == UPD_CHECKING    ? "CONNECTING TO GITHUB..."
                                                  : "NEEDS AN INTERNET CONNECTION";
         } else if (s_page == PAGE_HUD) {
-            for (int i = 0; i < HU_COUNT; i++, ry += rh)
-                mrow(x, ROW_Y(i, HU_COUNT), pw, rh, k, s_sel[PAGE_HUD] == i, HUD_LABELS[i],
-                     i == HU_BACK ? NULL : g_set.hud_hide >> i & 1 ? "OFF" : "ON", false);
-            hint = s_sel[PAGE_HUD] == HU_BACK    ? "B: BACK"
-                   : s_sel[PAGE_HUD] == HU_TIME  ? "HIDDEN WHILE YOU RACE, SHOWN AGAIN AT THE FINISH"
-                                                 : "ON OR OFF";
+            int n = hud_rows(), at = hud_row(s_sel[PAGE_HUD]);
+            for (int i = 0; i < n; i++, ry += rh)
+                mrow(x, ROW_Y(i, n), pw, rh, k, s_sel[PAGE_HUD] == i, HUD_LABELS[hud_row(i)],
+                     hud_row(i) == HU_BACK ? NULL : g_set.hud_hide >> hud_row(i) & 1 ? "OFF" : "ON", false);
+            hint = at == HU_BACK      ? "B: BACK"
+                   : at == HU_TIME    ? "HIDDEN WHILE YOU RACE, SHOWN AGAIN AT THE FINISH"
+                   : at == HU_MIRROR  ? "A REAR VIEW AT THE TOP LEFT: LOWERS THE FRAME RATE"
+                                      : "ON OR OFF";
         } else if (s_page == PAGE_DEBUG) {
             static const char *labels[D_COUNT] = {"SHOW FPS", "LOGGING", "PROFILER", "GPU TEST", "CLOCKS", "BACK"};
             const char *values[D_COUNT] = {FPS_NAMES[g_set.show_fps % 3], LOG_NAMES[(unsigned)g_set.logging % LOG_MODES], g_set.profiler ? "ON" : "OFF", g_set.gpu_test ? "ON" : "OFF",

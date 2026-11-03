@@ -288,11 +288,14 @@ enum { LOG_GAME = 1, LOG_AUDIO = 2, LOG_BATTLE = 4 };
 extern volatile uint32_t g_log_mask;
 /* Race HUD elements not drawn, 1 to 4 players (native.c drawK2D): HUD_* bits. HUD_TIME only
  * until that player finishes. */
-enum { HUD_PLACE = 1, HUD_ITEMS = 2, HUD_LAPS = 4, HUD_MAP = 8, HUD_SPEED = 16, HUD_ORDER = 32, HUD_TIME = 64, HUD_ALL = 127 };
+enum { HUD_PLACE = 1, HUD_ITEMS = 2, HUD_LAPS = 4, HUD_MAP = 8, HUD_SPEED = 16, HUD_ORDER = 32, HUD_TIME = 64, HUD_ALL = 127,
+       HUD_MIRROR = 128 }; /* DASHBOARD's rear-view mirror (the menu's only: g_hud_mirror) */
 extern volatile uint32_t g_hud_hide;
 /* Race HUD style, 1-4 players while racing (native.c MODERN): 0 the game's, 1 smaller, in the
- * corners and the top centre. g_speed_kmh: the speedometer in km/h (the US game's is mph). */
-extern volatile uint32_t g_hud_modern, g_speed_kmh;
+ * corners and the top centre. g_hud_pills (with g_hud_modern): DASHBOARD, one bar of panels across the
+ * top with one player (native.c pill_panels), MODERN with more. g_speed_kmh: the speedometer in km/h
+ * (the US game's is mph). */
+extern volatile uint32_t g_hud_modern, g_hud_pills, g_speed_kmh;
 /* Two players side by side (native.c vsplit_sync): the screens left and right instead of top and
  * bottom, from the next race. */
 extern volatile uint32_t g_vsplit;

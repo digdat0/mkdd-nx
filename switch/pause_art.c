@@ -38,7 +38,7 @@ static const struct { uint64_t bit; int badge; } BITS[] = {
 };
 
 /* Substitution ids (1 = the picture) and the GameCube button each icon shows. */
-enum { S_CONSOLE = 1, S_L, S_R, S_Z, S_X, S_Y, S_STICK, S_A, S_B, S_MENUPAD, S_KMH, S_COUNT };
+enum { S_CONSOLE = 1, S_L, S_R, S_Z, S_X, S_Y, S_STICK, S_A, S_B, S_MENUPAD, S_KMH, S_DEG0, S_DEG9 = S_DEG0 + 9, S_COUNT };
 /* S_MENUPAD: the GameCube controller the "how many players" screen shows once per player
  * (menu.arc, 80x56), drawn as the pause screen's Switch at the same height. Ours is 2x the size
  * for a sharper picture: same shape, so the game's pane shows it the same. */
@@ -46,6 +46,7 @@ enum { S_CONSOLE = 1, S_L, S_R, S_Z, S_X, S_Y, S_STICK, S_A, S_B, S_MENUPAD, S_K
 #define PAD_H 112
 #define KMH_W 256 /* 4x the game's 64x16, its pixel letters kept sharp */
 #define KMH_H 64
+#define DEG_SIZE 128 /* 4x the game's speed digits, as MarioFont's */
 #define JUMP_TW 148 /* the JUMP box, 2 pixels a layout unit: 74 x 71, REAR_MARGIN above */
 #define JUMP_TH 158
 static const struct { const char *file; int gc; int w, h; const char *arc; } SLOTS[S_COUNT] = {
@@ -56,8 +57,14 @@ static const struct { const char *file; int gc; int w, h; const char *arc; } SLO
     [S_Y] = {"fs_bty_ia4.bti", GC_Y, 376, 158},    [S_STICK] = {"fs_btcst_ia4.bti", -1, 128, 60},
     [S_A] = {"fs_bta_s3tc.bti", GC_A, 192, 64},    [S_B] = {"fs_btb_s3tc.bti", GC_B, 192, 64},
     [S_MENUPAD] = {"gc_controller.bti", -1, PAD_W, PAD_H, "SceneData/English/menu.arc"},
-    /* the speedometer's "mph" (64x16): "km/h" when the - menu's SPEED is KM/H (build_kmh) */
+    /* the speedometer's "mph" (64x16): "kmh" when the - menu's SPEED is KMH (build_kmh) */
     [S_KMH] = {"speed_km.bti", -1, KMH_W, KMH_H, "MRAM_Locale/English/MRAMLoc.arc"},
+    /* the speedometer's digits: the timer's under DASHBOARD (build_deg) */
+    [S_DEG0] = {"deg0.bti", -1, DEG_SIZE, DEG_SIZE},     [S_DEG0 + 1] = {"deg1.bti", -1, DEG_SIZE, DEG_SIZE},
+    [S_DEG0 + 2] = {"deg2.bti", -1, DEG_SIZE, DEG_SIZE}, [S_DEG0 + 3] = {"deg3.bti", -1, DEG_SIZE, DEG_SIZE},
+    [S_DEG0 + 4] = {"deg4.bti", -1, DEG_SIZE, DEG_SIZE}, [S_DEG0 + 5] = {"deg5.bti", -1, DEG_SIZE, DEG_SIZE},
+    [S_DEG0 + 6] = {"deg6.bti", -1, DEG_SIZE, DEG_SIZE}, [S_DEG0 + 7] = {"deg7.bti", -1, DEG_SIZE, DEG_SIZE},
+    [S_DEG0 + 8] = {"deg8.bti", -1, DEG_SIZE, DEG_SIZE}, [S_DEG0 + 9] = {"deg9.bti", -1, DEG_SIZE, DEG_SIZE},
 };
 static GfxTex s_tex[S_COUNT];
 
@@ -910,18 +917,17 @@ static void refresh_icons(int kind) {
     }
 }
 
-/* "km/h" in the game's speedometer lettering (its "mph": white pixel letters 8 high, ascenders 3
+/* "kmh" in the game's speedometer lettering (its "mph": white pixel letters 8 high, ascenders 3
  * more, a black edge one pixel wide all round, letters two pixels apart), on the 64x16 grid, drawn
  * 4x. Ink masks, rows 2-11 of the label. */
 static void build_kmh(void) {
     static const char *const K[10] = {"###.....", "###.....", "###.....", "###..###", "###.###.", "######..", "######..", "###.###.", "###..###", "###..###"};
     static const char *const MM[10] = {"..........", "..........", "..........", "##########", "##########", "##########", "##..##..##", "##..##..##", "##..##..##", "##..##..##"};
-    static const char *const SL[10] = {"....##", "....##", "...##.", "...##.", "..##..", "..##..", ".##...", ".##...", "##....", "##...."};
     static const char *const H[10] = {"###.....", "###.....", "###.....", "###.....", "########", "########", "###..###", "###..###", "###..###", "###..###"};
-    const char *const *glyph[4] = {K, MM, SL, H};
+    const char *const *glyph[3] = {K, MM, H};
     uint8_t ink[16][64] = {{0}};
-    int x = 12;
-    for (int g = 0; g < 4; g++) {
+    int x = 16; /* centred as the three letters of "mph" */
+    for (int g = 0; g < 3; g++) {
         int gw = (int)strlen(glyph[g][0]);
         for (int r = 0; r < 10; r++)
             for (int i = 0; i < gw; i++)
@@ -949,6 +955,34 @@ static void build_kmh(void) {
         }
     upload(S_KMH, px);
     free(px);
+}
+
+/* DASHBOARD: the speed's digit in the timer's MarioFont; its unit too (white: drawK2D), the texture of
+ * either unit kept. 0: the font isn't loaded (the game's or build_kmh's). */
+static GfxTex build_deg(unsigned id) {
+    int aw, ah;
+    char s = (char)('0' + (id - S_DEG0));
+    if (!uifont_atlas(&aw, &ah)) return 0;
+    uint8_t *px = calloc((size_t)DEG_SIZE * DEG_SIZE, 4);
+    if (!px) return 0;
+    float a = font_letter(px, DEG_SIZE, DEG_SIZE, s, 0, 0, DEG_SIZE, 0, false);
+    font_letter(px, DEG_SIZE, DEG_SIZE, s, (DEG_SIZE - a) / 2, 0, DEG_SIZE, 0xFFFFFFu, true);
+    upload(id, px);
+    free(px);
+    return s_tex[id];
+}
+static GfxTex pill_unit(void) {
+    static GfxTex tex[2];
+    int aw, ah, k = g_speed_kmh != 0;
+    if (tex[k] || !uifont_atlas(&aw, &ah)) return tex[k];
+    uint8_t *px = calloc((size_t)KMH_W * KMH_H, 4);
+    if (!px) return 0;
+    const char *text = k ? "KMH" : "MPH";
+    float w = font_text(px, KMH_W, KMH_H, text, 0, 0, KMH_H, 0, false);
+    font_text(px, KMH_W, KMH_H, text, (KMH_W - w) / 2, 0, KMH_H, 0xFFFFFFu, true);
+    tex[k] = gfx_tex_upload(0, GFX_RGBA8, KMH_W, KMH_H, px);
+    free(px);
+    return tex[k];
 }
 
 /* The pause screen's Switch, fitted to the full height of a PAD_W x PAD_H picture and centred. */
@@ -1232,7 +1266,10 @@ unsigned pause_art_texture(unsigned id) {
         if (!s_tex[id]) build_menupad();
         return s_tex[id];
     }
+    if (id >= S_DEG0 && id <= S_DEG9) return !g_hud_pills ? 0 : s_tex[id] ? s_tex[id] : build_deg(id);
     if (id == S_KMH) {
+        GfxTex unit = g_hud_pills ? pill_unit() : 0;
+        if (unit) return unit;
         if (!g_speed_kmh) return 0; /* the game's "mph" */
         if (!s_tex[id]) build_kmh();
         return s_tex[id];

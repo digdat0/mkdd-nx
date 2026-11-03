@@ -323,6 +323,25 @@ __attribute__((unused)) static const char *COPY_HALF_FS =
     "    o_color = vec4(t.rgb, max(t.a, u_opaque));\n"
     "}\n";
 
+/* The rear-view mirror's picture onto the EFB: a rounded panel, as the HUD's (u_rect: x, y, w, h in
+ * pixels; u_edge: corner radius, border) with the panels' dark translucent border. */
+__attribute__((unused)) static const char *MIRROR_FS =
+    "#version 320 es\n"
+    "precision highp float;\n"
+    "layout(std140, binding=0) uniform Mirror { vec4 u_rect; vec4 u_edge; };\n"
+    "layout(binding=0) uniform sampler2D mirror;\n"
+    "out vec4 o_color;\n"
+    "void main() {\n"
+    "    vec2 p = gl_FragCoord.xy - u_rect.xy, half_size = u_rect.zw * 0.5;\n"
+    "    vec2 q = abs(p - half_size) - (half_size - u_edge.x);\n"
+    "    float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - u_edge.x;\n"
+    "    float inside = clamp(0.5 - d - u_edge.y, 0.0, 1.0);\n"
+    "    vec4 border = vec4(0.063, 0.078, 0.11, 0.65);\n"
+    "    float x = p.x / u_rect.z;\n"
+    "    vec4 c = mix(border, vec4(texture(mirror, vec2(u_edge.z != 0.0 ? x : 1.0 - x, p.y / u_rect.w)).rgb, 1.0), inside); // left and right as in a mirror, unless the view is turned round (u_edge.z)\n"
+    "    o_color = vec4(c.rgb, c.a * clamp(0.5 - d, 0.0, 1.0));\n"
+    "}\n";
+
 /* COPY_HALF_FS for an alpha-only copy (GX_CTF_A8). */
 __attribute__((unused)) static const char *COPY_HALF_ALPHA_FS =
     "#version 320 es\n"

@@ -20,8 +20,11 @@ __attribute__((unused)) static const char *XF_VS =
     /* the frame's XF records: a storage buffer */
     "layout(std430, binding=0) readonly buffer Xf { uvec4 u_xf[]; };\n"
     /* u_squeeze: widescreen 4:3 HUD, x of flagged 2D vertices * (1 - u_squeeze); u_shift: moves the
-     * draw down by this much of the screen's height (render_set_below) */
-    "layout(std140, binding=0) uniform Vs { float u_squeeze; float u_shift; };\n"
+     * draw down by this much of the screen's height (render_set_below); u_mirror: x not 0, the HUD's
+     * rear-view mirror (render_dk.c mirror_draw): the view turned half a turn, its eye moved to x = y,
+     * z = z and tilted by u_mirror_tilt (sin, cos) (lighting and texgens as they were), y * w to crop it,
+     * only 3D drawn */
+    "layout(std140, binding=0) uniform Vs { float u_squeeze; float u_shift; vec2 u_mirror_tilt; vec4 u_mirror; };\n"
     "layout(location=0) out vec4 v_c0; layout(location=1) out vec4 v_c1; layout(location=2) out vec4 v_uv01;"
     "layout(location=3) out vec4 v_uv23; layout(location=4) out vec4 v_uv45; layout(location=5) out vec4 v_uv67;\n"
     "uvec4 T(uint i) { return u_xf[i]; }\n"
@@ -97,7 +100,7 @@ __attribute__((unused)) static const char *XF_VS =
     "void main() {\n"
     "    vec4 cp;\n"
     "    if (a_ids.x == 0xFFFFFFFFu) {\n"
-    "        cp = a_pos;\n"
+    "        cp = u_mirror.x != 0.0 ? vec4(0.0, 0.0, 2.0, 1.0) : a_pos;\n"
     "        v_c0 = a_c0; v_c1 = a_c1; v_uv01 = a_uv01; v_uv23 = a_uv23; v_uv45 = a_uv45; v_uv67 = a_uv67;\n"
     "    } else {\n"
     "        uint rec = a_ids.x & 0x0FFFFFFFu, m = a_ids.y;\n"
@@ -118,11 +121,14 @@ __attribute__((unused)) static const char *XF_VS =
     "        uvec4 r3 = T(rec + 3u);\n"
     "        uint flags = r3.x, zop = (flags >> 1) & 3u, chans = (flags >> 3) & 3u;\n"
     "        vec4 p;\n"
-    "        if ((flags & 1u) == 0u) p = vec4(r0.x * view.x + r0.y * view.z, r0.z * view.y + r0.w * view.z, r1.x * view.z + r1.y, -view.z);\n"
+    "        float mz = u_mirror.z - view.z;\n"
+    "        vec3 e = u_mirror.x != 0.0 ? vec3(u_mirror.y - view.x, view.y * u_mirror_tilt.y - mz * u_mirror_tilt.x, view.y * u_mirror_tilt.x + mz * u_mirror_tilt.y) : view;\n"
+    "        if ((flags & 1u) == 0u) p = vec4(r0.x * e.x + r0.y * e.z, r0.z * e.y + r0.w * e.z, r1.x * e.z + r1.y, -e.z);\n"
     "        else p = vec4(r0.x * view.x + r0.y, r0.z * view.y + r0.w, r1.x * view.z + r1.y, 1.0);\n"
     "        float w = p.w, zval = uintBitsToFloat(r3.y);\n"
     "        float zc = zop == 2u ? zval * w : zop != 0u ? r1.w * w + r1.z * p.z + zval * w : r1.w * w + r1.z * p.z;\n"
     "        cp = vec4(r2.x * p.x + r2.y * w, r2.z * p.y + r2.w * w, zc * (1.0 / 16777215.0), w);\n"
+    "        if (u_mirror.x != 0.0) { if ((flags & 1u) != 0u) cp = vec4(0.0, 0.0, 2.0, 1.0); else cp.y *= u_mirror.w; }\n"
     "        if ((a_ids.x & 0x40000000u) != 0u) {\n"
     "            float side = (a_ids.x & 0x20000000u) != 0u ? -1.0 : (a_ids.x & 0x10000000u) != 0u ? 1.0 : 0.0;\n"
     "            cp.x = cp.x * (1.0 - u_squeeze) + side * u_squeeze * cp.w;\n"

@@ -40,7 +40,7 @@ typedef struct {
     int aniso;         /* texture filtering: 0 normal, 1-4 anisotropic 2x / 4x / 8x / 16x */
     bool border;       /* 4:3: checkered border art in the side bars during races */
     unsigned hud_hide; /* race HUD elements turned off, single player: HUD_* bits (runtime/rt.h) */
-    int hud_style;     /* race HUD, single player: 0 classic (the game's), 1 modern (runtime native.c MODERN, the default) */
+    int hud_style;     /* race HUD, single player: 0 classic (the game's), 1 modern (runtime native.c MODERN, the default), 2 dashboard (one player; more: modern), its rear-view mirror in hud_hide (HUD_MIRROR) */
     bool speed_kmh;    /* speedometer in km/h; mph (the US game's) when false */
     bool vsplit;       /* two players side by side (MULTIPLAYER > SPLIT SCREEN); top and bottom (the game's) when false */
     int camera;        /* race camera (CAMERA VIEW): 0 the game's, 1 DRIVER FPV, 2 KART FPV (first person, the kart's front in view) */
@@ -49,6 +49,7 @@ typedef struct {
     int kart_add[21][3]; /* KART view, by EKartID: up, forward, degrees down, added to kart_eye.h */
     bool profiler;     /* sampling profiler (logs/mkdd_prof.bin), from the next start */
     bool gpu_test;     /* GPU TEST: the renderer's in-race comparison and profile in the log, from the next start */
+    int menu_hold;     /* OPEN MENU: seconds - must be held to open this menu, 0 (the default): a press. Keeps it from children */
     bool game_clocks;  /* CLOCKS: GAME, the port raises the handheld profile and boosts the CPU while
                         * booting; off (SYSTEM, the default) leaves clocks alone, for overclock tools. Next start */
     bool lan;          /* LAN play over Wi-Fi: a Broadband Adapter (eth.c), from the next start (MULTIPLAYER > LAN PLAY) */

@@ -542,7 +542,10 @@ typedef struct { uint32_t id, w, h, addr; uint64_t used; } Target;
 typedef struct { uint32_t id; uint16_t subst; uint8_t wrap_s, wrap_t, chans, hd, movie, enh_set, levels; bool linear; uint64_t used, key; uint32_t w, h, hd_bytes, enh_gen; } DkTexture;
 
 static struct {
-    Shd vs, fs_uber, vs_full, fs_copy, fs_copy_half, fs_copy_alpha, fs_blit, fs_blit_shrink, fs_deblock, fs_luma, fs_chroma;
+    Shd vs, fs_uber, vs_full, fs_copy, fs_copy_half, fs_copy_alpha, fs_blit, fs_blit_shrink, fs_deblock, fs_luma, fs_chroma, fs_mirror;
+    Target mirror;         /* the rear-view mirror's picture */
+    uint32_t mirror_depth;
+    bool mirror_z24;
     bool xf_gpu;
     /* specialised TEV fragment shaders: key -> index + 1 into progs (0 failed) */
     U64Map tev;
@@ -1825,9 +1828,100 @@ static void tev_bytes(const TevState *t, uint8_t *b) {
 static void vs_params(float squeeze, float shift) {
     if (squeeze == R.squeeze && shift == R.shift_cur) return;
     R.squeeze = squeeze, R.shift_cur = shift;
-    float v[4] = {squeeze, shift, 0, 0};
+    float v[8] = {squeeze, shift};
     DkGpuAddr g = ubo_put(v, sizeof v);
     if (g) dkCmdBufBindUniformBuffer(D.cmd, DkStage_Vertex, 0, g, sizeof v);
+}
+
+/* The HUD's rear-view mirror (Frame.mirror): this frame's 3D drawn again before the HUD from behind
+ * the kart, looking back, into its own picture, then a rounded panel at the HUD's top left. The game
+ * draws what the mirror sees too (native.c uclip). */
+static void mirror_draw(const Frame *f, size_t first, size_t last, float scale, float sq, DkGpuAddr ub, const uint32_t *ub_off) {
+    /* layout units, 608 x 448; a 4:3 picture has only the room left of the top row */
+    const float X0 = 3, X1 = sq > 0 ? 190 : 97, Y0 = 6, Y1 = sq > 0 ? 96 : 50;
+    float cx = (float)f->efb[0] * scale * 0.5f, ux = (float)f->efb[0] * scale / 608, uy = (float)f->efb[1] * scale / 448;
+    /* the HUD's left edge: squeezed to 4:3 at the side of a wide picture */
+    uint32_t bx0 = (uint32_t)(cx + (X0 * ux - cx) * (1 - sq) - sq * cx + 0.5f), bx1 = (uint32_t)(cx + (X1 * ux - cx) * (1 - sq) - sq * cx + 0.5f);
+    uint32_t by0 = (uint32_t)(Y0 * uy + 0.5f), by1 = (uint32_t)(Y1 * uy + 0.5f);
+    if (bx1 > R.efb_w || by1 > R.efb_h || bx1 <= bx0 + 8 || by1 <= by0 + 8) return;
+    uint32_t w = bx1 - bx0, h = by1 - by0;
+    static bool shader_ok, shader_bad;
+    if (!shader_ok && !shader_bad) {
+        shader_ok = shader_get(&R.fs_mirror, true, MIRROR_FS, "mirror");
+        shader_bad = !shader_ok;
+    }
+    if (!shader_ok) return;
+    if (R.mirror.w != w || R.mirror.h != h || R.mirror_z24 != D.z24) {
+        target_init(&R.mirror, w, h);
+        img_free(&R.mirror_depth);
+        R.mirror_depth = img_create(w, h, D.z24 ? IF_Z24 : IF_Z32, 1, true);
+        R.mirror_z24 = D.z24;
+    }
+    if (!R.mirror.id || !R.mirror_depth) return;
+    if (R.copy_written) sync_rendered();
+    DkImageView cv, zv;
+    img_view(R.mirror.id, &cv);
+    img_view(R.mirror_depth, &zv);
+    dkCmdBufBindRenderTarget(D.cmd, &cv, &zv);
+    if (D.zcull) barrier(DkBarrier_None, DkInvalidateFlags_Zcull);
+    R.cur_target = 3;
+    DkViewport vp = {0, 0, (float)w, (float)h, 0, 1};
+    dkCmdBufSetViewports(D.cmd, 0, &vp, 1);
+    R.cur_sc.width = 0;
+    set_scissor(0, 0, w, h);
+    dkCmdBufClearColorFloat(D.cmd, 0, DkColorMask_RGBA, 0, 0, 0, 1);
+    dkCmdBufClearDepthStencil(D.cmd, true, 1.0f, 0, 0);
+    float v[8] = {0, 0, g_mirror_tilt[0], g_mirror_tilt[1], 1, g_mirror_eye[0], g_mirror_eye[1], ((float)w / (float)R.efb_w) / ((float)h / (float)R.efb_h)};
+    DkGpuAddr g = ubo_put(v, sizeof v);
+    if (g) {
+        dkCmdBufBindUniformBuffer(D.cmd, DkStage_Vertex, 0, g, sizeof v);
+        uint32_t cur_ub = ~0u;
+        for (size_t i = first; i < last; i++) {
+            const Batch *b = &f->batches.data[i];
+            if (!b->index_count || b->hud) continue;
+            apply_pipe(b->tev.pipe[0], b->tev.pipe[1], b->tev.pipe[3]);
+            apply_cull(b->tev.pipe[2]);
+            bind_shaders2(&R.vs, tev_program(&b->tev));
+            if (ub_off[i] != cur_ub) {
+                cur_ub = ub_off[i];
+                dkCmdBufBindUniformBuffer(D.cmd, DkStage_Fragment, 0, ub + cur_ub, TEV_UNIFORM_SIZE);
+            }
+            R.below_tex = 0;
+            R.shift = 0;
+            for (unsigned m = 0; m < 8; m++) bind_slot(m, b->tev.textures[m]);
+            bind_layout(b->layout);
+            sync_before_use();
+            dkCmdBufDrawIndexed(D.cmd, DkPrimitive_Triangles, b->index_count, 1, b->index_first, 0, 0);
+            if (++D.draws_since_submit >= SUBMIT_DRAWS && !D.slots[D.slot].nprof) submit();
+        }
+    }
+    R.below_tex = 0;
+    R.shift = 0;
+    /* the panel, over the EFB */
+    sync_rendered();
+    bind_efb();
+    if (D.zcull) barrier(DkBarrier_None, DkInvalidateFlags_Zcull);
+    pass_state(true);
+    bind_shaders2(&R.vs_full, &R.fs_mirror);
+    struct { float rect[4], edge[4]; } u = {{(float)bx0, (float)by0, (float)w, (float)h}, {10 * uy, 1.5f * uy, g_look_back & 1 ? 1.0f : 0.0f, 0}};
+    g = ubo_put(&u, sizeof u);
+    if (g) {
+        dkCmdBufBindUniformBuffer(D.cmd, DkStage_Fragment, 0, g, sizeof u);
+        unit_bind(0, th(R.mirror.id, smp_id(0, 0, 1)));
+        set_scissor(bx0, by0, w, h);
+        dkCmdBufDraw(D.cmd, DkPrimitive_Triangles, 3, 1, 0, 0);
+    }
+    R.efb_written = true;
+    R.squeeze = -1; /* vs_params: bound again */
+    vs_params(sq, 0.0f);
+}
+
+/* Where the mirror's 3D ends, drawn before batch i: the frame's first copy of a whole screen (for
+ * its overlays), or i. */
+static size_t mirror_last(const Frame *f, const CopyOp *copies, unsigned ncopies, size_t i) {
+    for (unsigned q = 0; q < ncopies; q++)
+        if (!copies[q].xfb && copies[q].src[2] * 2 >= (uint32_t)f->efb[0]) return copies[q].at < i ? copies[q].at : i;
+    return i;
 }
 
 bool render_update(float scale_in) {
@@ -1970,9 +2064,16 @@ bool render_update(float scale_in) {
             vs_params(sq, 0.0f);
             uint32_t cur_ub = ~0u;
             bool seam = f->vseam && k < ncopies && copies[k].xfb;
+            bool mirror = f->mirror && k < ncopies && copies[k].xfb;
             for (size_t i = next; i < end; i++) {
                 const Batch *b = &f->batches.data[i];
                 if (seam && b->hud) { seam = false; seam_line(f, scale); bind_efb(); prof_mark(PK_OTHER, NULL, i, k, 0); }
+                if (mirror && b->hud) {
+                    mirror = false;
+                    mirror_draw(f, 0, mirror_last(f, copies, ncopies, i), scale, sq, ub, ub_off);
+                    cur_ub = ~0u;
+                    prof_mark(PK_OTHER, NULL, i, k, 0);
+                }
                 uint32_t x0 = efb_px(b->rect[0], scale), y0 = efb_px(b->rect[1], scale), x1 = efb_px(b->rect[2], scale), y1 = efb_px(b->rect[3], scale);
                 if (sq > 0 && b->hud) {
                     float cx = (float)f->efb[0] * scale * 0.5f;
@@ -2013,6 +2114,10 @@ bool render_update(float scale_in) {
                 /* a profiled frame goes to the GPU whole: mid-frame the GPU waits for the next piece, and
                  * that wait landed in whichever draw or copy came first after it */
                 if (++D.draws_since_submit >= SUBMIT_DRAWS && !D.slots[D.slot].nprof) submit();
+            }
+            if (mirror) { /* every HUD piece hidden: the mirror after the 3D all the same */
+                mirror_draw(f, 0, mirror_last(f, copies, ncopies, end), scale, sq, ub, ub_off);
+                prof_mark(PK_OTHER, NULL, end, k, 0);
             }
             next = end;
         }

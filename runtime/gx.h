@@ -36,9 +36,15 @@ enum { MG_NONE, MG_PLACE, MG_ITEMS, MG_LAP, MG_TIME, MG_MAP, MG_ORDER, MG_SPEED,
        /* two players side by side (native.c g_vsplit): p2_race.blo's groups (MG2_* order) in the left /
         * right columns, any HUD style */
        MGV_PLACE1, MGV_ITEMS1, MGV_LAP1, MGV_TIME1, MGV_PLACE2, MGV_ITEMS2, MGV_LAP2, MGV_TIME2, MGV_MAP, MGV_ORDER,
+       /* DASHBOARD, one player (native.c g_hud_pills): MG_PLACE .. MG_SPEED's order, the battle's map, the speed's unit */
+       MGT_PLACE, MGT_ITEMS, MGT_LAP, MGT_TIME, MGT_MAP, MGT_ORDER, MGT_SPEED, MGT_MAP_BATTLE, MGT_UNIT,
        MG_COUNT };
 typedef struct { float ox, oy, nx, ny, s; uint32_t zone; } HudMove;
 extern const HudMove g_hud_move[MG_COUNT];
+extern volatile uint32_t g_hud_mirror;    /* native.c: DASHBOARD with HUD ASSETS' REAR-VIEW MIRROR on */
+#define HUD_ZONE_MIRROR 0x4D495252u      /* native.c's HUD marker: this frame's race HUD is DASHBOARD's, one player: draw the mirror */
+extern volatile float g_mirror_eye[2];  /* where the rear-view mirror looks back from in the camera's view, x and z */
+extern volatile float g_mirror_tilt[2]; /* ... how much further down than the camera it looks: sin, cos */
 #define XV_REC_MASK 0x0FFFFFFFu
 typedef struct {
     float pos[4];
@@ -102,6 +108,7 @@ typedef struct Frame {
     float efb[2];
     uint32_t draws;
     uint32_t vseam;        /* two players side by side (a MGV_ group drawn): the renderer draws a line down the middle */
+    uint32_t mirror;       /* DASHBOARD's race HUD with the mirror on (HUD_ZONE_MIRROR): the renderer draws the rear view */
     volatile int refs;
 } Frame;
 

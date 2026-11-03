@@ -804,6 +804,10 @@ static void update_pads(void) {
         down1 |= HidNpadButton_Minus;
     if ((s_player_style[0] & HidNpadStyleTag_NpadGc) && (held1 & HidNpadButton_ZR) && (down1 & HidNpadButton_Plus))
         down1 |= HidNpadButton_Minus;
+    /* those two count as - while held too (OPEN MENU on hold) */
+    if ((held1 & HidNpadButton_Plus) && (((s_player_style[0] & HidNpadStyleTag_NpadJoyRight) && (held1 & (HidNpadButton_StickL | HidNpadButton_StickR)))
+                                         || ((s_player_style[0] & HidNpadStyleTag_NpadGc) && (held1 & HidNpadButton_ZR))))
+        held1 |= HidNpadButton_Minus;
     bool menu = menu_input(down1, held1, &s_quit);
     uint32_t jump = 0, cam_reset = 0; /* JUMP (menu.c ACTIONS, GAME > JUMP): the ports holding it, for the game thread */
     /* BUTTON MAPPING is for driving only: menus, the pause screen, the flyover and the results
@@ -1366,8 +1370,10 @@ int main(int argc, char **argv) {
         render_set_backdrop(g_set.wide && title);
         static const float FOV_SCALE[5] = {1.0f, 1.15f, 1.3f, 1.45f, 2.0f}; /* tan(fovy / 2) times: NORMAL, WIDE, WIDER, WIDEST, WIDEEE */
         g_fov_scale = FOV_SCALE[g_set.fov[g_set.wide] % 5];
-        g_hud_hide = g_set.hud_hide;
-        g_hud_modern = g_set.hud_style == 1;
+        g_hud_hide = g_set.hud_hide & HUD_ALL;
+        g_hud_modern = g_set.hud_style >= 1;
+        g_hud_pills = g_set.hud_style >= 2;
+        g_hud_mirror = g_set.hud_style == 2 && !(g_set.hud_hide & HUD_MIRROR);
         g_speed_kmh = g_set.speed_kmh;
         g_vsplit = g_set.vsplit;
         g_any_kart = g_lan_play ? 0 : g_set.any_kart; /* LAN play: the game's own (rt.h) */

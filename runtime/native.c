@@ -1425,13 +1425,9 @@ static uint64_t i_FUN_80067ae8(Ctx *c, uint8_t *M, ARGS) {
 /* ---- view-frustum culling of course / object models ---- */
 /* FUN_8000a3c8 (J3DUClipper::clip(Mtx view, Vec *pos, f32 r)): 1 if the sphere is outside the
  * near/far range or any of the 4 side planes (clipper +4, 12 bytes each). */
-static uint32_t uclip(Ctx *c, uint8_t *M, uint32_t cl, uint32_t m, const float v[3], double r) {
-    P v01 = {v[0], v[1]}, v2 = {v[2], 1.0};
-    double p[3];
-    for (int i = 0; i < 3; i++) { /* PSMTXMultVec */
-        P t = pmadd(pl(c, M, m + 0x10 * i + 8), v2, pmul(pl(c, M, m + 0x10 * i), v01));
-        p[i] = (float)psum0(t, t, t).a;
-    }
+static uint32_t s_mirror_off; /* frames the mirror's view isn't culled for: split screen has none */
+static uint64_t s_mirror_ns;  /* when DASHBOARD's race HUD last asked for the mirror (drawK2D) */
+static uint32_t uclip_view(Ctx *c, uint8_t *M, uint32_t cl, const double p[3], double r) {
     double nz = -p[2];
     if (!(nz >= rs((double)ldf(c, M, cl + 0x54) - r))) return 1;
     if (!(nz <= rs((double)ldf(c, M, cl + 0x58) + r))) return 1;
@@ -1443,6 +1439,19 @@ static uint32_t uclip(Ctx *c, uint8_t *M, uint32_t cl, uint32_t m, const float v
         if (k < 3 ? !(d <= r) : d > r) return 1;
     }
     return 0;
+}
+static uint32_t uclip(Ctx *c, uint8_t *M, uint32_t cl, uint32_t m, const float v[3], double r) {
+    P v01 = {v[0], v[1]}, v2 = {v[2], 1.0};
+    double p[3];
+    for (int i = 0; i < 3; i++) { /* PSMTXMultVec */
+        P t = pmadd(pl(c, M, m + 0x10 * i + 8), v2, pmul(pl(c, M, m + 0x10 * i), v01));
+        p[i] = (float)psum0(t, t, t).a;
+    }
+    if (!uclip_view(c, M, cl, p, r)) return 0;
+    if (!g_hud_mirror || s_mirror_off || plat_now_ns() - s_mirror_ns > 100000000ull) return 1; /* no mirror on the screen */
+    /* the HUD's rear-view mirror needs it: in the same view from its eye (xf_vs.h) */
+    double mz = (double)g_mirror_eye[1] - p[2], st = g_mirror_tilt[0], ct = g_mirror_tilt[1], q[3] = {(double)g_mirror_eye[0] - p[0], p[1] * ct - mz * st, p[1] * st + mz * ct};
+    return uclip_view(c, M, cl, q, r);
 }
 static uint64_t i_FUN_8000a3c8(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
@@ -2504,6 +2513,29 @@ static uint64_t i_FUN_8000a260(Ctx *c, uint8_t *M, ARGS) {
  * until CAMERA RESET; a new camera (next race, respawn) starts straight. ---- */
 volatile uint32_t g_first_person;
 volatile uint32_t g_look_back, g_cam_frames[4];
+volatile uint32_t g_hud_mirror;
+volatile float g_mirror_eye[2], g_mirror_tilt[2] = {0.25882f, 0.96593f};
+#define MIRROR_BEHIND 170.0f /* this far behind the kart's centre: clear of the kart */
+#define MIRROR_TILT 0.2618f         /* the mirror looks this much further down than the camera (15 degrees) */
+#define MIRROR_TILT_DRIVER 0.0873f  /* ... with DRIVER FPV, plus its own tilt (5 degrees) */
+static void v3_norm(float *v);
+/* The rear-view mirror looks backwards from just behind the kart, which it doesn't show: its eye
+ * in the view of the camera eye / at / up (the one the screen is drawn with), tilted down by tilt. */
+static void mirror_eye(Ctx *c, uint8_t *M, uint32_t body, const float e[3], const float a[3], const float u[3], float tilt) {
+    float z[3], x[3], kx = 0, kz = 0;
+    for (int i = 0; i < 3; i++) z[i] = e[i] - a[i];
+    v3_norm(z);
+    x[0] = u[1] * z[2] - u[2] * z[1], x[1] = u[2] * z[0] - u[0] * z[2], x[2] = u[0] * z[1] - u[1] * z[0];
+    v3_norm(x);
+    for (int i = 0; i < 3; i++) {
+        float d = ldf(c, M, body + 0x110 + 4 * (4 * (uint32_t)i + 3)) - e[i];
+        kx += x[i] * d, kz += z[i] * d;
+    }
+    kz += MIRROR_BEHIND;
+    g_mirror_eye[0] = isfinite(kx) ? kx : 0, g_mirror_eye[1] = isfinite(kz) ? kz : 0;
+    tilt = tilt < 0 ? 0 : tilt > 0.7f ? 0.7f : tilt;
+    g_mirror_tilt[0] = sinf(tilt), g_mirror_tilt[1] = cosf(tilt);
+}
 volatile float g_cam_pan[4];
 volatile uint32_t g_cam_back, g_cam_reset;
 volatile float g_cam_height = 1.0f, g_cam_dist = 1.0f;
@@ -2651,6 +2683,15 @@ static uint64_t i_FUN_802b6bd4(Ctx *c, uint8_t *M, ARGS) {
         if (k >= 0) g_kart_last = k;
     }
     bool back = g_look_back >> view & 1, fp = (g_first_person >> view & 1) && fp_screens(c, M);
+    if (view) s_mirror_off = 8;
+    else if (s_mirror_off) s_mirror_off--;
+    if (view == 0 && g_hud_mirror) { /* the game's camera, kept when none of ours below changes it */
+        float e[3], a[3], u[3];
+        ldfn(c, M, cam + 0x1e8, e, 3);
+        ldfn(c, M, cam + 0x1f4, a, 3);
+        ldfn(c, M, cam + 0x90, u, 3);
+        mirror_eye(c, M, body, e, a, u, MIRROR_TILT);
+    }
     if (pan_step(view, cam) == 0 && !fp && !back && g_cam_height == 1.0f && g_cam_dist == 1.0f) return 0;
     float b[12];
     ldfn(c, M, body + 0x110, b, 12);
@@ -2717,6 +2758,9 @@ static uint64_t i_FUN_802b6bd4(Ctx *c, uint8_t *M, ARGS) {
         v3_turn(up, ku, s_pan[view]);
         for (int i = 0; i < 3; i++) eye[i] = o[i] + e[i], at[i] = o[i] + t[i];
     }
+    /* DRIVER FPV looks level, the chase camera and KART FPV down at the kart: the mirror, turned
+     * round, would look that much further down than theirs */
+    if (view == 0 && g_hud_mirror) mirror_eye(c, M, body, eye, at, up, fp && !(g_fp_kart & 1) ? MIRROR_TILT_DRIVER + g_fp_tilt : MIRROR_TILT);
     cam_look_at(c, M, cam, eye, at, up);
     return 0;
 }
@@ -3806,25 +3850,28 @@ static int pane_tag(Ctx *c, uint8_t *M, uint32_t pane, char t[9]) {
     t[n] = 0;
     return n;
 }
-static bool hud_hidden(Ctx *c, uint8_t *M, uint32_t pane) {
+/* The HUD_* element a pane is (0: none); for HUD_TIME, *player its player (0-3). */
+static uint32_t hud_piece(Ctx *c, uint8_t *M, uint32_t pane, int *player) {
     char t[9];
     int n = pane_tag(c, M, pane, t);
-    uint32_t h = s_hud_hide;
 #define PRE(p) (!strncmp(t, p, sizeof p - 1))
 #define PL(i) (t[i] >= '1' && t[i] <= '4') /* a player's number there */
-    if (h & HUD_PLACE && PRE("pos") && PL(3)) return true;                             /* pos11-48, pos11g-28g */
-    if (h & HUD_ITEMS && ((PRE("slot") && PL(4)) || (PRE("itm") && PL(3)))) return true;
-    if (h & HUD_LAPS && ((t[0] == 'm' && PL(1) && !strncmp(t + 2, "_lap", 4)) || (PRE("ml") && PL(2) && t[3] == '_'))) return true;
-    if (h & HUD_SPEED && (PRE("sp_mtr") || PRE("km_h") || ((PRE("sp1") || PRE("sp2") || PRE("sp3")) && n == 3))) return true;
-    if (h & HUD_ORDER && (PRE("CI_") || PRE("cw1") || PRE("posc") || (PRE("c1") && n == 3))) return true; /* top-4 column */
-    if (h & HUD_MAP && (PRE("course") || (!n && s_hud_call == 2))) return true;
-    if (h & HUD_TIME) { /* total time, lap times: back once that player finishes */
-        int i = PRE("Tlapm") ? 5 : PRE("time") ? 4 : PRE("Tl") ? 2 : 0;
-        if (i && PL(i) && s_hud_racing >> (t[i] - '1') & 1) return true;
-    }
+    if (PRE("pos") && PL(3)) return HUD_PLACE;                             /* pos11-48, pos11g-28g */
+    if ((PRE("slot") && PL(4)) || (PRE("itm") && PL(3))) return HUD_ITEMS;
+    if ((t[0] == 'm' && PL(1) && !strncmp(t + 2, "_lap", 4)) || (PRE("ml") && PL(2) && t[3] == '_')) return HUD_LAPS;
+    if (PRE("sp_mtr") || PRE("km_h") || ((PRE("sp1") || PRE("sp2") || PRE("sp3")) && n == 3)) return HUD_SPEED;
+    if (PRE("CI_") || PRE("cw1") || PRE("posc") || (PRE("c1") && n == 3)) return HUD_ORDER; /* top-4 column */
+    if (PRE("course") || (!n && s_hud_call == 2)) return HUD_MAP;
+    int i = PRE("Tlapm") ? 5 : PRE("time") ? 4 : PRE("Tl") ? 2 : 0; /* total time, lap times */
+    if (i && PL(i)) return *player = t[i] - '1', HUD_TIME;
 #undef PL
 #undef PRE
-    return false;
+    return 0;
+}
+static bool hud_hidden(Ctx *c, uint8_t *M, uint32_t pane) {
+    int player = 0;
+    uint32_t k = hud_piece(c, M, pane, &player) & s_hud_hide;
+    return k && (k != HUD_TIME || s_hud_racing >> player & 1); /* the timer: back once that player finishes */
 }
 /* The race timer comes back once the player's kart has finished, for the finish and its times:
  * RaceMgr +0x38 RaceInfo (+0x114 + 2 * view: s16 target kart of each view), +0x48 KartChecker
@@ -3840,6 +3887,10 @@ static bool s_hud_logging;   /* PC harness: log this race frame's HUD (g_hud_log
 extern volatile uint32_t g_race_frames;
 #define HUDLOG(fmt, ...) rt_log("hudlog f%u " fmt, g_race_frames, __VA_ARGS__) /* the frame: rt_log drops repeated lines */
 static bool s_modern;        /* this Race2D draw / drawCourse: the MODERN layout (drawK2D) */
+static bool s_pill_todo;     /* ... DASHBOARD: its panels still to come */
+static bool s_mirror_ask;    /* ... DASHBOARD with the mirror on: no HUD piece drawn yet (drawK2D asks at the first) */
+static uint32_t s_pill_seen, s_pill_last; /* DASHBOARD: the groups drawn this frame, the last (bits by group - MGT_PLACE) */
+static void pill_new_race(void);
 static bool s_hud_one;       /* ... single player (one screen) */
 static bool s_hud_two;       /* ... two players (top and bottom screens) */
 static int s_hud_n;          /* ... the number of screens */
@@ -3872,6 +3923,9 @@ static void race_hud_call(Ctx *c, uint8_t *M, uint32_t fn, uint32_t self, uint32
     s_hud_two = n == 2;
     s_hud_n = n;
     s_race2d = self;
+    s_pill_todo = one && g_hud_pills && s_modern;
+    s_mirror_ask = s_pill_todo && g_hud_mirror;
+    if (zone == 1) s_pill_last = s_pill_seen, s_pill_seen = 0;
     if (one && zone == 1 && g_speed_kmh) hud_kmh(c, M, self);
     /* Bob-omb Blast's stars (+0xb10: x, y of 4 places in each of 3 sets, 0x20 a set): p1_race.blo, which never had
      * a battle, keeps them above the screen. Brought down to the top right, as on the two player screens. */
@@ -3908,13 +3962,14 @@ static void race_hud_call(Ctx *c, uint8_t *M, uint32_t fn, uint32_t self, uint32
     ctx_set_gpr(c, 1, old);
     hud_zone(0);
     s_hud_zone = s_hud_hide = s_hud_call = s_zone_now = s_hud_racing = 0;
-    s_modern = s_hud_one = s_hud_two = false;
+    s_modern = s_hud_one = s_hud_two = s_mirror_ask = false;
     s_hud_n = 0;
 }
 volatile uint32_t g_race_frames, g_hud_log; /* g_hud_log: rt.h */
 static uint64_t i_draw__6Race2DFv(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     g_race_frames++;
+    if (plat_now_ns() - g_racing_ns > 1000000000ull) pill_new_race(); /* no race HUD for a second: another race */
     g_racing_ns = plat_now_ns(); /* gx_drain_dma */
     s_hud_logging = g_hud_log && g_race_frames == g_hud_log; /* once a race: every 300 frames filled the log's lines */
     if (s_hud_logging) rt_log("hudlog frame %u, speed unit flag %u", g_race_frames, ld32(c, M, (uint32_t)ctx_gpr(c, 13) - 0x68dc));
@@ -6434,7 +6489,7 @@ static uint64_t i_FUN_800724d0(Ctx *c, uint8_t *M, ARGS) {
  * lower) bottom left, the speedometer bottom right. drawK2D scales each picture's matrix about its
  * group's corner (608 x 448 layout units) and writes the group's side for the widescreen HUD (gx.c
  * markers 4-6: middle, left, right edge). ---- */
-volatile uint32_t g_hud_modern, g_speed_kmh;
+volatile uint32_t g_hud_modern, g_hud_pills, g_speed_kmh;
 /* the player's race order row below the top 4: drawCourse puts ranks 5-8 below the screen (CI_05,
  * y 501); moved up to where a 5th row goes */
 #define ORDER_ROW5_DY -102.7f
@@ -6521,6 +6576,19 @@ static int player_kart(Ctx *c, uint8_t *M) {
     return k >= 0 && k < 8 ? k : -1;
 }
 static bool kart_is_player(Ctx *c, uint8_t *M, int kart) { return kart >= 0 && kart == player_kart(c, M); }
+/* The speed of the player's kart, as Race2D's getter (FUN_802b146c): the kart (r13 -0x4e98 +0xa0 + 4 *
+ * the kart) +0x444 times a constant, or another constant while +0x578 has 0x200; 0 when not known. */
+static uint32_t player_kart_obj(Ctx *c, uint8_t *M) { /* the player's kart object, 0 when not known */
+    uint32_t mgr = ld32(c, M, (uint32_t)ctx_gpr(c, 13) - 0x4e98);
+    int k = player_kart(c, M);
+    uint32_t kart = IS_RAM(mgr) && k >= 0 ? ld32(c, M, mgr + 0xa0 + 4 * (uint32_t)k) : 0;
+    return IS_RAM(kart) ? kart : 0;
+}
+static float hud_speed(Ctx *c, uint8_t *M) {
+    uint32_t r2 = (uint32_t)RD(c, REG_R2, 4), kart = player_kart_obj(c, M);
+    if (!kart) return 0;
+    return ld32(c, M, kart + 0x578) & 0x200 ? ldf(c, M, r2 - 0x2a40) : ldf(c, M, r2 - 0x2a34) * ldf(c, M, kart + 0x444);
+}
 /* Single player: how far a kart's race order row has rolled from the 4th row (0) to where the
  * game parks ranks 5-8 below the screen (1), from its rank number (+0x4cb0: y 301 in the 4th row,
  * 466 parked; the player's row is drawn larger, 2.2 higher). Read from that picture's matrix
@@ -6531,6 +6599,267 @@ static float order_roll(Ctx *c, uint8_t *M, int kart) {
     if (!IS_RAM(posc)) return 0;
     float r = (ldf(c, M, posc + 0x6c) - (kart_is_player(c, M, kart) ? 298.8f : 301.0f)) / 165.0f;
     return r > 0 ? (r < 1 ? r : 1) : 0; /* NaN: 0 */
+}
+/* DASHBOARD (g_hud_pills, the - menu's RACE HUD), one player: MODERN's way of moving the game's
+ * pictures (gx.c MGT_*), on rounded translucent panels ("pills"), with the race order as a strip of
+ * every kart along the bottom and a dial for the speed; the rear-view mirror is render_dk.c's. A white rounded square in the charpack pool
+ * (IA8, alpha its coverage) makes the panels, 9 slices of it through drawK2D's own vertex format;
+ * they go first in each of the race HUD's two draws (drawK2D), for the groups drawn the frame before. */
+#define PILL_TEX 64
+#define PILL_DARK 0x10141C00u          /* panel colour, | alpha at draw */
+#define PILL_ALPHA 0xA6
+#define PILL_ME 0xF8C81000u            /* the player's slot in the strip */
+#define PILL_ME_ALPHA 0xE0
+#define STRIP_SLOT 64.0f               /* the race order: a kart's slot, 62 wide x 40 from y 400 */
+#define SPEED_PAD 7.0f                /* room left of the speed's digits for the dial */
+#define LAP_GROW 1.36f                /* the word LAP at the height of the lap count */
+#define LAP_DX 12.5f                  /* ... the count moved right for it */
+#define ITEM_FRAME 33.0f               /* an item's frame (its picture, 90 x 90 with a margin) in the row */
+enum { ROW_ITEMS, ROW_PLACE, ROW_LAP, ROW_TIME, ROW_SPEED, ROWS };
+static const float ROW_W[ROWS] = {70, 33, 72 + LAP_DX, 108, 88.5f + SPEED_PAD}; /* the panels' widths, 4 apart */
+static float s_row[ROWS];              /* ... where each starts this frame: the row is centred */
+static float s_item_ref[2][3];         /* the two items' frames last drawn: middle, scale */
+static float s_item_u[2] = {-0.5f, 0.5f}; /* ... their places in the panel (-0.5 left, 0.5 right): the game's larger (its front
+                                       * window, the driver who uses the items; it swaps them as the drivers swap) on the left */
+static float s_item_size[2], s_item_big, s_item_small; /* ... their sizes in the game's layout, the two seen together this race */
+static uint32_t s_item_seen[2];        /* ... the frame each was last drawn */
+static int s_item_side[2];             /* ... the side each was last given (for the log) */
+static float s_speed_dx;               /* the speed's digits moved left to keep one or two centred, gently */
+static float s_order_w[8][2];          /* each kart's two faces in the game's race order: their sizes (the driver's is larger) */
+#define STRIP_Y 400.0f
+#define SPEED_TOP 0.9f                 /* the dial at its end: this much of the kart's class top speed */
+static const uint32_t METER_COL[7] = {0x00ffc3, 0x55ff00, 0xaaff00, 0xffff00, 0xffaa00, 0xff5400, 0xff2200}; /* the game's arc, its blocks in order */
+static uint32_t s_meter_col[7];        /* ... their colours as the game set them last (+0x148), the boost's flash going round them */
+static uint32_t s_meter_frame, s_meter_flash; /* ... when, and the frame the flash was last seen */
+static uint32_t s_pill_obj;            /* GXTexObj, then the picture; 0: not made yet */
+static bool s_pill_bad;
+static float s_order_x[8];             /* each kart's slot, moving to its rank's */
+static uint32_t s_order_frame, s_order_alpha;
+static float s_map_x0, s_map_y0, s_map_x1, s_map_y1; /* the course's picture last drawn */
+static float s_map_dy;                 /* DASHBOARD: the map moved so its panel's top meets the row's, wherever this course's picture starts */
+static void pill_new_race(void) {
+    memset(s_item_ref, 0, sizeof s_item_ref);
+    s_item_u[0] = -0.5f, s_item_u[1] = 0.5f;
+    memset(s_item_size, 0, sizeof s_item_size);
+    memset(s_item_seen, 0, sizeof s_item_seen);
+    memset(s_item_side, 0, sizeof s_item_side);
+    s_item_big = s_item_small = 0;
+    s_speed_dx = s_map_dy = 0;
+    s_meter_flash = 0;
+    s_pill_seen = s_pill_last = 0;
+}
+static bool pill_tex(Ctx *c, uint8_t *M) {
+    if (s_pill_obj) return true;
+    if (s_pill_bad) return false;
+    uint32_t size = PILL_TEX * PILL_TEX * 2, a = charpack_reserve(0x20 + size);
+    if (!a || !IS_RAM(a + 0x20 + size - 1)) {
+        s_pill_bad = true;
+        rt_log("hud: no room for the panels' texture");
+        return false;
+    }
+    uint8_t *d = M + ((a + 0x20) & RAM_MASK);
+    for (int by = 0; by < PILL_TEX; by += 4)
+        for (int bx = 0; bx < PILL_TEX; bx += 4)
+            for (int y = by; y < by + 4; y++)
+                for (int x = bx; x < bx + 4; x++) {
+                    float dx = (float)x + 0.5f - PILL_TEX / 2.0f, dy = (float)y + 0.5f - PILL_TEX / 2.0f;
+                    float cov = PILL_TEX / 2.0f - 1 - sqrtf(dx * dx + dy * dy) + 0.5f; /* 1 texel of soft edge */
+                    *d++ = (uint8_t)(cov <= 0 ? 0 : cov >= 1 ? 255 : (int)(cov * 255)); /* IA8: alpha, then intensity */
+                    *d++ = 255;
+                }
+    ctx_set_gpr(c, 3, a);
+    ctx_set_gpr(c, 4, a + 0x20);
+    ctx_set_gpr(c, 5, PILL_TEX);
+    ctx_set_gpr(c, 6, PILL_TEX);
+    ctx_set_gpr(c, 7, 3); /* GX_TF_IA8 */
+    ctx_set_gpr(c, 8, 0);
+    ctx_set_gpr(c, 9, 0);
+    ctx_set_gpr(c, 10, 0);
+    ctx_call(c, 0x800BF358u); /* GXInitTexObj */
+    s_pill_obj = a;
+    return true;
+}
+/* One rounded panel (layout units); r: its corners' radius. col: RGBA. */
+static void pill_draw(Ctx *c, uint8_t *M, float x, float y, float w, float h, float r, uint32_t col) {
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    const float xs[4] = {x, x + r, x + w - r, x + w}, ys[4] = {y, y + r, y + h - r, y + h};
+    /* 0x40: the texture's middle, u8 coordinates with 1.0 at 0x80 */
+    const uint8_t ts[4] = {0, 0x40, 0x40, 0x80};
+    n_GXBegin(c, M, 0x80, 0, 36, 0, 0, 0, 0, 0);
+    uint8_t q[36 * 14], *o = q;
+    for (int j = 0; j < 3; j++)
+        for (int i = 0; i < 3; i++)
+            for (int v = 0; v < 4; v++, o += 14) {
+                int ix = i + (v == 1 || v == 2), iy = j + (v >= 2);
+                uint32_t u;
+                memcpy(&u, &xs[ix], 4);
+                put_be(o, 4, u);
+                memcpy(&u, &ys[iy], 4);
+                put_be(o + 4, 4, u);
+                put_be(o + 8, 4, col);
+                o[12] = ts[ix];
+                o[13] = ts[iy];
+            }
+    hw_gather_copy(q, sizeof q);
+}
+/* A line from (x0, y0) w0 wide to (x1, y1) w1 wide, square ended (layout units). col: RGBA. */
+static void pill_line(Ctx *c, uint8_t *M, float x0, float y0, float x1, float y1, float w0, float w1, uint32_t col) {
+    float dx = x1 - x0, dy = y1 - y0, l = sqrtf(dx * dx + dy * dy);
+    if (!(l > 0.01f)) return;
+    float nx = -dy / l / 2, ny = dx / l / 2;
+    const float v[4][2] = {{x0 + nx * w0, y0 + ny * w0}, {x1 + nx * w1, y1 + ny * w1}, {x1 - nx * w1, y1 - ny * w1}, {x0 - nx * w0, y0 - ny * w0}};
+    n_GXBegin(c, M, 0x80, 0, 4, 0, 0, 0, 0, 0);
+    uint8_t q[4 * 14], *o = q;
+    for (int k = 0; k < 4; k++, o += 14) {
+        uint32_t u;
+        memcpy(&u, &v[k][0], 4);
+        put_be(o, 4, u);
+        memcpy(&u, &v[k][1], 4);
+        put_be(o + 4, 4, u);
+        put_be(o + 8, 4, col);
+        o[12] = o[13] = 0x40; /* the texture's solid middle */
+    }
+    hw_gather_copy(q, sizeof q);
+}
+static void pill_zone(uint32_t z) {
+    if (s_zone_now != z) hud_zone(s_zone_now = z);
+}
+static uint32_t pill_col(uint32_t rgb, uint32_t alpha, float e) { return (rgb & 0xFFFFFF00u) | (uint32_t)((float)alpha * e); }
+/* The karts' ranks (KartChecker +0x88, 1 first, 0 none yet): each one's place in the strip, moved
+ * towards its rank's so a pass slides; the race order's strength from its rank numbers. Returns how
+ * many karts have one. */
+static int order_tick(Ctx *c, uint8_t *M, int rank[8]) {
+    uint32_t rm = ld32(c, M, ctx_gpr(c, 13) - 0x5c38);
+    int n = 0;
+    uint32_t alpha = 0;
+    for (int k = 0; k < 8; k++) {
+        uint32_t chk = IS_RAM(rm) ? ld32(c, M, rm + 0x48 + 4 * (uint32_t)k) : 0;
+        int32_t r = IS_RAM(chk) && chk ? (int32_t)ld32(c, M, chk + 0x88) : 0;
+        rank[k] = r >= 1 && r <= 8 ? r : 0;
+        n += rank[k] != 0;
+        uint32_t posc = IS_RAM(s_race2d) ? ld32(c, M, s_race2d + 0x4cb0 + 0x38 * (uint32_t)k) : 0;
+        if (posc && IS_RAM(posc) && mld(c, M, posc + 0xb2, 1) > alpha) alpha = mld(c, M, posc + 0xb2, 1);
+    }
+    bool snap = s_order_frame + 1 != g_race_frames && s_order_frame != g_race_frames;
+    if (s_order_frame != g_race_frames) {
+        float x0 = 304 - STRIP_SLOT * (float)n / 2;
+        for (int k = 0; k < 8; k++) {
+            float to = x0 + STRIP_SLOT * (float)(rank[k] - 1);
+            s_order_x[k] = snap ? to : s_order_x[k] + (to - s_order_x[k]) * 0.25f;
+        }
+        s_order_frame = g_race_frames;
+    }
+    s_order_alpha = alpha;
+    return n;
+}
+#define PILL_SEEN(g) (s_pill_last >> ((g) - MGT_PLACE) & 1)
+/* The panels of this draw of the race HUD (call: s_hud_call), through the picture being drawn's own
+ * TEV setup as the game's plain picture, its fields put back after. */
+static void pill_panels(Ctx *c, uint8_t *M, uint32_t self, float e) {
+    if (!pill_tex(c, M)) return;
+    uint32_t c14c = ld32(c, M, self + 0x14c), c148 = ld32(c, M, self + 0x148), count = mld(c, M, self + 0x110, 1);
+    mst(c, M, self + 0x14c, 4, 0);
+    mst(c, M, self + 0x148, 4, 0xFFFFFFFFu);
+    mst(c, M, self + 0x110, 1, 1);
+    mst(c, M, self + 0xb3, 1, 0); /* not opaque: its mode that uses the vertex colours */
+    vcall1(c, 0x8012cae4u, self); /* setTevModeK2D */
+    mst(c, M, self + 0x14c, 4, c14c);
+    mst(c, M, self + 0x148, 4, c148);
+    mst(c, M, self + 0x110, 1, count);
+    vcall1(c, 0x800bd5d8u, 1); /* GXSetNumTexGens */
+    i_GXLoadTexObj(c, M, s_pill_obj, 0, 0, 0, 0, 0, 0, 0);
+    uint32_t old_sp = frame_push(c, M, 0x40), sp = old_sp - 0x40;
+    const float id[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+    stfn(c, M, sp + 8, id, 12);
+    n_GXLoadPosMtxImm(c, M, sp + 8, 0, 0, 0, 0, 0, 0, 0);
+    frame_pop(c, old_sp);
+    uint32_t dark = pill_col(PILL_DARK, PILL_ALPHA, e);
+    if (s_hud_call == 2) {
+        int rank[8];
+        int n = order_tick(c, M, rank), me = player_kart(c, M);
+        if (PILL_SEEN(MGT_ORDER) && n) {
+            pill_zone(4);
+            float a = e * (float)s_order_alpha / 255;
+            for (int k = 0; k < 8; k++)
+                if (rank[k]) pill_draw(c, M, s_order_x[k], STRIP_Y, STRIP_SLOT - 2, 40, 7, k == me ? pill_col(PILL_ME, PILL_ME_ALPHA, a) : pill_col(PILL_DARK, PILL_ALPHA, a));
+        }
+        if ((PILL_SEEN(MGT_MAP) || PILL_SEEN(MGT_MAP_BATTLE)) && s_map_x1 > s_map_x0) {
+            pill_zone(6);
+            pill_draw(c, M, s_map_x0 - 5, s_map_y0 - 4, s_map_x1 - s_map_x0 + 10, s_map_y1 - s_map_y0 + 8, 9, dark);
+        }
+        return;
+    }
+    float spd = hud_speed(c, M);
+    int shown = (int)(g_speed_kmh ? spd / 2 : spd * 0.35f);
+    float to = shown < 10 ? 13.5f : shown < 100 ? 6.75f : 0; /* half a digit per digit missing */
+    s_speed_dx += (to - s_speed_dx) * 0.25f;
+    if (!(s_speed_dx >= 0)) s_speed_dx = 0; /* NaN too */
+    const float *wd = ROW_W;
+    const bool on[ROWS] = {[ROW_ITEMS] = PILL_SEEN(MGT_ITEMS) || (!(s_hud_hide & HUD_ITEMS) && (PILL_SEEN(MGT_PLACE) || PILL_SEEN(MGT_LAP))), /* no item held: its panel still there, the row keeps still; none when turned off */
+                           [ROW_PLACE] = PILL_SEEN(MGT_PLACE), [ROW_LAP] = PILL_SEEN(MGT_LAP), [ROW_TIME] = PILL_SEEN(MGT_TIME), [ROW_SPEED] = PILL_SEEN(MGT_SPEED)};
+    float total = -4;
+    for (int i = 0; i < ROWS; i++) total += on[i] ? wd[i] + 4 : 0;
+    float x = 304 - total / 2;
+    pill_zone(4);
+    for (int i = 0; i < ROWS; i++)
+        if (on[i]) {
+            s_row[i] = x;
+            pill_draw(c, M, x, 4, wd[i], 34, 11, dark); /* round y 21, as the pictures */
+            x += wd[i] + 4;
+        }
+    if (on[ROW_SPEED]) {
+        /* a dial: 7 ticks round 270 degrees from the bottom left in the game's arc's colours, lit to the
+         * speed against the class's top (the kart +0x3f0: 126 at 50cc, 161 at 150cc; the game's arc
+         * always ends at 150), a needle on it; while the game flashes its arc for a boost, all lit in its colours */
+        uint32_t kart = player_kart_obj(c, M);
+        float top = kart ? ldf(c, M, kart + 0x3f0) : 0;
+        if (!(top >= 50 && top <= 400)) top = 150; /* NaN too */
+        float f = spd / (top * SPEED_TOP);
+        f = f > 0 ? f < 1 ? f : 1 : 0; /* NaN: 0 */
+        int lit = (int)(f * 7 + 0.5f);
+        bool fresh = s_meter_frame + 2 > g_race_frames && s_meter_frame <= g_race_frames;
+        for (int i = 0; i < 7 && fresh; i++)
+            if (s_meter_col[i] != METER_COL[i] && s_meter_col[i] != 0x808080) s_meter_flash = g_race_frames; /* moved round */
+        bool flash = fresh && s_meter_flash && s_meter_flash <= g_race_frames && g_race_frames - s_meter_flash < 10;
+        const float A0 = 3.9269908f, SWEEP = 4.712389f, RO = 17, RI = 12; /* 225 degrees, 270 */
+        float cx = s_row[ROW_SPEED] + 4 + RO, cy = 23.5f; /* its arc's middle at y 21 */
+        for (int i = 0; i < 24; i++) { /* the rim */
+            float a0 = A0 - SWEEP * (float)i / 24, a1 = A0 - SWEEP * (float)(i + 1) / 24;
+            pill_line(c, M, cx + RO * cosf(a0), cy - RO * sinf(a0), cx + RO * cosf(a1), cy - RO * sinf(a1), 0.9f, 0.9f, pill_col(0xFFFFFF00u, 0x60, e));
+        }
+        for (int i = 0; i < 7; i++) {
+            float a = A0 - SWEEP * (float)i / 6, ca = cosf(a), sa = sinf(a);
+            pill_line(c, M, cx + RI * ca, cy - RI * sa, cx + RO * ca, cy - RO * sa, 2.4f, 2.4f, flash ? pill_col(s_meter_col[i] << 8, 0xFF, e) : pill_col(METER_COL[i] << 8, i < lit ? 0xFF : 0x80, e));
+        }
+        float a = A0 - SWEEP * f;
+        pill_line(c, M, cx, cy, cx + 14.5f * cosf(a), cy - 14.5f * sinf(a), 3, 0.9f, pill_col(0xFFFFFF00u, 0xFF, e));
+        pill_draw(c, M, cx - 2.5f, cy - 2.5f, 5, 5, 2.5f, pill_col(0xFFFFFF00u, 0xFF, e));
+    }
+}
+/* The race order's picture in the strip, in that kart's slot: the number in the corner, the larger
+ * face (the game's sizes, c* over its cw* outline) and the smaller beside it. The game's own places
+ * aren't used: its rows are of different sizes and it turns the two faces round each other when a
+ * kart's drivers swap. false: not drawn (a kart with no rank). */
+static bool order_strip(Ctx *c, uint8_t *M, const char *t, int n, int kart, float m[12], float w) {
+    uint32_t posc = kart >= 0 && IS_RAM(s_race2d) ? ld32(c, M, s_race2d + 0x4cb0 + 0x38 * (uint32_t)kart) : 0;
+    if (!posc || !IS_RAM(posc) || w <= 1 || n < 1) return false;
+    float s = g_hud_move[MGT_ORDER].s, x = s_order_x[kart], y = STRIP_Y, size;
+    if (!strncmp(t, "posc", 4)) {
+        size = 19, x += 1.5f, y += 1;
+    } else {
+        int who = t[n - 1] == '2';
+        s_order_w[kart][who] = w;
+        bool big = w >= s_order_w[kart][!who];
+        size = big ? 51 : 40.8f;
+        x += 8 + s * (big ? 0 : 38.1f), y += 3 + s * (big ? 0 : 16.1f);
+        if (t[1] != 'w') x += s * size * 4 / 51, y -= s * size * 3 / 51; /* c*: as far from its outline as the game has it */
+    }
+    float k = s * size / w;
+    memset(m, 0, 12 * sizeof *m);
+    m[0] = m[5] = k, m[10] = 1;
+    m[3] = x, m[7] = y;
+    return true;
 }
 /* The picture's matrix (12 floats) moved for its group; false: not drawn (MODERN shows nothing
  * that sits off the screen, so parked pictures don't slide in from the middle). The race order
@@ -6560,6 +6889,71 @@ static bool modern_place(Ctx *c, uint8_t *M, int g, int kart, float roll, float 
     }
     return true;
 }
+/* DASHBOARD: a picture's matrix moved for its group, as modern_place, into its panel of the row. The
+ * lap count's total at the size of the lap, the unit turned. The items are fitted by their frames
+ * (slot1f / slot1b, the game animates and sizes them), last frame's, both the same size: the game's
+ * larger one (the driver who uses the items) in the panel's left half, the other in the right. */
+static bool pill_place(Ctx *c, uint8_t *M, uint32_t self, int g, int kart, float m[12], float w, float h) {
+    char t[9];
+    int n = pane_tag(c, M, self, t);
+    if (g == MGT_ORDER) return order_strip(c, M, t, n, kart, m, w);
+    if (g == MGT_ITEMS) {
+        int back = t[0] == 's' ? t[5] == 'b' : t[4] == 'b';
+        float *ref = s_item_ref[back];
+        if (t[0] == 's' && n == 6) {
+            float sc = sqrtf(m[0] * m[0] + m[4] * m[4]);
+            if (sc > 0.05f && w > 1) {
+                ref[0] = m[3] + (m[0] * w + m[1] * h) / 2;
+                ref[1] = m[7] + (m[4] * w + m[5] * h) / 2;
+                ref[2] = ITEM_FRAME / (sc * w);
+                float size = sc * w, other = s_item_size[!back];
+                s_item_size[back] = size, s_item_seen[back] = g_race_frames;
+                bool both = s_item_seen[!back] && s_item_seen[!back] + 1 >= g_race_frames, front;
+                if (both && size > 2 && other > 2) s_item_big = fmaxf(size, other), s_item_small = fminf(size, other);
+                if (both) front = size > other + 0.5f || (!(fabsf(size - other) > 0.5f) && !back); /* the same: by tag */
+                else front = !(s_item_big > s_item_small + 0.5f) || size > (s_item_big + s_item_small) / 2; /* alone: by the sizes seen together */
+                float to = front ? -0.5f : 0.5f;
+                if (s_item_side[back] != (front ? 1 : 2)) {
+                    s_item_side[back] = front ? 1 : 2;
+                    rt_log("hud: item %c %s: size %.1f (other %.1f%s, seen %.1f / %.1f) x %.1f y %.1f", back ? 'b' : 'f', front ? "left" : "right", size, other, both ? "" : " gone", s_item_big, s_item_small, ref[0], ref[1]);
+                }
+                s_item_u[back] += (to - s_item_u[back]) * 0.3f;
+                if (!(s_item_u[back] >= -0.5f && s_item_u[back] <= 0.5f)) s_item_u[back] = to;
+            }
+        }
+        float s = ref[2];
+        if (s <= 0) return false; /* no frame yet */
+        for (int k = 0; k < 3; k++) m[k] *= s, m[4 + k] *= s;
+        m[3] = s_row[ROW_ITEMS] + 35 + 31 * s_item_u[back] + s * (m[3] - ref[0]); /* their margins touching */
+        m[7] = 21 + s * (m[7] - ref[1]);
+        return true;
+    }
+    float dx = 0, dy = 0;
+    if (g == MGT_LAP && !strcmp(t, "ml1_2")) {
+        const float k = 32.0f / 17;
+        m[0] *= k, m[5] *= k;
+        dx = 116 - m[3], dy = 384 - m[7];
+    } else if (g == MGT_LAP && !strcmp(t, "ml1_s1")) dy = -8;
+    if (!modern_place(c, M, g, kart, 0, dx, dy, m, w, h)) return false;
+    if (g == MGT_PLACE) m[3] += s_row[ROW_PLACE];
+    else if (g == MGT_LAP) {
+        m[3] += s_row[ROW_LAP];
+        if (!strcmp(t, "m1_lap")) { /* the word: grown round its middle, level with the count */
+            for (int k = 0; k < 3; k++) m[k] *= LAP_GROW, m[4 + k] *= LAP_GROW;
+            m[7] -= (LAP_GROW - 1) * m[5] / LAP_GROW * h / 2 + 0.9f;
+        } else m[3] += LAP_DX;
+    }
+    else if (g == MGT_TIME) m[3] += s_row[ROW_TIME];
+    else if (g == MGT_SPEED || g == MGT_UNIT) {
+        m[3] += s_row[ROW_SPEED] + SPEED_PAD - (g == MGT_SPEED ? s_speed_dx : 0);
+        if (g == MGT_UNIT) { /* reading downwards */
+            float s = m[0];
+            m[0] = 0, m[1] = -s, m[4] = s, m[5] = 0;
+            m[3] += s * h;
+        }
+    } else if (g == MGT_MAP) m[7] += s_map_dy;
+    return true;
+}
 /* Two players side by side: a picture of no group (vs. MGV_*) moved from its screen's half (top: the
  * left column, bottom: the right) into that column at VS_SCALE, keeping its distance to the half's
  * nearest edge (thirds: left / middle / right, top / middle / bottom) scaled, so pieces side by side
@@ -6584,20 +6978,13 @@ static int vsplit_place(float m[12], float w, float h, bool right) {
     m[7] = ny + s * (m[7] - y0);
     return 1;
 }
-/* KM/H: the US game shows mph (Race2D::setLayoutData, flag r13 -0x68dc: speed * 0.35); km/h is
+/* KMH: the US game shows mph (Race2D::setLayoutData, flag r13 -0x68dc: speed * 0.35); km/h is
  * its other unit, speed / 2. Before Race2D::draw, the three digits (+0x9fc, +0xa00, +0xa04: shown
  * from the first non-zero one) get that number's textures (deg0-9.bti at +0x188) with
- * changeTexture (vtable +0x110), as setLayoutData does; the speed is its getter's (FUN_802b146c):
- * the kart (r13 -0x4e98 +0xa0 + 4 * the player's kart) +0x444 times a constant, or another constant
- * while +0x578 has 0x200. The label is pause_art.c's (S_KMH). */
+ * changeTexture (vtable +0x110), as setLayoutData does. The label is pause_art.c's (S_KMH). */
 static void hud_kmh(Ctx *c, uint8_t *M, uint32_t self) {
-    uint32_t r13 = (uint32_t)ctx_gpr(c, 13), r2 = (uint32_t)RD(c, REG_R2, 4);
-    uint32_t mgr = ld32(c, M, r13 - 0x4e98);
-    int k = player_kart(c, M);
-    if (!IS_RAM(mgr) || !IS_RAM(self) || k < 0) return;
-    uint32_t kart = ld32(c, M, mgr + 0xa0 + 4 * (uint32_t)k);
-    if (!IS_RAM(kart)) return;
-    float sp = ld32(c, M, kart + 0x578) & 0x200 ? ldf(c, M, r2 - 0x2a40) : ldf(c, M, r2 - 0x2a34) * ldf(c, M, kart + 0x444);
+    if (!IS_RAM(self)) return;
+    float sp = hud_speed(c, M);
     int v = sp > 0 && sp < 4000 ? (int)sp / 2 : 0;
     if (v > 999) v = 999;
     if (s_hud_logging) HUDLOG("kmh speed %.2f -> %d (game mph %d)", sp, v, (int)(sp * 0.35f));
@@ -6635,6 +7022,15 @@ static void plus_colours(Ctx *c, uint8_t *M, uint32_t self, uint32_t col) {
         uint32_t v = ld32(c, M, col + 4 * k), r = v >> 24, g = v >> 16 & 0xFF, b = v >> 8 & 0xFF;
         if (g + 0x40 <= r && g < b && b >= 0x40) mst(c, M, col + 4 * k, 4, stock[k] << 8 | (v & 0xFF));
     }
+}
+/* DASHBOARD: the place gold, silver and bronze in the first three (the game's top to bottom gradient
+ * replaced corner by corner, alpha kept); 4th and after as the game colours them. */
+static void place_colours(Ctx *c, uint8_t *M, uint32_t self, uint32_t col) {
+    static const uint32_t TOP[3] = {0xffe878, 0xffffff, 0xffc890}, BOTTOM[3] = {0xe89a00, 0x9aa6b8, 0xb8622a};
+    char t[9];
+    if (pane_tag(c, M, self, t) != 5 || strncmp(t, "pos1", 4) || t[4] < '1' || t[4] > '3') return;
+    int r = t[4] - '1';
+    for (uint32_t k = 0; k < 4; k++) mst(c, M, col + 4 * k, 4, (k < 2 ? TOP[r] : BOTTOM[r]) << 8 | (ld32(c, M, col + 4 * k) & 0xFF));
 }
 /* MODERN speedometer: the arc's 7 blocks (sp_mtr1 at the bottom left, then 7, 6 .. 2 at the top
  * right) tinted green to yellow to red, multiplying the game's colours (alpha kept), by e. */
@@ -6984,10 +7380,18 @@ static uint64_t i_drawK2D__10K2DPictureFffffb(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t self = (uint32_t)a0;
     if (!mld(c, M, self + 0xb0, 1)) return 0;
+    /* The mirror with the race HUD only: not in the course preview or the drop to the start line,
+     * where Race2D draws but no piece of it is shown. Asked at its first piece, hidden or not. */
+    int player;
+    if (s_mirror_ask && hud_piece(c, M, self, &player)) {
+        s_mirror_ask = false;
+        hud_zone(HUD_ZONE_MIRROR), s_mirror_ns = plat_now_ns(); /* gx.c: the frame's Frame.mirror */
+    }
     if (s_hud_hide && hud_hidden(c, M, self)) return 0;
     int mg = MG_NONE, kart = -1;
     float e = 0, roll = 0; /* MODERN: how far (1 fully, sliding back after the finish), the row's roll */
     float ndx = 0, ndy = 0; /* ... a picture moved within its group first (four players' lap count) */
+    bool meter = false;     /* DASHBOARD: a block of the speed's arc */
     bool vs = s_hud_two && s_vsplit_on; /* two players side by side: p2_race.blo's groups in columns, any style */
     if (vs) {
         char t[9];
@@ -7015,6 +7419,23 @@ static uint64_t i_drawK2D__10K2DPictureFffffb(Ctx *c, uint8_t *M, ARGS) {
         if (e <= 0) mg = MG_NONE;
         if (mg == MG_ORDER || mg == MG2_ORDER) kart = order_kart(c, M, self);
         if (mg == MG_ORDER) roll = order_roll(c, M, kart);
+        if (s_hud_one && g_hud_pills && mg >= MG_PLACE && mg <= MG_SPEED) {
+            mg += MGT_PLACE - MG_PLACE, roll = 0;
+            if (mg == MGT_SPEED && !strcmp(t, "km_h")) mg = MGT_UNIT;
+            /* the arc: the dial instead (pill_panels), itself fading in while the pieces slide back */
+            if (mg == MGT_SPEED && !strncmp(t, "sp_mtr", 6)) meter = true, mg = MG_NONE;
+            if (meter && t[6] >= '1' && t[6] <= '7') { /* sp_mtr1, then 7 .. 2 */
+                s_meter_col[t[6] == '1' ? 0 : 8 - (t[6] - '0')] = ld32(c, M, self + 0x148) >> 8;
+                s_meter_frame = g_race_frames;
+            }
+        } else if (s_hud_one && g_hud_pills && mg == MG_MAP_BATTLE) mg = MGT_MAP_BATTLE;
+        if (mg >= MGT_PLACE && mg <= MGT_MAP_BATTLE) s_pill_seen |= 1u << (mg - MGT_PLACE);
+        if (meter) s_pill_seen |= 1u << (MGT_SPEED - MGT_PLACE);
+        if (s_pill_todo && (uint32_t)a5 & 0xFF) {
+            s_pill_todo = false;
+            pill_panels(c, M, self, e);
+        }
+        if (meter && e >= 1) return 0;
     }
     uint32_t old_sp = frame_push(c, M, 0x80), sp = old_sp - 0x80;
     uint32_t hud_at = 0, hud_was = 0;
@@ -7026,10 +7447,24 @@ static uint64_t i_drawK2D__10K2DPictureFffffb(Ctx *c, uint8_t *M, ARGS) {
     /* the game fades rows out as they roll off below the top 4 (alpha +0xb2, set each frame): the
      * player's, rolled into the 5th row (modern_place), is shown; the others are gone by then */
     if (roll > 0) mst(c, M, self + 0xb3, 1, kart_is_player(c, M, kart) ? 0xFF : (uint32_t)((float)mld(c, M, self + 0xb2, 1) * (1 - roll)));
+    if (mg == MGT_ORDER) mst(c, M, self + 0xb3, 1, s_order_alpha); /* every kart's, not only the top 4's */
+    if (meter) mst(c, M, self + 0xb3, 1, (uint32_t)((float)mld(c, M, self + 0xb2, 1) * (1 - e)));
     for (int k = 0; k < 4; k++) mst(c, M, sp + 0x18 + 4 * k, 4, 0xFFFFFFFFu);
     n_getNewColor__10K2DPictureFPQ28JUtility6TColor(c, M, self, sp + 0x18, 0, 0, 0, 0, 0, 0);
     if (s_hud_call) plus_colours(c, M, self, sp + 0x18); /* inside the race HUD */
+    if (mg == MGT_PLACE) place_colours(c, M, self, sp + 0x18);
     if (mg == MG_SPEED) speed_tint(c, M, self, sp + 0x18, e);
+    /* the race order's faces in full colour (the game tints them), not their outlines; the speed too */
+    uint32_t face_black = 0, face_white = 0;
+    bool face = false;
+    char face_tag[9];
+    if (mg == MGT_SPEED || mg == MGT_UNIT || (mg == MGT_ORDER && pane_tag(c, M, self, face_tag) && face_tag[0] == 'c' && face_tag[1] != 'w')) {
+        face = true, face_black = ld32(c, M, self + 0x14c), face_white = ld32(c, M, self + 0x148);
+        mst(c, M, self + 0x14c, 4, 0);
+        mst(c, M, self + 0x148, 4, 0xFFFFFFFFu);
+    }
+    if (mg == MGT_SPEED || mg == MGT_UNIT) /* the speed in white, whatever a mod colours it */
+        for (uint32_t k = 0; k < 4; k++) mst(c, M, sp + 0x18 + 4 * k, 4, ld32(c, M, sp + 0x18 + 4 * k) | 0xFFFFFF00u);
     if ((uint32_t)a5 & 0xFF) {
         vcall1(c, 0x8012cae4u, self); /* setTevModeK2D */
     } else {
@@ -7045,6 +7480,10 @@ static uint64_t i_drawK2D__10K2DPictureFffffb(Ctx *c, uint8_t *M, ARGS) {
             mst(c, M, sp + 8, 4, ld32(c, M, self + 0x148));
             n_GXSetTevColor(c, M, 2, sp + 8, 0, 0, 0, 0, 0, 0);
         }
+    }
+    if (face) {
+        mst(c, M, self + 0x14c, 4, face_black);
+        mst(c, M, self + 0x148, 4, face_white);
     }
     ctx_set_gpr(c, 3, self);
     WR(c, 0x4008, 8, a1);
@@ -7067,7 +7506,12 @@ static uint64_t i_drawK2D__10K2DPictureFffffb(Ctx *c, uint8_t *M, ARGS) {
         }
         float mm[12];
         memcpy(mm, m, sizeof m);
-        bool shown = modern_place(c, M, mg, kart, roll, ndx, ndy, mm, w, h), moved = shown;
+        bool shown = mg >= MGT_PLACE && mg <= MGT_UNIT ? pill_place(c, M, self, mg, kart, mm, w, h) : modern_place(c, M, mg, kart, roll, ndx, ndy, mm, w, h), moved = shown;
+        if (shown && (mg == MGT_MAP || mg == MGT_MAP_BATTLE)) {
+            char t[9];
+            if (pane_tag(c, M, self, t) && !strncmp(t, "course", 6)) s_map_x0 = mm[3], s_map_y0 = mm[7], s_map_x1 = mm[3] + mm[0] * w, s_map_y1 = mm[7] + mm[5] * h;
+            if (mg == MGT_MAP && !strncmp(t, "course", 6) && isfinite(mm[7])) s_map_dy = 10 - (mm[7] - s_map_dy); /* its top unmoved to the row's, 6, and the panel's margin */
+        }
         uint32_t z = s_hud_zone, gz = g_hud_move[mg].zone;
         if (e >= 1) {
             if (!shown) {

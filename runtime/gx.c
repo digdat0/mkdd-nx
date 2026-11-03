@@ -124,7 +124,7 @@ static Frame *frame_new(void) {
         f->batches.len = f->vb.len = f->indices.len = f->copies.len = f->xf.len = 0;
         memset(f->clear, 0, sizeof f->clear);
         memset(f->efb, 0, sizeof f->efb);
-        f->draws = f->vseam = 0;
+        f->draws = f->vseam = f->mirror = 0;
     } else f = calloc(1, sizeof *f);
     f->refs = 1;
     return f;
@@ -1001,6 +1001,18 @@ const HudMove g_hud_move[MG_COUNT] = {
     [MGV_TIME2] = {593, 427, 600, 21.2f, 0.6f, 6},  /* the digits' bottom right */
     [MGV_MAP] = {587, 124, 335, 316, 0.6f, 4},      /* 273-335 x 316-440 */
     [MGV_ORDER] = {19, 97, 8, 300, 0.5f, 5},
+    /* DASHBOARD, one player: place, lap, time, speed and items in one row, centred, x from the left of
+     * the piece's panel (native.c pill_place adds where that panel is, y 6-36), the map top right; the
+     * race order is a strip (order_strip), the items fit their frames (pill_place) */
+    [MGT_PLACE] = {23, 16, 3.5f, 8, 0.27f, 4},       /* 96 x 96: 26 x 26 */
+    [MGT_ITEMS] = {0, 0, 0, 0, 1, 4},
+    [MGT_LAP] = {27, 384, 2.7f, 12.2f, 0.55f, 4},    /* word and count 27-148 x 384-416 */
+    [MGT_TIME] = {422, 25, 2, 13.2f, 0.65f, 4},      /* digits 422-582 x 25-49 */
+    [MGT_MAP] = {602, 40.8f, 600, 10, 0.6f, 6},      /* drawn 457-602 x 41-331; its panel level with the row (native.c s_map_dy) */
+    [MGT_MAP_BATTLE] = {602, 40.8f, 600, 128, 0.6f, 6}, /* below the Shine Thief's shine, as MG_MAP_BATTLE */
+    [MGT_ORDER] = {0, 0, 0, 0, 0.605f, 4},
+    [MGT_SPEED] = {587.5f, 381.5f, 76, 14.1f, 0.54f, 4}, /* the digits end at 587.5, the timer's size; the dial before them */
+    [MGT_UNIT] = {524, 410, 76, 1.8f, 0.6f, 4},       /* 64 x 16, turned to read downwards after the digits */
 };
 static void pixel_rect(float xoff, float yoff, uint32_t out[4]) {
     uint32_t tl = G.bp[0x20], br = G.bp[0x21];
@@ -2023,6 +2035,11 @@ static bool modern_rect(const DrawSetup *S, unsigned g, uint32_t out[4]) {
     const uint32_t *r = S->rect;
     float l = bx, t = by, rr = ax * 608 + bx, bb = ay * 448 + by;
     if ((float)r[0] <= l + 2 && (float)r[1] <= t + 2 && (float)r[2] >= rr - 2 && (float)r[3] >= bb - 2) return false; /* not clipped */
+    if (g == MGT_ITEMS) { /* fitted to their frames (native.c pill_place): the roulette's next item, above the frame, unseen */
+        out[0] = 0, out[1] = (uint32_t)roundf(clampf(ay * 10.7f + by, 0, eh));
+        out[2] = (uint32_t)ew, out[3] = (uint32_t)roundf(clampf(ay * 31.1f + by, 0, eh));
+        return true;
+    }
     float px[2] = {(float)r[0], (float)r[2]}, py[2] = {(float)r[1], (float)r[3]};
     for (int i = 0; i < 2; i++) {
         px[i] = clampf(mv->s * (px[i] - bx) + ax * (mv->nx - mv->s * mv->ox) + bx, 0, ew);
@@ -2322,7 +2339,12 @@ static size_t exec(const uint8_t *d, size_t len, unsigned depth) {
         switch (cmd) {
         case 0x08: {
             uint32_t reg = c[1];
-            if (reg == 0x01) { G.hud_zone = be32(c + 2); break; } /* not a hardware register: port marker */
+            if (reg == 0x01) { /* not a hardware register: port marker */
+                uint32_t v = be32(c + 2);
+                if (v != HUD_ZONE_MIRROR) G.hud_zone = v;
+                else if (g_hud_mirror && G.frame) G.frame->mirror = 1;
+                break;
+            }
             G.cp[reg] = be32(c + 2);
             G.cp_gen++;
             if (reg >= 0x50 && reg < 0xA0) { for (int i = 0; i < 8; i++) G.fmt_cache[i].valid = false; G.vat_gen++; }

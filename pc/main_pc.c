@@ -54,6 +54,7 @@ int main(int argc, char **argv) {
         sscanf(getenv("MKDD_FP"), "%f,%f", &g_fp_up, &g_fp_fwd);
     }
     if (getenv("MKDD_HUD_MODERN")) g_hud_modern = 1;
+    if (getenv("MKDD_HUD_DASHBOARD")) g_hud_modern = g_hud_pills = 1;
     if (getenv("MKDD_KMH")) g_speed_kmh = 1;
     if (getenv("MKDD_VSPLIT")) g_vsplit = 1;
     if (getenv("MKDD_LAN")) g_lan_on = 1; /* a Broadband Adapter (eth.c) */
