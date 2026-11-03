@@ -22,6 +22,7 @@
 #include "../runtime/rt.h"
 
 volatile int g_pause_kind;
+volatile bool g_p1_gamecube;
 
 extern const uint8_t pause_console_rgba[], pause_badges_rgba[];
 #define CON_W 352
@@ -40,8 +41,9 @@ static const struct { uint64_t bit; int badge; } BITS[] = {
 /* Substitution ids (1 = the picture) and the GameCube button each icon shows. */
 enum { S_CONSOLE = 1, S_L, S_R, S_Z, S_X, S_Y, S_STICK, S_A, S_B, S_MENUPAD, S_KMH, S_DEG0, S_DEG9 = S_DEG0 + 9, S_COUNT };
 /* S_MENUPAD: the GameCube controller the "how many players" screen shows once per player
- * (menu.arc, 80x56), drawn as the pause screen's Switch at the same height. Ours is 2x the size
- * for a sharper picture: same shape, so the game's pane shows it the same. */
+ * (menu.arc, 80x56), drawn as the pause screen's Switch at the same height; the game's own while
+ * player 1 holds a GameCube controller (g_p1_gamecube). Ours is 2x the size for a sharper
+ * picture: same shape, so the game's pane shows it the same. */
 #define PAD_W 160
 #define PAD_H 112
 #define KMH_W 256 /* 4x the game's 64x16, its pixel letters kept sharp */
@@ -1263,6 +1265,7 @@ unsigned pause_art_texture(unsigned id) {
     if (id >= BAR_FIRST && id < BAR_FIRST + BAR_COUNT) return s_bar[id - BAR_FIRST] ? bar_texture((int)(id - BAR_FIRST)) : 0;
     int kind = g_pause_kind;
     if (id == S_MENUPAD) {
+        if (g_p1_gamecube) return 0; /* one picture for every player: player 1's GameCube controller, the game's own */
         if (!s_tex[id]) build_menupad();
         return s_tex[id];
     }

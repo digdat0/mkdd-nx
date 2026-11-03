@@ -790,6 +790,7 @@ static void update_pads(void) {
             s_player_style[p] = st;
         }
     }
+    g_p1_gamecube = s_player_style[0] & HidNpadStyleTag_NpadGc;
 
     if (s_pad_quiet) s_pad_quiet--;
     /* The - menu belongs to player 1 (a single right Joy-Con: press its stick and +; a GameCube

@@ -5,6 +5,8 @@
 /* The controller that last pressed Start (set by main_switch.c's pad code). */
 enum { PAUSE_FULL, PAUSE_LEFT, PAUSE_RIGHT, PAUSE_GC };
 extern volatile int g_pause_kind;
+/* Player 1 holds a GameCube controller (main_switch.c): the "how many players" screen shows the game's picture. */
+extern volatile bool g_p1_gamecube;
 
 /* Recognise the game's pictures on the disc (disc open, before the game runs). */
 void pause_art_init(void);
