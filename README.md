@@ -49,6 +49,12 @@ Note: This is an AI assisted project.
   players get MODERN), MPH or KMH, and hiding the position, items, laps, map, speedometer, race
   order, timer or (DASHBOARD) mirror one by one.
 - Jump button, and 1 to 7 laps per Grand Prix or Versus race.
+- Drafting (**Game > Drafting**, off by default): line up right behind another kart at speed and
+  wind streaks show the slipstream filling; stay in it for about 1.25 seconds for a short
+  mushroom-style boost. Grand Prix and Versus only, off in LAN play. Press A on it for
+  **CPU Drafting** (Off, Weaker or Same As You, the default), **Draft Strength** (how long the
+  boost lasts: Weak, Medium (the default) or Strong) and **Draft Distance** (how far behind a
+  draft starts: Close, Regular (the default) or Far).
 - Cheats: no weight classes, any special item for any character, stronger mini-turbos (fewer
   sweeps, more speed, longer boosts, for CPUs too if you like) and perfect starts.
 - In-game updater that installs the latest GitHub release.
@@ -250,6 +256,8 @@ only the port's own messages.
 See [Build Instructions](https://github.com/digdat0/mkdd-nx/wiki/Build-Instructions) on the wiki: one command builds `MKDD-NX.nro` from your disc image.
 
 How the port works, and how it is tested: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Lessons from building it, as a guide for porting another game you own the same way:
+[docs/RECOMP_PORT_GUIDE.md](docs/RECOMP_PORT_GUIDE.md).
 
 ## Credits and licence
 

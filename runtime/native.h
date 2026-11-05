@@ -41,6 +41,7 @@
     X(calc__10GeoItemBoxFv, "r", '-', 1) \
     X(doItemCtrl__13RivalItemCtrlFv, "r", '-', 1) \
     X(FUN_802d5e28, "r", '-', 1) \
+    X(FUN_8029fd40, "r", '-', 1) \
     X(__ct__11BombStart2DFP7JKRHeap, "rr", 'r', 1) \
     X(doSterrCtrl__13RivalBodyCtrlFv, "r", '-', 1) \
     X(mode_init__9SceneMenuFv, "r", '-', 1) \

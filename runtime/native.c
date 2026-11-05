@@ -7298,6 +7298,143 @@ static uint64_t i_FUN_802d5e28(Ctx *c, uint8_t *M, ARGS) {
     return 0;
 }
 
+/* DRAFTING (GAME page): a kart close behind another on its line, both at speed, fills a meter;
+ * full, it boosts. Grand Prix and Versus only. g_draft 0 off, 1 weak, 2 medium, 3 strong; g_draft_cpu
+ * for the computer's karts 0 none, 1 weaker, 2 as the players'. Run after FUN_8029fd40, the
+ * karts' frame (KartCtrl: +0xa0 + 4 * k the KartBody, +0x22c the kart count, +0x224 bit 0 set:
+ * skipped). KartBody: +0x110 its 3x4 matrix (columns x, y up, z forward, w position), +0x444 its
+ * speed, +0x3f0 its class's top (Race2D units: speed * r2 -0x2a34), +0xf0 its KartGame, +0x578
+ * 0x8 set for a computer's, +0x570 / +0x574 the car status (+0x574 0x4000 a dash on). The boost is
+ * KartGame::MakeMashDash (0x802AD2F0, the same in every mod), the mushroom's: its flames, sound
+ * and speed, its timer (+0x596, 80 frames) then cut to the draft's own length. */
+volatile uint32_t g_draft, g_draft_cpu, g_draft_range;
+#define DRAFT_NEAR 60.0f   /* the kart ahead this far in front at least (the karts' centres) ... */
+/* ... and at most this far to start a draft, by g_draft_range: close, regular, far (2500 felt too far, then 1600;
+ * the hold stretches it times DRAFT_HOLD_WIDE) */
+static const float DRAFT_FAR[3] = {900.0f, 1200.0f, 1600.0f};
+#define DRAFT_START_SIDE 80.0f /* to start one: the leader within about a kart's width of the follower's line, a strip */
+#define DRAFT_SIDE 200.0f  /* to hold one: at most this far (times DRAFT_HOLD_WIDE) to either side of that line close behind, */
+#define DRAFT_SPREAD 0.2f  /* widening by this much per unit ahead: a cone, 616 to a side at 1200 */
+#define DRAFT_UP 200.0f    /* nor this far above or below it (a lower or higher road) */
+#define DRAFT_HEAD 0.75f   /* both heading about the same way: forward axes within about 40 degrees */
+#define DRAFT_FAST 0.4f    /* both at 40% of their class's top speed or more */
+#define DRAFT_DRAIN 0.5f   /* out of the wake the meter empties at this times its fill: a wobble keeps most of it */
+/* the hold: once the meter has some in it the wake is wider (side and range times DRAFT_HOLD_WIDE, the
+ * heading within about 50 degrees) and a player's kart is drawn sideways toward the leader's line,
+ * DRAFT_PULL of the offset a frame, at most DRAFT_PULL_MAX units. The pull moves KartBody mPos
+ * (+0x23c, the decomp's layout) and the matrix's position, only where mPos matches the matrix. */
+#define DRAFT_HOLD 0.1f
+#define DRAFT_HOLD_WIDE 1.4f
+#define DRAFT_HOLD_HEAD 0.65f
+#define DRAFT_PULL 0.03f
+#define DRAFT_PULL_MAX 1.5f
+#define DRAFT_COOL 120     /* frames after a draft boost before the meter fills again */
+static const float DRAFT_FILL[4] = {0, 1.0f / 75, 1.0f / 75, 1.0f / 75}; /* the meter per frame: full in 1.25 s at every strength */
+static const uint16_t DRAFT_BOOST[4] = {0, 15, 25, 35};                 /* the boost's frames (a mushroom's 80) */
+#define DRAFT_CPU_WEAK 0.6f /* WEAKER: computer karts fill this much slower and boost this much shorter */
+static float s_draft_meter[8];
+static uint16_t s_draft_cool[8];
+static uint32_t s_draft_body[8];
+static uint16_t s_draft_flash[8]; /* a draft boost's frames left: the streaks at their brightest */
+static bool s_draft_in[8];
+volatile float g_draft_show[4];
+volatile uint32_t g_draft_views, g_draft_seq;
+static uint64_t i_FUN_8029fd40(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t ctrl = (uint32_t)a0;
+    ctx_call_orig(c, g_native_addr[NAT_FUN_8029fd40]);
+    uint32_t lvl = g_draft, mode = ld32(c, M, 0x803B1464u); /* gRaceInfo +8, the race mode: GP 2, VS 3 */
+    float far = DRAFT_FAR[g_draft_range < 3 ? g_draft_range : 1];
+    if (lvl < 1 || lvl > 3 || (mode != 2 && mode != 3) || !ram_ptr(ctrl) || (ld32(c, M, ctrl + 0x224) & 1)) return 0;
+    if (ld32(c, M, 0x802AD2F0u) != 0x9421FFE0u) return 0; /* not MakeMashDash's stwu r1,-0x20(r1): another main.dol */
+    uint32_t n = ld32(c, M, ctrl + 0x22c), r2 = (uint32_t)RD(c, REG_R2, 4);
+    if (n > 8) n = 8;
+    float unit = ldf(c, M, r2 - 0x2a34);
+    float pos[8][3], fw[8][3], up[8][3];
+    uint32_t body[8] = {0};
+    bool fast[8] = {false};
+    for (uint32_t k = 0; k < n; k++) {
+        uint32_t b = ld32(c, M, ctrl + 0xa0 + 4 * k);
+        if (!ram_ptr(b)) continue;
+        float m[12];
+        ldfn(c, M, b + 0x110, m, 12);
+        for (int i = 0; i < 3; i++) pos[k][i] = m[4 * i + 3], up[k][i] = m[4 * i + 1], fw[k][i] = m[4 * i + 2];
+        v3_norm(up[k]);
+        v3_norm(fw[k]);
+        float top = ldf(c, M, b + 0x3f0), spd = unit * ldf(c, M, b + 0x444);
+        fast[k] = top >= 50 && top <= 400 && spd >= DRAFT_FAST * top; /* NaN: false */
+        body[k] = b;
+        if (s_draft_body[k] != b) s_draft_body[k] = b, s_draft_meter[k] = 0, s_draft_cool[k] = 0, s_draft_flash[k] = 0; /* a new race */
+    }
+    for (uint32_t k = 0; k < n; k++) {
+        uint32_t b = body[k];
+        if (!b) continue;
+        s_draft_in[k] = false;
+        bool cpu = ld32(c, M, b + 0x578) & 8;
+        uint32_t cl = cpu ? g_draft_cpu : 2;
+        if (cl == 0 || cl > 2) { s_draft_meter[k] = 0; continue; }
+        if (s_draft_cool[k]) { s_draft_cool[k]--; continue; }
+        uint32_t st = ld32(c, M, b + 0x574);
+        bool in = false, hold = s_draft_meter[k] > DRAFT_HOLD;
+        float sv[3] = {0, 0, 0}; /* from this kart to the leader's line, for the pull */
+        if (fast[k] && !(st & 0x4000))
+            for (uint32_t o = 0; o < n && !in; o++) {
+                if (o == k || !fast[o]) continue;
+                float d[3], ahead = 0, high = 0, side = 0, head = 0;
+                for (int i = 0; i < 3; i++) d[i] = pos[o][i] - pos[k][i], ahead += d[i] * fw[k][i], high += d[i] * up[k][i], head += fw[o][i] * fw[k][i];
+                for (int i = 0; i < 3; i++) {
+                    float s = d[i] - ahead * fw[k][i] - high * up[k][i];
+                    side += s * s;
+                }
+                float w = hold ? (DRAFT_SIDE + DRAFT_SPREAD * ahead) * DRAFT_HOLD_WIDE : DRAFT_START_SIDE;
+                in = ahead >= DRAFT_NEAR && ahead <= far * (hold ? DRAFT_HOLD_WIDE : 1.0f) && side <= w * w &&
+                     fabsf(high) <= DRAFT_UP && head >= (hold ? DRAFT_HOLD_HEAD : DRAFT_HEAD);
+                if (in)
+                    for (int i = 0; i < 3; i++) sv[i] = d[i] - ahead * fw[k][i] - high * up[k][i]; /* to the leader's line */
+            }
+        s_draft_in[k] = in;
+        float fill = DRAFT_FILL[lvl] * (cpu && cl == 1 ? DRAFT_CPU_WEAK : 1.0f);
+        float meter = s_draft_meter[k] + (in ? fill : -DRAFT_DRAIN * fill);
+        s_draft_meter[k] = meter = meter < 0 ? 0 : meter;
+        if (in && hold && !cpu) {
+            float mp[3], sl = sqrtf(sv[0] * sv[0] + sv[1] * sv[1] + sv[2] * sv[2]);
+            ldfn(c, M, b + 0x23c, mp, 3);
+            bool same = fabsf(mp[0] - pos[k][0]) < 1 && fabsf(mp[1] - pos[k][1]) < 1 && fabsf(mp[2] - pos[k][2]) < 1;
+            if (same && sl > 1 && sl < 5000) {
+                float step = sl * DRAFT_PULL > DRAFT_PULL_MAX ? DRAFT_PULL_MAX : sl * DRAFT_PULL;
+                for (int i = 0; i < 3; i++) mp[i] += sv[i] / sl * step;
+                stfn(c, M, b + 0x23c, mp, 3);
+                for (int i = 0; i < 3; i++) stfn(c, M, b + 0x110 + 4 * (4 * i + 3), &mp[i], 1);
+            }
+        }
+        if (meter < 1) continue;
+        s_draft_meter[k] = 0, s_draft_cool[k] = DRAFT_COOL;
+        uint32_t game = ld32(c, M, b + 0xf0);
+        if (!ram_ptr(game)) continue;
+        const uint32_t args[1] = {game};
+        ctx_call_guest(c, 0x802AD2F0u, args, 1); /* KartGame::MakeMashDash */
+        if (!(ld32(c, M, b + 0x574) & 0x4000)) continue; /* the game refused it (a star, a hit, ...) */
+        uint16_t f = DRAFT_BOOST[lvl];
+        if (cpu && cl == 1) f = (uint16_t)(f * DRAFT_CPU_WEAK);
+        mst(c, M, b + 0x596, 2, f);
+        s_draft_flash[k] = f;
+        rt_log("draft: kart %u (%s) boosts %u frames", (unsigned)k, cpu ? "cpu" : "player", (unsigned)f);
+    }
+    /* the streaks: the player karts in kart order, the screens' order */
+    uint32_t v = 0;
+    for (uint32_t k = 0; k < n && v < 4; k++) {
+        if (!body[k] || (ld32(c, M, body[k] + 0x578) & 8)) continue;
+        float show = g_draft_show[v] - 0.05f; /* out of the wake: fades in about a third of a second */
+        if (s_draft_flash[k]) s_draft_flash[k]--, show = 1.5f;
+        else if (s_draft_in[k]) show = 0.3f + 0.7f * s_draft_meter[k];
+        g_draft_show[v++] = show > 0 ? show : 0;
+    }
+    for (uint32_t i = v; i < 4; i++) g_draft_show[i] = 0;
+    g_draft_views = v;
+    g_draft_seq++;
+    return 0;
+}
+
 /* SPECIAL ITEMS (the - menu's cheats): g_special[charID] 0 = the character's own special, else
  * the item kind it gets instead, or SPECIAL_ANY = any special, the way Petey Piranha and King Boo
  * get them (IsSpecialCharacter: the item box shuffle with every special, set up at the race start). */

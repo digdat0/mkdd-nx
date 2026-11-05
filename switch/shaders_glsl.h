@@ -517,6 +517,12 @@ __attribute__((unused)) static const char *UI_FS =
     "        a = clamp(d * v_size.x, 0.0, 1.0);\n"
     "    } else if (shape == 6u) {\n" /* RGBA image (the logo), tinted */
     "        c *= texture(u_atlas, mix(v_par.xy, v_par.zw, v_uv));\n"
+    "    } else if (shape == 7u) {\n" /* a line from v_par.xy to v_par.zw (px in the rect), v_bits.x / 16 px wide, */
+    "        vec2 p = v_uv * v_size - v_par.xy, d = v_par.zw - v_par.xy;\n" /* v_col at its start to v_col2 at its end */
+    "        float t = clamp(dot(p, d) / max(dot(d, d), 1e-4), 0.0, 1.0);\n"
+    "        float hw = float(v_bits.x) / 32.0;\n"
+    "        a = clamp(hw + 0.5 - length(p - d * t), 0.0, 1.0);\n"
+    "        c = mix(v_col, v_col2, t);\n"
     "    }\n"
     "    if (a * c.a < 0.004) discard;\n"
     "    o = vec4(c.rgb, c.a * a);\n"

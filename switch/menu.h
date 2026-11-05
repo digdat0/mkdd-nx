@@ -21,6 +21,10 @@ typedef struct {
     int mt_length;     /* MINI-TURBO LENGTH: MT_LENGTHS index, 0 the game's */
     bool mt_cpu;       /* MINI-TURBO FOR CPUS: the three above for the computer's karts too */
     bool perfect_start; /* PERFECT STARTS: every player's kart gets the start boost */
+    int draft;         /* GAME > DRAFTING: 0 off (the default), 1 on */
+    int draft_cpu;     /* DRAFTING > CPU DRAFTING: 0 off, 1 weaker, 2 the same as players' (the default) */
+    int draft_power;   /* DRAFTING > DRAFT STRENGTH: 0 weak, 1 medium (the default), 2 strong (runtime g_draft 1-3) */
+    int draft_range;   /* DRAFTING > DRAFT DISTANCE: 0 close, 1 regular (the default), 2 far (runtime g_draft_range) */
     bool battle_cpus;  /* MODS > SINGLE PLAYER BATTLE MODE (default on): battles filled up to 4 karts with computer karts */
     int battle_karts;  /* MODS > BATTLE KARTS (default 4): the karts in a 1-player battle, 4 to 8 */
     int bomb_hits;     /* MODS > BOB-OMB HITS TO WIN (default 4, the game's): in a 1-player Bob-omb Blast, 4 to 20 */

@@ -4,6 +4,7 @@
  * game image with one small instanced program (see "drawing"); the start-up screen
  * (menu_loading) uses the same pieces. */
 #include <ctype.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -148,6 +149,10 @@ static void defaults(void) {
     g_set.mt_speed = g_set.mt_length = 0;
     g_set.mt_cpu = false;
     g_set.perfect_start = false;
+    g_set.draft = 0;
+    g_set.draft_cpu = 2;
+    g_set.draft_power = 1;
+    g_set.draft_range = 1;
     g_set.battle_cpus = true;
     g_set.battle_karts = 4;
     g_set.bomb_hits = 4;
@@ -233,6 +238,10 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "mt_speed")) g_set.mt_speed = atoi(v) < 0 ? 0 : atoi(v) >= MT_N_SPEEDS ? MT_N_SPEEDS - 1 : atoi(v);
         else if (!strcmp(k, "mt_cpu")) g_set.mt_cpu = atoi(v) != 0;
         else if (!strcmp(k, "perfect_start")) g_set.perfect_start = atoi(v) != 0;
+        else if (!strcmp(k, "drafting")) g_set.draft = atoi(v) > 0; /* earlier builds' 1 light, 2 strong: on */
+        else if (!strcmp(k, "cpu_draft")) g_set.draft_cpu = atoi(v) < 0 || atoi(v) > 2 ? 2 : atoi(v);
+        else if (!strcmp(k, "draft_strength")) g_set.draft_power = atoi(v) < 0 || atoi(v) > 2 ? 1 : atoi(v);
+        else if (!strcmp(k, "draft_distance")) g_set.draft_range = atoi(v) < 0 || atoi(v) > 2 ? 1 : atoi(v);
         else if (!strcmp(k, "single_battle")) g_set.battle_cpus = atoi(v) != 0;
         else if (!strcmp(k, "battle_karts")) g_set.battle_karts = atoi(v) < 4 ? 4 : atoi(v) > 8 ? 8 : atoi(v);
         else if (!strcmp(k, "bomb_hits")) g_set.bomb_hits = atoi(v) < 4 ? 4 : atoi(v) > 20 ? 20 : atoi(v) & ~1;
@@ -326,6 +335,8 @@ void settings_save(void) {
             g_set.profiler, g_set.mod, g_set.handheld_res, g_set.hud_hide, g_set.hud_style, g_set.speed_kmh, g_set.camera, g_set.drv_up, g_set.drv_forward, g_set.drv_tilt, g_set.kart_up, g_set.kart_forward, g_set.kart_tilt, g_set.any_kart);
     fprintf(f, "gpu_test=%d\n", g_set.gpu_test);
     fprintf(f, "menu_hold=%d\n", g_set.menu_hold);
+    fprintf(f, "drafting=%d\ncpu_draft=%d\ndraft_strength=%d\ndraft_distance=%d\n", g_set.draft, g_set.draft_cpu,
+            g_set.draft_power, g_set.draft_range);
     fprintf(f, "mt_cpu=%d\nsingle_battle=%d\nbattle_karts=%d\nbomb_hits=%d\nperfect_start=%d\n", g_set.mt_cpu, g_set.battle_cpus, g_set.battle_karts, g_set.bomb_hits, g_set.perfect_start);
     fprintf(f, "mt_sweeps=%d\nmt_speed=%d\nmt_length=%d\njump=%d\nlaps=%d\nfree_camera=%d\ncamera_height=%d\ncamera_distance=%d\n", g_set.mt_sweeps, g_set.mt_speed,
             g_set.mt_length, g_set.jump, g_set.laps, g_set.free_cam, g_set.cam_height, g_set.cam_dist);
@@ -403,7 +414,7 @@ void color_adjust(float adj[3]) {
 /* Pages by what they change: graphics (the picture), controls (pads, buttons, rumble), game
  * (unlock all), multiplayer (LAN play), mods (MKDD Plus, HD textures), debugging (diagnostics), update. */
 enum { PAGE_MAIN, PAGE_MAP, PAGE_EXIT, PAGE_COLOR, PAGE_DEBUG, PAGE_GFX, PAGE_UPDATE, PAGE_CTRL, PAGE_GAME, PAGE_MODS, PAGE_HUD, PAGE_CHEATS, PAGE_SPECIAL, PAGE_CAM, PAGE_KART,
-       PAGE_MULTI, PAGE_LAN, PAGE_BATTLE, PAGE_COUNT };
+       PAGE_MULTI, PAGE_LAN, PAGE_BATTLE, PAGE_DRAFT, PAGE_COUNT };
 /* the main page's rows; UPDATE and DEBUG sit on EXIT GAME's row, at its right (LEFT/RIGHT there) */
 enum { M_GAME, M_GFX, M_CAM, M_CTRL, M_MULTI, M_MODS, M_CHEATS, M_EXIT, M_UPDATE, M_DEBUG, M_COUNT };
 enum { MD_MOD, MD_AUDIO, MD_HD, MD_CHARS, MD_KARTS, MD_RESTART, MD_BACK, MD_COUNT };
@@ -499,7 +510,12 @@ static void upper(char *dst, size_t size, const char *s) {
     dst[i] = 0;
 }
 enum { C_MAP, C_JOYMAP, C_SYNC, C_HOLD, C_BACK, C_COUNT };
-enum { GM_STYLE, GM_UNITS, GM_HUD, GM_JUMP, GM_RUMBLE, GM_BATTLE, GM_BACK, GM_COUNT };
+enum { GM_STYLE, GM_UNITS, GM_HUD, GM_JUMP, GM_DRAFT, GM_RUMBLE, GM_BATTLE, GM_BACK, GM_COUNT };
+/* DRAFTING's page (A on GAME's row while it is on) */
+enum { DR_CPU, DR_POWER, DR_RANGE, DR_BACK, DR_COUNT };
+static const char *DRAFT_CPU_NAMES[3] = {"OFF", "WEAKER", "SAME AS YOU"};
+static const char *DRAFT_POWER_NAMES[3] = {"WEAK", "MEDIUM", "STRONG"};
+static const char *DRAFT_RANGE_NAMES[3] = {"CLOSE", "REGULAR", "FAR"};
 /* SINGLE PLAYER BATTLE MODE's page (A on GAME's row while it is on) */
 enum { BT_KARTS, BT_HITS, BT_BACK, BT_COUNT };
 enum { CA_VIEW, CA_HEIGHT, CA_DIST, CA_FOV, CA_FREE, CA_BACK, CA_COUNT };
@@ -549,6 +565,7 @@ void cheats_apply(void) {
     if (g_lan_play) { /* the game's own on every console (rt.h) */
         g_mt_sweeps = 3, g_mt_speed = 1.3f, g_mt_length = 1.0f, g_mt_cpu = 0;
         g_perfect_start = 0;
+        g_draft = 0;
         g_battle_cpus = g_set.battle_cpus; /* battle.c keeps Wi-Fi races the game's own */
         g_battle_karts = (uint32_t)g_set.battle_karts;
         g_bomb_hits = (uint32_t)g_set.bomb_hits;
@@ -561,6 +578,9 @@ void cheats_apply(void) {
     g_mt_length = MT_LENGTHS[g_set.mt_length % MT_N_LENGTHS].v;
     g_mt_cpu = g_set.mt_cpu;
     g_perfect_start = g_set.perfect_start;
+    g_draft = g_set.draft ? (uint32_t)(g_set.draft_power % 3) + 1 : 0;
+    g_draft_cpu = (uint32_t)(g_set.draft_cpu % 3);
+    g_draft_range = (uint32_t)(g_set.draft_range % 3);
     g_battle_cpus = g_set.battle_cpus;
     g_battle_karts = (uint32_t)g_set.battle_karts;
     g_bomb_hits = (uint32_t)g_set.bomb_hits;
@@ -651,6 +671,7 @@ static int page_rows(int page) {
     case PAGE_GFX: return G_COUNT;
     case PAGE_GAME: return GM_COUNT;
     case PAGE_BATTLE: return BT_COUNT;
+    case PAGE_DRAFT: return DR_COUNT;
     case PAGE_CAM: return CA_COUNT;
     case PAGE_KART: return KA_COUNT;
     case PAGE_CHEATS: return CH_COUNT;
@@ -668,7 +689,7 @@ static int page_rows(int page) {
 /* B goes back one page: colour to graphics, button mapping to controls, race HUD to game,
  * everything else to the main page. */
 static int page_parent(int page) {
-    return page == PAGE_COLOR ? PAGE_GFX : page == PAGE_MAP ? PAGE_CTRL : page == PAGE_HUD || page == PAGE_BATTLE ? PAGE_GAME
+    return page == PAGE_COLOR ? PAGE_GFX : page == PAGE_MAP ? PAGE_CTRL : page == PAGE_HUD || page == PAGE_BATTLE || page == PAGE_DRAFT ? PAGE_GAME
            : page == PAGE_SPECIAL ? PAGE_CHEATS : page == PAGE_KART ? PAGE_CAM : page == PAGE_LAN ? PAGE_MULTI : PAGE_MAIN;
 }
 
@@ -886,7 +907,20 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
             if (ok && g_set.battle_cpus) { s_page = PAGE_BATTLE; s_sel[PAGE_BATTLE] = 0; break; }
             g_set.battle_cpus = !g_set.battle_cpus; cheats_apply(); settings_save();
             break;
+        case GM_DRAFT:
+            if (ok && g_set.draft) { s_page = PAGE_DRAFT; s_sel[PAGE_DRAFT] = 0; break; }
+            g_set.draft = !g_set.draft; cheats_apply(); settings_save();
+            break;
         case GM_BACK: if (ok) s_page = PAGE_MAIN; break;
+        }
+        return true;
+    }
+    if (s_page == PAGE_DRAFT && (ok || side)) {
+        switch (*sel) {
+        case DR_CPU: g_set.draft_cpu = (g_set.draft_cpu + (left ? 2 : 1)) % 3; cheats_apply(); settings_save(); break;
+        case DR_POWER: g_set.draft_power = (g_set.draft_power + (left ? 2 : 1)) % 3; cheats_apply(); settings_save(); break;
+        case DR_RANGE: g_set.draft_range = (g_set.draft_range + (left ? 2 : 1)) % 3; cheats_apply(); settings_save(); break;
+        case DR_BACK: if (ok) { s_page = PAGE_GAME; s_sel[PAGE_GAME] = GM_DRAFT; } break;
         }
         return true;
     }
@@ -1010,7 +1044,7 @@ const char *font_glyph(char c) {
  * shape: a 5x7 bitmap glyph, a solid box, a MarioFont letter (atlas from the disc), a rounded
  * box, a star or a right-pointing arrow. No buffers to manage, ~100 instances a frame. */
 #define BATCH GFX_UI_BATCH
-enum { SH_GLYPH, SH_BOX, SH_FONT, SH_ROUND, SH_STAR, SH_ARROW, SH_IMAGE };
+enum { SH_GLYPH, SH_BOX, SH_FONT, SH_ROUND, SH_STAR, SH_ARROW, SH_IMAGE, SH_LINE };
 static GfxUiBatch s_b;
 static int s_n;
 static GfxTex s_tex; /* the batch's texture: the font atlas or a picture */
@@ -1052,6 +1086,64 @@ static void round_box(float x, float y, float w, float h, float r, uint32_t c) {
 }
 static void star(float cx, float cy, float r, uint32_t c) { quad(cx - r, cy - r, 2 * r, 2 * r, c, c, SH_STAR, 0, 0, NULL); }
 static void arrow(float x, float y, float w, float h, uint32_t c) { quad(x, y, w, h, c, c, SH_ARROW, 0, 0, NULL); }
+/* a line (x0, y0) to (x1, y1), wd px wide, colour c0 at its start to c1 at its end */
+static void line(float x0, float y0, float x1, float y1, float wd, uint32_t c0, uint32_t c1) {
+    float m = wd + 1, lx = (x0 < x1 ? x0 : x1) - m, ly = (y0 < y1 ? y0 : y1) - m;
+    const float par[4] = {x0 - lx, y0 - ly, x1 - lx, y1 - ly};
+    quad(lx, ly, fabsf(x1 - x0) + 2 * m, fabsf(y1 - y0) + 2 * m, c0, c1, SH_LINE, (uint32_t)(wd * 16), 0, par);
+}
+
+/* DRAFTING's wind streaks (native.c sets g_draft_show): a slipstream, thin white lines hugging the
+ * kart's sides as they stream past it toward the camera, along the road's perspective: each runs on
+ * a ray from the vanishing point (the screen's middle) through a point beside the kart's middle
+ * (where the chase camera puts it: the middle, about three quarters down), starting there (none
+ * ahead of the kart) and fanning at half the perspective's rate (held close to the body). 16 to 40
+ * of them, more and brighter as the meter fills, brightest during the boost. Screens: one player whole, two top and bottom, three or four in quarters. Gone
+ * once the karts stop updating (pause, the race over) for a fifth of a second. */
+static bool draft_streaks_on(void) {
+    static uint32_t seen;
+    static uint64_t at;
+    uint32_t q = g_draft_seq;
+    uint64_t now = plat_now_ns();
+    if (q != seen) seen = q, at = now;
+    if (!g_draft || !at || now - at > 200000000ull) return false;
+    for (unsigned v = 0; v < 4 && v < g_draft_views; v++)
+        if (g_draft_show[v] > 0.01f) return true;
+    return false;
+}
+static void draft_streaks(int w, int h) {
+    unsigned views = g_draft_views > 4 ? 4 : g_draft_views;
+    float t = (float)(plat_now_ns() % 100000000000ull) / 1e9f, k = (float)h / 720.0f;
+    for (unsigned v = 0; v < views; v++) {
+        float s = g_draft_show[v];
+        if (!(s > 0.01f)) continue; /* NaN too */
+        if (s > 1.5f) s = 1.5f;
+        float vx = 0, vy = 0, vw = (float)w, vh = (float)h;
+        if (views == 2) vh /= 2, vy = v * vh;
+        else if (views > 2) vw /= 2, vh /= 2, vx = (v & 1) * vw, vy = (v >> 1) * vh;
+        float kx = vx + vw / 2, ky = vy + vh * 0.73f, rx = vw * 0.05f, ry = vh * 0.12f; /* the kart's outline */
+        float hx = kx, hy = vy + vh * 0.45f, bottom = vy + vh;                         /* the vanishing point */
+        float len = 0.2f + 0.1f * (s > 1 ? 1 : s); /* along the ray, the base point at 1 */
+        unsigned lines = 16 + (unsigned)(24 * (s > 1 ? 1 : s));
+        float wd = (s > 1 ? 2.0f : 1.5f) * k * (views > 1 ? 0.7f : 1.0f);
+        float a = s > 1 ? 150 : 50 + 70 * s;
+        for (unsigned i = 0; i < lines; i++) {
+            float f = (float)i * 0.618034f, g = (float)i * 0.754878f + 0.31f;
+            f -= floorf(f), g -= floorf(g);
+            float side = (i & 1) ? 1.0f : -1.0f, umax = 1.8f;
+            float bx = kx + side * rx * (0.85f + 0.25f * f), by = ky + ry * 0.3f * (g - 0.5f); /* the body's middle */
+            float ph = t * (1.1f + 0.15f * (float)(i % 4)) + (float)i * 0.29f;
+            ph -= floorf(ph);
+            float u0 = 1.0f + (umax - 1.0f) * ph, u1 = u0 + len;
+            if (u1 > umax) u1 = umax;
+            if (by > hy && hy + (by - hy) * u1 > bottom) u1 = (bottom - hy) / (by - hy); /* inside its screen */
+            float x0 = bx + (bx - hx) * (u0 - 1) * 0.5f, y0 = hy + (by - hy) * u0, x1 = bx + (bx - hx) * (u1 - 1) * 0.5f, y1 = hy + (by - hy) * u1;
+            if ((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0) < 9 * k * k) continue;
+            uint32_t fade = (uint32_t)(a * (ph < 0.15f ? ph / 0.15f : ph > 0.7f ? (1 - ph) / 0.3f : 1.0f));
+            line(x0, y0, x1, y1, wd, 0xFFFFFF00u | fade / 3, 0xFFFFFF00u | fade);
+        }
+    }
+}
 
 /* 5x7 bitmap text at (x, y) with glyph pixel size px; returns the width. */
 static float text(float x, float y, float px, uint32_t rgba_, const char *s) {
@@ -1199,10 +1291,12 @@ void menu_draw(int w, int h, float fps, const char *perf) {
         any_label = any_label || label[i];
         if (label[i]) { labels++; if (i >= 2) label_rows = 2; }
     }
-    if (!s_open && !g_set.show_fps && !any_label) return;
+    bool streaks = !s_open && draft_streaks_on();
+    if (!s_open && !g_set.show_fps && !any_label && !streaks) return;
     menu_font_load();
     if (!begin(w, h, false)) return;
     float k = (float)h / 720.0f;
+    if (streaks) draft_streaks(w, h);
 
     for (int i = 0; i < 4; i++) {
         if (!label[i]) continue;
@@ -1254,7 +1348,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
         const char *title = s_page == PAGE_MAP ? (s_mset ? "JOY-CON SIDEWAYS" : "BUTTON MAPPING") : s_page == PAGE_EXIT ? "EXIT THE GAME?"
                             : s_page == PAGE_COLOR ? "COLOR" : s_page == PAGE_DEBUG ? "DEBUG"
                             : s_page == PAGE_GFX ? "GRAPHICS" : s_page == PAGE_UPDATE ? "UPDATE"
-                            : s_page == PAGE_CTRL ? "CONTROLS" : s_page == PAGE_GAME ? "GAME" : s_page == PAGE_BATTLE ? "SINGLE PLAYER BATTLE" : s_page == PAGE_CAM ? "CAMERA" : s_page == PAGE_KART ? (g_set.camera == 2 ? "KART FPV" : "DRIVER FPV")
+                            : s_page == PAGE_CTRL ? "CONTROLS" : s_page == PAGE_GAME ? "GAME" : s_page == PAGE_BATTLE ? "SINGLE PLAYER BATTLE" : s_page == PAGE_DRAFT ? "DRAFTING" : s_page == PAGE_CAM ? "CAMERA" : s_page == PAGE_KART ? (g_set.camera == 2 ? "KART FPV" : "DRIVER FPV")
                             : s_page == PAGE_MODS ? "MODS" : s_page == PAGE_MULTI ? "MULTIPLAYER" : s_page == PAGE_LAN ? "LAN PLAY" : s_page == PAGE_HUD ? "HUD ASSETS" : s_page == PAGE_CHEATS ? "CHEATS" : s_page == PAGE_SPECIAL ? "SPECIAL ITEMS" : "OPTIONS";
         panel(x, y, pw, ph, k, title);
         {
@@ -1405,10 +1499,11 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s == LN_RESTART               ? restart_hint()
                                                    : "B: BACK";
         } else if (s_page == PAGE_GAME) {
-            static const char *labels[GM_COUNT] = {"RACE HUD", "SPEED", "HUD ASSETS", "JUMP HEIGHT", "RUMBLE STRENGTH", "SINGLE PLAYER BATTLE MODE", "BACK"};
+            static const char *labels[GM_COUNT] = {"RACE HUD", "SPEED", "HUD ASSETS", "JUMP HEIGHT", "DRAFTING", "RUMBLE STRENGTH", "SINGLE PLAYER BATTLE MODE", "BACK"};
             const char *values[GM_COUNT] = {HUD_STYLES[g_set.hud_style], g_set.speed_kmh ? "KMH" : "MPH", hud_value(),
-                                            JUMP_NAMES[g_set.jump & 3], RUMBLE_NAMES[g_set.rumble % 3], g_set.battle_cpus ? "ON" : "OFF", NULL};
-            const bool more[GM_COUNT] = {false, false, true, false, false, g_set.battle_cpus, false};
+                                            JUMP_NAMES[g_set.jump & 3], g_set.draft ? "ON" : "OFF", RUMBLE_NAMES[g_set.rumble % 3],
+                                            g_set.battle_cpus ? "ON" : "OFF", NULL};
+            const bool more[GM_COUNT] = {false, false, true, false, g_set.draft != 0, false, g_set.battle_cpus, false};
             for (int i = 0; i < GM_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, GM_COUNT), pw, rh, k, s_sel[PAGE_GAME] == i, labels[i], values[i], more[i]);
             hint = s_sel[PAGE_GAME] == GM_STYLE ? (g_set.hud_style == 2 ? "ONE BAR ACROSS THE TOP, REAR-VIEW MIRROR, RACE ORDER BELOW. 1 PLAYER" : g_set.hud_style == 1 ? "MODERN: SMALLER, IN THE CORNERS. 1 TO 4 PLAYERS" : "THE GAME'S OWN")
                    : s_sel[PAGE_GAME] == GM_UNITS ? "SPEEDOMETER IN MILES OR KILOMETRES PER HOUR"
@@ -1416,9 +1511,21 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s_sel[PAGE_GAME] == GM_BATTLE ? (g_set.battle_cpus ? "A: BATTLE KARTS, BOB-OMB HITS   LEFT/RIGHT: OFF"
                                                                         : "CPUS FILL BATTLES TO 4 KARTS. 1 PLAYER: BATTLE ON THE MODE PAGE")
                    : s_sel[PAGE_GAME] == GM_RUMBLE ? "VIBRATION STRENGTH. THE GAME'S OWN RUMBLE OPTION MUST BE ON TOO"
+                   : s_sel[PAGE_GAME] == GM_DRAFT ? (g_lan_play ? "OFF IN LAN PLAY"
+                                                    : g_set.draft ? "A: CPU DRAFTING, STRENGTH, DISTANCE   LEFT/RIGHT: OFF"
+                                                                  : "STAY BEHIND A KART AT SPEED TO FILL UP, THEN BOOST. GP AND VS")
                    : s_sel[PAGE_GAME] == GM_JUMP ? (g_set.map[MAP_JUMP] ? "ONE HOP PER PRESS OF THE JUMP BUTTON"
                                                                        : "GIVE JUMP A BUTTON: CONTROLS > BUTTON MAPPING")
                                                  : "B: BACK";
+        } else if (s_page == PAGE_DRAFT) {
+            static const char *labels[DR_COUNT] = {"CPU DRAFTING", "DRAFT STRENGTH", "DRAFT DISTANCE", "BACK"};
+            const char *values[DR_COUNT] = {DRAFT_CPU_NAMES[g_set.draft_cpu % 3], DRAFT_POWER_NAMES[g_set.draft_power % 3],
+                                            DRAFT_RANGE_NAMES[g_set.draft_range % 3], NULL};
+            for (int i = 0; i < DR_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, DR_COUNT), pw, rh, k, s_sel[PAGE_DRAFT] == i, labels[i], values[i], false);
+            hint = s_sel[PAGE_DRAFT] == DR_CPU     ? "COMPUTER KARTS DRAFTING TOO. WEAKER: SLOWER TO FILL, SHORTER BOOST"
+                   : s_sel[PAGE_DRAFT] == DR_POWER ? "HOW LONG THE DRAFT BOOST LASTS"
+                   : s_sel[PAGE_DRAFT] == DR_RANGE ? "HOW FAR BEHIND A KART A DRAFT STARTS"
+                                                   : "B: BACK";
         } else if (s_page == PAGE_BATTLE) {
             static const char *labels[BT_COUNT] = {"BATTLE KARTS", "BOB-OMB HITS TO WIN", "BACK"};
             char karts_value[8], hits_value[8];

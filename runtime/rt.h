@@ -338,6 +338,13 @@ extern volatile uint32_t g_battle_karts; /* MODS > BATTLE KARTS: the karts in a 
 extern volatile uint32_t g_bomb_hits; /* MODS > BOB-OMB HITS TO WIN: in a 1-player Bob-omb Blast, 4 (the game's) to 20 */
 extern volatile int g_bt_kind, g_bt_starts; /* debug (tools/battle_test.sh): the battle type (-1 off), the starts an arena keeps (0 all) */
 extern volatile uint32_t g_perfect_start; /* PERFECT STARTS (cheats): every player's kart gets the start boost */
+/* DRAFTING (native.c): 0 off, 1 weak, 2 medium, 3 strong; g_draft_cpu for computer karts: 0 none, 1 weaker,
+ * 2 the same; g_draft_range the distance to catch one: 0 close, 1 regular, 2 far */
+extern volatile uint32_t g_draft, g_draft_cpu, g_draft_range;
+/* the streaks (menu.c): g_draft_show[v] for the v-th player kart's screen (0 none, up to 1 the meter
+ * filling, 1.5 the boost), g_draft_views player karts, g_draft_seq counts the frames that set them */
+extern volatile float g_draft_show[4];
+extern volatile uint32_t g_draft_views, g_draft_seq;
 /* SPECIAL ITEMS, by character ID (1-20): 0 the character's own special, an item kind (fireballs 7,
  * heart 0x11, egg 0xe, chain chomp 0x15, golden mushroom 8, triple shells 0xb, giant banana 4,
  * Bowser shell 1, bob-omb 0xc) or SPECIAL_ANY (all of them, as Petey and King Boo), from the next race. */
