@@ -9,92 +9,53 @@ Note: This is an AI assisted project.
 
 ## Features
 
-**Game**
+**Platforms**
 
-- **Windows x64 build:** `MKDD-NX-Windows-<version>.zip` from the releases, the same game, menu and
-  mods on a PC, with a launcher for settings, controllers, keys and mods. See
-  [Windows](https://github.com/digdat0/mkdd-nx/wiki/Windows).
-- Close to 60 fps at stock Switch clocks; the heaviest moments drop a few frames. 
-- Plays the USA release (GM4E01) from an `.iso`, `.gcm`, `.ciso` or `.rvz` disc image.
-- 4:3 or 16:9. In 16:9 the game camera is genuinely wider rather than stretched.
-- Field of view options: Normal, Wide, Wider, Widest, Wideee.
-- **Single player battle mode:** Balloon Battle, Shine Thief and Bob-omb Blast against three computer
-  karts, on the game's six arenas and all 24 of MKDD Plus's. The CPUs drive routes built into the app,
-  chase karts and item boxes, aim their items and run when down to their last balloon. See
-  [Battle mode](#battle-mode).
-- **Kart FPV and Driver FPV:** first person with the kart's front in view, or from the driver's eyes. Each of the 21 karts has its own Kart FPV view; the - menu's eye settings add to it, saved for each kart.
-  The eye follows the driver's head, so every kart and character sits right; height, forward and
-  tilt are adjustable. Per player, on the right stick click.
-- **LAN play over Wi-Fi:** the game's own LAN mode, between Switches on the same Wi-Fi network, with
-  no cables or adapters. Standard game only. See [LAN play](#lan-play).
-- **Two players side by side:** split screen left and right instead of top and bottom, with a
-  HUD laid out for it (Multiplayer > Split screen).
-- **Character packs:** extra characters from GameBanana and the MKDD wiki on more select screen
-  pages, with a third row (30 characters a page) when there are extra characters. A custom character
-  and the one it plays as can now race together. See [Mods](#mods).
-- **Mario Kart Wii drivers:** MKDD-NX Tools converts a Mario Kart Wii driver into a character, making
-  oversized textures smaller as it goes. See
-  [Wii Characters](https://github.com/digdat0/mkdd-nx/wiki/Wii-Characters).
-- **Characters for a real GameCube:** MKDD-NX Tools can also export characters (native or converted
-  from Wii) as MKDD Patcher mods, to patch into your own disc image for a GameCube or Dolphin.
-- Camera options: rear view on Y, camera height and distance, and a free camera on the right stick
-  that turns 360° around your kart.
-- Texture filtering: 2x, 4x, 8x or 16x anisotropic.
-- Higher  resolution: up to 4x docked (1080p output) and 3x handheld, with an Auto mode
-  that lowers it only when the frame rate would drop.
-- Colour options: Accurate, Vivid, or your own brightness, contrast and saturation.
-- Up to 4 players, controller syncing from the game menu, single Joy-Cons held sideways, and
-  button remapping (full controllers and single Joy-Cons separately).
-- Clocks are left to the system by default, so overclock tools work as set (**Debug > Clocks**).
-- Unlock-all option that never touches your save.
-- Race HUD options: a MODERN style for 1 to 4 players, a DASHBOARD style for 1 player (one bar
-  across the top with a speed dial, a rear-view mirror, every kart's place along the bottom; more
-  players get MODERN), MPH or KMH, and hiding the position, items, laps, map, speedometer, race
-  order, timer or (DASHBOARD) mirror one by one.
-- Jump button, and 1 to 7 laps per Grand Prix or Versus race.
-- **Tricks** (**Game > Tricks**, off by default): off a ramp or a drop, the D-pad or a stick flick
-  flips or spins your kart (front flip, backflip, 360, barrel roll), with doubles, corkscrews,
-  whips, tabletops and combos; JUMP in the air makes your rider do a superman or a cliffhanger.
-  Land clean for a boost; **On + Wipeouts** spins you out if you land mid-trick. A press close to
-  the landing stays steering, so you can set up the next turn. Off in LAN play. Every press and
-  combo: [Tricks](https://github.com/digdat0/mkdd-nx/wiki/Tricks).
-- **Each player's own camera and buttons:** players 2 to 4 pressing − get their own menu
-  (camera view, height, distance, free camera, button mapping); the game's settings stay player 1's.
-- Drafting (**Game > Drafting**, off by default): line up right behind another kart at speed and
-  wind streaks show the slipstream filling; stay in it for about 1.25 seconds for a short
-  mushroom-style boost. Grand Prix and Versus only, off in LAN play. Press A on it for
-  **CPU Drafting** (Off, Weaker or Same As You, the default), **Draft Strength** (how long the
-  boost lasts: Weak, Medium (the default) or Strong) and **Draft Distance** (how far behind a
-  draft starts: Close, Regular (the default) or Far).
-- Cheats: no weight classes, any special item for any character, stronger mini-turbos (fewer
-  sweeps, more speed, longer boosts, for CPUs too if you like) and perfect starts.
-- In-game updater that installs the latest GitHub release.
-- On-screen FPS counter, and debug logging for bug reports (both under Debug).
+- Nintendo Switch (`.nro`) and Windows x64 (`.exe` with a launcher: see [Windows](https://github.com/digdat0/mkdd-nx/wiki/Windows)).
+- Plays the USA release (GM4E01) from `.iso`, `.gcm`, `.ciso` or `.rvz`.
+- In-game updater on Switch.
 
-**Resolution**
+**Gameplay**
 
-- **Handheld:** the 1280×720 screen. By default (Auto) the game renders at 1.5× (960×720) and steps
-  down to 1.25× or the original GameCube resolution (about 640×480) when the frame rate would drop.
-  2× and 3× are fixed choices that don't step down: 3× runs at about 30 fps at stock clocks and needs an overclock for 60.
-  4:3 shows a picture with bars at the sides. 16:9 fills the screen with a
-  wider camera, not a stretch; the field of view setting picks how wide.
-- **Docked:** the output is 1080p. By default (Auto) the game renders at 2× (1280×960) and steps
-  down to 1.75×, 1.5× or 1.25× when the frame rate would drop.
-  3× and 4× are fixed choices that don't step down. At stock clocks 4× holds about 60 fps with one player
-  (N64 Toad's Turnpike, the heaviest track, about 56); with 2 to 4 players the CPU is the limit and it runs slower.
+- **Tricks:** flips, spins, doubles, combos and rider tricks off ramps, with a landing boost. See [Tricks](https://github.com/digdat0/mkdd-nx/wiki/Tricks).
+- **Drafting:** a slipstream boost behind other karts.
+- **Single player battles** against three CPUs on the game's 6 arenas and MKDD Plus's 24. See [Battle mode](#battle-mode).
+- **LAN play over Wi-Fi** between Switches and PCs, no adapters. See [LAN play](#lan-play).
+- Jump button, 1 to 7 laps per race.
+- Cheats: no weight classes, any special item, stronger mini-turbos, perfect starts, unlock all (your save is never touched).
 
-**Mods**
+**Players and controls**
 
-- The [MKDD HD texture pack](https://sites.google.com/view/mkddhd/home-page): see [HD Textures](https://github.com/digdat0/mkdd-nx/wiki/HD-Textures-App).
-- The [Mario Kart: Double Dash!! Plus](https://mkdd.org/wiki/Mario_Kart:_Double_Dash!!_Plus) mod (v3.3 NTSC):
-  see [MKDD Plus](https://github.com/digdat0/mkdd-nx/wiki/MKDD-Plus).
-- The [Retro Track Grand Prix 2.1](https://gamebanana.com/mods/594415) mod: see [Retro Track Grand Prix](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix).
-- Its two alternate versions, [RTGP Baby Mode 1.4](https://gamebanana.com/mods/download/594415) (easier, for newcomers:
-  `rtgp_baby_mode_1_4.zip`) and [RTGP Classic 1.4](https://gamebanana.com/mods/download/594415) (with the classic
-  soundtrack: `mario_kart_double_dash_rtgp_classic_ost.zip`): see [Retro Track Grand Prix](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix#baby-mode-and-classic).
-- Custom characters from [GameBanana](https://gamebanana.com/games/6555) and the
-  [MKDD wiki](https://mkdd.org/wiki/List_of_Custom_Characters/): see [Characters App](https://github.com/digdat0/mkdd-nx/wiki/Characters-App).
-- Mario Kart Wii drivers (`.szs`), converted into characters: see [Wii Characters](https://github.com/digdat0/mkdd-nx/wiki/Wii-Characters).
+- Up to 4 players, side-by-side split screen for two.
+- Each player gets their own camera and button mapping.
+- Button remapping, single sideways Joy-Cons, GameCube controllers, rumble.
+
+**Camera**
+
+- **Driver FPV and Kart FPV** first person, tuned per kart.
+- Rear view, camera height and distance, and a 360° free camera.
+- Field of view from Normal to Wideee.
+
+**Graphics**
+
+- Close to 60 fps at stock Switch clocks.
+- True 16:9: a wider camera, not a stretch.
+- Up to 4x resolution docked and 3x handheld, with an Auto mode that keeps the frame rate.
+- Anisotropic filtering and colour options.
+- Race HUD styles: Classic, Modern and Dashboard (speed dial and rear-view mirror), MPH or KMH, every piece can be hidden.
+
+**Mods** (see [Mods](#mods))
+
+- [MKDD Plus](https://github.com/digdat0/mkdd-nx/wiki/MKDD-Plus) 3.3, with its stereo music.
+- [Retro Track Grand Prix](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix) 2.1, Baby Mode and Classic.
+- [HD textures](https://github.com/digdat0/mkdd-nx/wiki/HD-Textures-App).
+- Up to 256 [custom characters](https://github.com/digdat0/mkdd-nx/wiki/Characters-App) and [extra karts](https://github.com/digdat0/mkdd-nx/wiki/Extra-Karts).
+- Mario Kart Wii [drivers](https://github.com/digdat0/mkdd-nx/wiki/Wii-Characters) and [karts](https://github.com/digdat0/mkdd-nx/wiki/Wii-Karts), converted with MKDD-NX Tools; characters can also be exported for a real GameCube.
+
+**Resolution details**
+
+- **Handheld (1280×720):** Auto renders at 1.5× (960×720) and steps down when needed; 2× and 3× are fixed (3× needs an overclock for 60 fps).
+- **Docked (1080p):** Auto renders at 2× (1280×960) and steps down when needed; 3× and 4× are fixed (4× holds about 60 fps with one player).
 
 ## Getting started
 
