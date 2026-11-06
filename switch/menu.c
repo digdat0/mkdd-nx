@@ -79,9 +79,13 @@ static const SwButton JOY_BUTTONS[] = {
 };
 /* the set BUTTON MAPPING shows and edits: 0 full controllers, 1 a single Joy-Con sideways */
 static int s_mset;
+/* whose CAMERA and BUTTON MAPPING the menu shows and edits: 0 player 1 (g_set's own fields), 1-3
+ * players 2-4 (g_set.pl[s_mpl - 1]), the one who opened it */
+static int s_mpl;
+#define ED(f) (*(s_mpl ? &g_set.pl[s_mpl - 1].f : &g_set.f))
 #define SW_BUTTONS (s_mset ? JOY_BUTTONS : FULL_BUTTONS)
 #define N_SW (s_mset ? (int)(sizeof JOY_BUTTONS / sizeof JOY_BUTTONS[0]) : (int)(sizeof FULL_BUTTONS / sizeof FULL_BUTTONS[0]))
-#define CUR_MAP (s_mset ? g_set.jmap : g_set.map)
+#define CUR_MAP (s_mset ? ED(jmap) : ED(map))
 #define CUR_DEFAULT (s_mset ? JOY_DRIVE_DEFAULT : MAP_DRIVE_DEFAULT)
 static uint64_t mappable(void) {
     uint64_t m = 0;
@@ -168,6 +172,7 @@ static void defaults(void) {
     g_set.battle_karts = 4;
     g_set.bomb_hits = 4;
     g_set.jump = 2; /* MID, on ZL (g_map_default) */
+    g_set.tricks = 0;
     g_set.laps = 0;
     g_set.free_cam = 1; /* SNAP BACK */
     g_set.cam_height = 2; /* REGULAR */
@@ -233,6 +238,10 @@ void settings_load(const char *path) {
     bool view_seen = false; /* settings from before DRIVER FPV: their camera (and its eye height) moved over */
     int old_view = 0;
     int map_version = 0; /* 2: GameCube L has driving buttons (ZL, a Joy-Con's SL) */
+    /* players 2-4 (p2_* .. p4_*): what a player's file names; the rest from player 1's after reading */
+    enum { PS_VIEW = 1, PS_HEIGHT = 2, PS_DIST = 4, PS_FREE = 8, PS_MAP = 16, PS_JMAP = 32 };
+    unsigned pseen[3] = {0, 0, 0};
+    for (int i = 0; i < 3; i++) memset(&g_set.pl[i], 0, sizeof g_set.pl[i]);
     while (fgets(line, sizeof line, f)) {
         char *eq = strchr(line, '=');
         if (!eq) continue;
@@ -240,6 +249,20 @@ void settings_load(const char *path) {
         char *v = eq + 1;
         v[strcspn(v, "\r\n")] = 0; /* text values (mod) must not keep the line end */
         const char *k = line;
+        if (k[0] == 'p' && k[1] >= '2' && k[1] <= '4' && k[2] == '_') {
+            int i = k[1] - '2', n = atoi(v);
+            PlayerSet *ps = &g_set.pl[i];
+            const char *pk = k + 3;
+            if (!strcmp(pk, "camera_view")) ps->camera = n < 0 || n > 2 ? 0 : n, pseen[i] |= PS_VIEW;
+            else if (!strcmp(pk, "camera_height")) ps->cam_height = n < 0 || n > 3 ? 2 : n, pseen[i] |= PS_HEIGHT;
+            else if (!strcmp(pk, "camera_distance")) ps->cam_dist = n < 0 || n > 4 ? 2 : n, pseen[i] |= PS_DIST;
+            else if (!strcmp(pk, "free_camera")) ps->free_cam = n < 0 || n > 3 ? 1 : n, pseen[i] |= PS_FREE;
+            else
+                for (int j = 0; j < MAP_COUNT; j++)
+                    if (!strcmp(pk, GC_KEYS[j])) ps->map[j] = strtoull(v, NULL, 16), pseen[i] |= PS_MAP;
+                    else if (!strcmp(pk, JOY_KEYS[j])) ps->jmap[j] = strtoull(v, NULL, 16), pseen[i] |= PS_JMAP;
+            continue;
+        }
         /* display: 0 = 4:3, otherwise 16:9 (older builds: 1 stretched, 2 wide view; "widescreen" before 0814) */
         if (!strcmp(k, "display") || !strcmp(k, "widescreen")) g_set.wide = atoi(v) != 0;
         else if (!strcmp(k, "show_fps")) g_set.show_fps = atoi(v) < 0 ? 0 : atoi(v) > 2 ? 2 : atoi(v);
@@ -258,6 +281,7 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "battle_karts")) g_set.battle_karts = atoi(v) < 4 ? 4 : atoi(v) > 8 ? 8 : atoi(v);
         else if (!strcmp(k, "bomb_hits")) g_set.bomb_hits = atoi(v) < 4 ? 4 : atoi(v) > 20 ? 20 : atoi(v) & ~1;
         else if (!strcmp(k, "mt_length")) g_set.mt_length = atoi(v) < 0 ? 0 : atoi(v) >= MT_N_LENGTHS ? MT_N_LENGTHS - 1 : atoi(v);
+        else if (!strcmp(k, "tricks")) g_set.tricks = atoi(v) < 0 || atoi(v) > 2 ? 0 : atoi(v);
         else if (!strcmp(k, "jump")) g_set.jump = atoi(v) < 0 || atoi(v) > 3 ? 0 : atoi(v);
         else if (!strcmp(k, "laps")) g_set.laps = atoi(v) < 0 || atoi(v) > 7 ? 0 : atoi(v);
         else if (!strcmp(k, "free_camera")) g_set.free_cam = atoi(v) < 0 || atoi(v) > 3 ? 1 : atoi(v);
@@ -327,22 +351,38 @@ void settings_load(const char *path) {
             g_set.jmap[GC_L] = HidNpadButton_LeftSL, g_set.jmap[GC_R] &= ~HidNpadButton_LeftSL;
     }
     if (!kfp_seen && g_set.map[MAP_FP]) g_set.map[MAP_KFP] = g_set.map[MAP_FP], g_set.map[MAP_FP] = 0;
+    /* a player with keys of their own has their own settings; what their keys leave out is player 1's */
+    for (int i = 0; i < 3; i++) {
+        PlayerSet *ps = &g_set.pl[i];
+        if (!pseen[i]) continue;
+        ps->own = true;
+        if (!(pseen[i] & PS_VIEW)) ps->camera = g_set.camera;
+        if (!(pseen[i] & PS_HEIGHT)) ps->cam_height = g_set.cam_height;
+        if (!(pseen[i] & PS_DIST)) ps->cam_dist = g_set.cam_dist;
+        if (!(pseen[i] & PS_FREE)) ps->free_cam = g_set.free_cam;
+        if (!(pseen[i] & PS_MAP)) memcpy(ps->map, g_set.map, sizeof ps->map);
+        if (!(pseen[i] & PS_JMAP)) memcpy(ps->jmap, g_set.jmap, sizeof ps->jmap);
+    }
     /* one action per Switch button (older builds could give one button several), the first in
      * ACTIONS order kept; a required action left without one gets its default buttons back */
-    for (s_mset = 0; s_mset < 2; s_mset++) {
-        for (int i = 0; i < MAP_COUNT; i++) CUR_MAP[i] &= mappable();
-        for (int sw = 0; sw < N_SW; sw++) {
-            int a = button_action(sw);
-            for (int i = 0; i < MAP_COUNT; i++)
-                if (a == N_ACT || i != ACTIONS[a].gc) CUR_MAP[i] &= ~SW_BUTTONS[sw].bit;
-        }
-        if (!map_valid()) {
-            const char *name = "";
-            int n = map_fix(&name);
-            rt_log("settings: %s mapping missing %d required action(s) (%s), their default buttons back", s_mset ? "Joy-Con" : "button", n, name);
+    for (s_mpl = 0; s_mpl < 4; s_mpl++) {
+        if (s_mpl && !g_set.pl[s_mpl - 1].own) continue;
+        for (s_mset = 0; s_mset < 2; s_mset++) {
+            for (int i = 0; i < MAP_COUNT; i++) CUR_MAP[i] &= mappable();
+            for (int sw = 0; sw < N_SW; sw++) {
+                int a = button_action(sw);
+                for (int i = 0; i < MAP_COUNT; i++)
+                    if (a == N_ACT || i != ACTIONS[a].gc) CUR_MAP[i] &= ~SW_BUTTONS[sw].bit;
+            }
+            if (!map_valid()) {
+                const char *name = "";
+                int n = map_fix(&name);
+                rt_log("settings: player %d %s mapping missing %d required action(s) (%s), their default buttons back", s_mpl + 1,
+                       s_mset ? "Joy-Con" : "button", n, name);
+            }
         }
     }
-    s_mset = 0;
+    s_mset = 0, s_mpl = 0;
     apply_logging();
     if (map_version < 2) settings_save(); /* the moved buttons, once (settings_save logs them) */
     else settings_log();
@@ -361,7 +401,7 @@ void settings_save(void) {
     fprintf(f, "map_version=2\n");
     fprintf(f, "drafting=%d\ncpu_draft=%d\ndraft_strength=%d\ndraft_distance=%d\n", g_set.draft, g_set.draft_cpu,
             g_set.draft_power, g_set.draft_range);
-    fprintf(f, "mt_cpu=%d\nsingle_battle=%d\nbattle_karts=%d\nbomb_hits=%d\nperfect_start=%d\n", g_set.mt_cpu, g_set.battle_cpus, g_set.battle_karts, g_set.bomb_hits, g_set.perfect_start);
+    fprintf(f, "mt_cpu=%d\nsingle_battle=%d\nbattle_karts=%d\nbomb_hits=%d\nperfect_start=%d\ntricks=%d\n", g_set.mt_cpu, g_set.battle_cpus, g_set.battle_karts, g_set.bomb_hits, g_set.perfect_start, g_set.tricks);
     fprintf(f, "mt_sweeps=%d\nmt_speed=%d\nmt_length=%d\njump=%d\nlaps=%d\nfree_camera=%d\ncamera_height=%d\ncamera_distance=%d\n", g_set.mt_sweeps, g_set.mt_speed,
             g_set.mt_length, g_set.jump, g_set.laps, g_set.free_cam, g_set.cam_height, g_set.cam_dist);
     for (int i = 0; i < 21; i++)
@@ -378,7 +418,50 @@ void settings_save(void) {
     fputc('\n', f);
     for (int i = 0; i < MAP_COUNT; i++) fprintf(f, "%s=%llx\n", GC_KEYS[i], (unsigned long long)g_set.map[i]);
     for (int i = 0; i < MAP_COUNT; i++) fprintf(f, "%s=%llx\n", JOY_KEYS[i], (unsigned long long)g_set.jmap[i]);
+    for (int pl = 0; pl < 3; pl++) {
+        const PlayerSet *ps = &g_set.pl[pl];
+        if (!ps->own) continue;
+        fprintf(f, "p%d_camera_view=%d\np%d_camera_height=%d\np%d_camera_distance=%d\np%d_free_camera=%d\n", pl + 2, ps->camera, pl + 2,
+                ps->cam_height, pl + 2, ps->cam_dist, pl + 2, ps->free_cam);
+        for (int i = 0; i < MAP_COUNT; i++) fprintf(f, "p%d_%s=%llx\n", pl + 2, GC_KEYS[i], (unsigned long long)ps->map[i]);
+        for (int i = 0; i < MAP_COUNT; i++) fprintf(f, "p%d_%s=%llx\n", pl + 2, JOY_KEYS[i], (unsigned long long)ps->jmap[i]);
+    }
     fclose(f);
+}
+
+void player_set(int p, PlayerSet *out) {
+    if (p > 0 && p < 4 && g_set.pl[p - 1].own) { *out = g_set.pl[p - 1]; return; }
+    memset(out, 0, sizeof *out);
+    out->camera = g_set.camera, out->cam_height = g_set.cam_height, out->cam_dist = g_set.cam_dist, out->free_cam = g_set.free_cam;
+    memcpy(out->map, g_set.map, sizeof out->map);
+    memcpy(out->jmap, g_set.jmap, sizeof out->jmap);
+}
+static bool pset_same(const PlayerSet *a, const PlayerSet *b) {
+    return a->camera == b->camera && a->cam_height == b->cam_height && a->cam_dist == b->cam_dist && a->free_cam == b->free_cam &&
+           !memcmp(a->map, b->map, sizeof a->map) && !memcmp(a->jmap, b->jmap, sizeof a->jmap);
+}
+
+void camera_apply(void) {
+    static const float HEIGHTS[4] = {0.45f, 0.7f, 1.0f, 1.5f};
+    static const float DISTS[5] = {0.55f, 0.75f, 1.0f, 1.3f, 1.6f};
+    static int last_view[4] = {-1, -1, -1, -1};
+    for (int p = 0; p < 4; p++) {
+        PlayerSet ps;
+        player_set(p, &ps);
+        g_cam_height[p] = HEIGHTS[ps.cam_height & 3];
+        g_cam_dist[p] = DISTS[(unsigned)ps.cam_dist % 5];
+        g_cam_back[p] = ps.free_cam == 2 ? CAM_EASE : ps.free_cam == 3 ? CAM_STAY : CAM_SNAP;
+        /* CAMERA VIEW: NORMAL, DRIVER FPV, KART FPV, applied when it changes (menu, player 1's FPV
+         * buttons): players 2-4's FPV buttons switch their own bit between, for the session */
+        int cv = (int)((unsigned)ps.camera % 3);
+        if (cv == last_view[p]) continue;
+        last_view[p] = cv;
+        uint32_t bit = 1u << p;
+        if (cv) __atomic_or_fetch(&g_first_person, bit, __ATOMIC_RELAXED);
+        else __atomic_and_fetch(&g_first_person, ~bit, __ATOMIC_RELAXED);
+        if (cv == 2) __atomic_or_fetch(&g_fp_kart, bit, __ATOMIC_RELAXED);
+        else __atomic_and_fetch(&g_fp_kart, ~bit, __ATOMIC_RELAXED);
+    }
 }
 
 /* ---- color.ini ---- */
@@ -438,7 +521,7 @@ void color_adjust(float adj[3]) {
 /* Pages by what they change: graphics (the picture), controls (pads, buttons, rumble), game
  * (unlock all), multiplayer (LAN play), mods (MKDD Plus, HD textures), debugging (diagnostics), update. */
 enum { PAGE_MAIN, PAGE_MAP, PAGE_EXIT, PAGE_COLOR, PAGE_DEBUG, PAGE_GFX, PAGE_UPDATE, PAGE_CTRL, PAGE_GAME, PAGE_MODS, PAGE_HUD, PAGE_CHEATS, PAGE_SPECIAL, PAGE_CAM, PAGE_KART,
-       PAGE_MULTI, PAGE_LAN, PAGE_BATTLE, PAGE_DRAFT, PAGE_COUNT };
+       PAGE_MULTI, PAGE_LAN, PAGE_BATTLE, PAGE_DRAFT, PAGE_PLAYER, PAGE_COUNT };
 /* the main page's rows; UPDATE and DEBUG sit on EXIT GAME's row, at its right (LEFT/RIGHT there) */
 enum { M_GAME, M_GFX, M_CAM, M_CTRL, M_MULTI, M_MODS, M_CHEATS, M_EXIT, M_UPDATE, M_DEBUG, M_COUNT };
 enum { MD_MOD, MD_AUDIO, MD_HD, MD_CHARS, MD_KARTS, MD_RESTART, MD_BACK, MD_COUNT };
@@ -534,7 +617,7 @@ static void upper(char *dst, size_t size, const char *s) {
     dst[i] = 0;
 }
 enum { C_MAP, C_JOYMAP, C_SYNC, C_HOLD, C_BACK, C_COUNT };
-enum { GM_STYLE, GM_UNITS, GM_HUD, GM_JUMP, GM_DRAFT, GM_RUMBLE, GM_BATTLE, GM_BACK, GM_COUNT };
+enum { GM_STYLE, GM_UNITS, GM_HUD, GM_JUMP, GM_TRICKS, GM_DRAFT, GM_RUMBLE, GM_BATTLE, GM_BACK, GM_COUNT };
 /* DRAFTING's page (A on GAME's row while it is on) */
 enum { DR_CPU, DR_POWER, DR_RANGE, DR_BACK, DR_COUNT };
 static const char *DRAFT_CPU_NAMES[3] = {"OFF", "WEAKER", "SAME AS YOU"};
@@ -543,6 +626,8 @@ static const char *DRAFT_RANGE_NAMES[3] = {"CLOSE", "REGULAR", "FAR"};
 /* SINGLE PLAYER BATTLE MODE's page (A on GAME's row while it is on) */
 enum { BT_KARTS, BT_HITS, BT_BACK, BT_COUNT };
 enum { CA_VIEW, CA_HEIGHT, CA_DIST, CA_FOV, CA_FREE, CA_BACK, CA_COUNT };
+/* players 2-4's menu (PAGE_PLAYER): their camera and buttons only; the game's settings stay player 1's */
+enum { PL_CAM, PL_MAP, PL_JOYMAP, PL_CLOSE, PL_COUNT };
 /* the FPV page (A on CAMERA VIEW): its eye (KA_UP, KA_FWD: steps of 5; KA_TILT: degrees down). KART FPV keeps
  * one for each kart: in a race the one being driven, otherwise KA_KART chooses. DRIVER FPV's covers every kart. */
 enum { KA_KART, KA_UP, KA_FWD, KA_TILT, KA_RESET, KA_BACK, KA_COUNT };
@@ -551,16 +636,16 @@ static const char *KART_NAMES[21] = {"RED FIRE", "DK JUMBO", "TURBO YOSHI", "KOO
                                      "WALUIGI RACER", "BULLET BLASTER", "TOAD KART", "TOADETTE KART", "BOO PIPES", "PIRANHA PIPES", "PARADE KART"};
 static int s_kart_sel;
 static bool s_in_race; /* the race camera was running when the menu opened */
-static bool fpv_each_kart(void) { return g_set.camera == 2 && g_kart_eye_on; }
+static bool fpv_each_kart(void) { return ED(camera) == 2 && g_kart_eye_on; }
 /* the page's three settings: DRIVER FPV's or KART FPV's (CAMERA VIEW 1 / 2), and their defaults */
 static int *fpv_eye(int i) {
-    bool kart = g_set.camera == 2;
+    bool kart = ED(camera) == 2;
     if (fpv_each_kart()) return &g_set.kart_add[s_kart_sel][i - KA_UP];
     return i == KA_UP ? (kart ? &g_set.kart_up : &g_set.drv_up) : i == KA_FWD ? (kart ? &g_set.kart_forward : &g_set.drv_forward)
                       : (kart ? &g_set.kart_tilt : &g_set.drv_tilt);
 }
 static int fpv_default(int i) {
-    bool kart = g_set.camera == 2;
+    bool kart = ED(camera) == 2;
     return i == KA_UP ? (kart ? KART_UP : DRV_UP) : i == KA_FWD ? (kart ? KART_FWD : DRV_FWD) : (kart ? KART_TILT : DRV_TILT);
 }
 static int step_clamp(int v, int d, int lo, int hi) { v += d; return v < lo ? lo : v > hi ? hi : v; }
@@ -594,6 +679,7 @@ void cheats_apply(void) {
         g_battle_karts = (uint32_t)g_set.battle_karts;
         g_bomb_hits = (uint32_t)g_set.bomb_hits;
         g_jump_power = 0;
+        g_tricks = 0;
         memset((void *)g_special, 0, sizeof g_special);
         return;
     }
@@ -609,6 +695,7 @@ void cheats_apply(void) {
     g_battle_karts = (uint32_t)g_set.battle_karts;
     g_bomb_hits = (uint32_t)g_set.bomb_hits;
     g_jump_power = JUMP_POWER[g_set.jump & 3];
+    g_tricks = (uint32_t)g_set.tricks;
     special_apply();
 }
 void special_apply(void) {
@@ -710,14 +797,18 @@ static bool map_leave(bool force) {
 }
 
 static bool item_hidden(int page, int item) {
+    if (page == PAGE_CAM) return item == CA_FOV && s_mpl; /* the field of view is the whole picture's: player 1's */
 #ifdef _WIN32
     return (page == PAGE_GFX && item == G_HANDHELD) || (page == PAGE_CTRL && (item == C_JOYMAP || item == C_SYNC)) ||
-           (page == PAGE_DEBUG && (item == D_GPUTEST || item == D_CLOCKS)) || (page == PAGE_MAIN && item == M_UPDATE);
+           (page == PAGE_DEBUG && (item == D_GPUTEST || item == D_CLOCKS)) || (page == PAGE_MAIN && item == M_UPDATE) ||
+           (page == PAGE_PLAYER && item == PL_JOYMAP);
 #else
     return page == PAGE_GFX && item == G_FULL;
 #endif
 }
-static int item_count(int page) { return page == PAGE_GFX ? G_COUNT : page == PAGE_CTRL ? C_COUNT : page == PAGE_DEBUG ? D_COUNT : 0; }
+static int item_count(int page) {
+    return page == PAGE_GFX ? G_COUNT : page == PAGE_CTRL ? C_COUNT : page == PAGE_DEBUG ? D_COUNT : page == PAGE_CAM ? CA_COUNT : page == PAGE_PLAYER ? PL_COUNT : 0;
+}
 
 static int page_rows(int page) {
     switch (page) {
@@ -729,7 +820,8 @@ static int page_rows(int page) {
     case PAGE_GAME: return GM_COUNT;
     case PAGE_BATTLE: return BT_COUNT;
     case PAGE_DRAFT: return DR_COUNT;
-    case PAGE_CAM: return CA_COUNT;
+    case PAGE_CAM: return shown_rows(PAGE_CAM);
+    case PAGE_PLAYER: return shown_rows(PAGE_PLAYER);
     case PAGE_KART: return KA_COUNT;
     case PAGE_CHEATS: return CH_COUNT;
     case PAGE_SPECIAL: return SP_COUNT;
@@ -746,37 +838,67 @@ static int page_rows(int page) {
 /* B goes back one page: colour to graphics, button mapping to controls, race HUD to game,
  * everything else to the main page. */
 static int page_parent(int page) {
+    if (s_mpl && (page == PAGE_MAP || page == PAGE_CAM)) return PAGE_PLAYER;
     return page == PAGE_COLOR ? PAGE_GFX : page == PAGE_MAP ? PAGE_CTRL : page == PAGE_HUD || page == PAGE_BATTLE || page == PAGE_DRAFT ? PAGE_GAME
            : page == PAGE_SPECIAL ? PAGE_CHEATS : page == PAGE_KART ? PAGE_CAM : page == PAGE_LAN ? PAGE_MULTI : PAGE_MAIN;
 }
 
 static bool s_close_only; /* opened by menu_open with OPEN MENU on hold: a dropped controller must not hand over the options */
+static int s_block_pl; /* whose buttons s_block holds */
+
+/* Player p (0-3) opens the menu: players 2-4 get their own page, starting from player 1's settings
+ * when they have none yet. Closed: if they changed nothing, they keep following player 1's. */
+static bool s_mpl_was_own;
+static void menu_begin(int p) {
+    s_mpl = p;
+    s_page = p ? PAGE_PLAYER : PAGE_MAIN;
+    s_sel[PAGE_PLAYER] = 0;
+    if (!p) return;
+    PlayerSet *g = &g_set.pl[p - 1];
+    s_mpl_was_own = g->own;
+    if (!g->own) player_set(0, g), g->own = true;
+    rt_log("menu: player %d's options", p + 1);
+}
+static void menu_end(void) {
+    if (s_mpl && !s_mpl_was_own) {
+        PlayerSet a;
+        player_set(0, &a);
+        PlayerSet *g = &g_set.pl[s_mpl - 1];
+        if (pset_same(g, &a)) g->own = false, settings_save();
+    }
+    s_mpl = 0;
+}
 
 void menu_open(const char *notice) {
+    if (s_open) menu_end();
+    menu_begin(0);
     s_open = true;
-    s_page = PAGE_MAIN;
     s_close_only = g_set.menu_hold != 0;
     snprintf(s_notice, sizeof s_notice, "%s", notice ? notice : "");
 }
 
-bool menu_input(uint64_t down, uint64_t held, bool *quit) {
+bool menu_input(const uint64_t down_[4], const uint64_t held_[4], bool *quit) {
     if (!s_open) {
-        s_block &= held;
+        s_block &= held_[s_block_pl & 3];
         static uint32_t cam_last;
         static int cam_idle = 100;
         uint32_t cam = g_cam_frames[0];
         cam_idle = cam != cam_last ? 0 : cam_idle < 100 ? cam_idle + 1 : cam_idle;
         cam_last = cam;
         s_in_race = cam_idle < 4;
-        /* OPEN MENU on hold: from a fresh press, so holding on after closing the menu doesn't reopen it */
-        static uint64_t hold_from;
-        bool minus = down & HidNpadButton_Minus;
-        if (!(held & HidNpadButton_Minus)) hold_from = 0;
-        else if (minus) hold_from = plat_now_ns();
-        if (g_set.menu_hold) minus = hold_from && plat_now_ns() - hold_from >= (uint64_t)g_set.menu_hold * 1000000000ull;
-        if (minus) { s_open = true; s_page = PAGE_MAIN; s_pressed = HidNpadButton_Minus; s_close_only = false; hold_from = 0; }
+        /* any player's -: their menu (players 2-4: their camera and buttons). OPEN MENU on hold: from a
+         * fresh press, so holding on after closing the menu doesn't reopen it */
+        static uint64_t hold_from[4];
+        for (int p = 0; p < 4 && !s_open; p++) {
+            bool minus = down_[p] & HidNpadButton_Minus;
+            if (!(held_[p] & HidNpadButton_Minus)) hold_from[p] = 0;
+            else if (minus) hold_from[p] = plat_now_ns();
+            if (g_set.menu_hold) minus = hold_from[p] && plat_now_ns() - hold_from[p] >= (uint64_t)g_set.menu_hold * 1000000000ull;
+            if (minus) { menu_begin(p); s_open = true; s_pressed = HidNpadButton_Minus; s_close_only = false; hold_from[p] = 0; }
+        }
         return s_open;
     }
+    uint64_t down = down_[s_mpl & 3], held = held_[s_mpl & 3];
     if (s_close_only) down &= HidNpadButton_Minus | HidNpadButton_B;
     s_pressed |= down;
     const uint64_t UP = HidNpadButton_Up | HidNpadButton_StickLUp, DOWN = HidNpadButton_Down | HidNpadButton_StickLDown;
@@ -792,9 +914,10 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
     bool left = down & (HidNpadButton_Left | HidNpadButton_StickLLeft);
     s_preview = s_page == PAGE_COLOR && (held & HidNpadButton_Y);
     if (down & (HidNpadButton_Minus | HidNpadButton_B)) {
-        if (s_page == PAGE_MAIN || (down & HidNpadButton_Minus)) {
+        if (s_page == PAGE_MAIN || s_page == PAGE_PLAYER || (down & HidNpadButton_Minus)) {
             if (s_page == PAGE_MAP) map_leave(true);
-            s_open = false; s_block = s_pressed & held; s_preview = false; s_notice[0] = 0;
+            s_open = false; s_block = s_pressed & held; s_block_pl = s_mpl; s_preview = false; s_notice[0] = 0;
+            menu_end();
         } else if (s_page != PAGE_MAP || map_leave(false)) s_page = page_parent(s_page);
         color_save();
         return true;
@@ -878,7 +1001,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
     }
     if (s_page == PAGE_CTRL && (ok || side)) {
         switch (row_item(PAGE_CTRL, *sel)) {
-        case C_SYNC: if (ok) { s_want_controllers = true; s_open = false; s_block = s_pressed & held; } break;
+        case C_SYNC: if (ok) { s_want_controllers = true; s_open = false; s_block = s_pressed & held; s_block_pl = 0; menu_end(); } break;
         case C_MAP:
         case C_JOYMAP: if (ok) { s_mset = row_item(PAGE_CTRL, *sel) == C_JOYMAP; s_page = PAGE_MAP; s_sel[PAGE_MAP] = 0; } break;
         case C_HOLD: g_set.menu_hold = left ? (g_set.menu_hold == 0 ? 5 : g_set.menu_hold == 5 ? 3 : 0) : (g_set.menu_hold == 0 ? 3 : g_set.menu_hold == 3 ? 5 : 0); settings_save(); break;
@@ -961,6 +1084,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
             break;
         case GM_RUMBLE: g_set.rumble = (g_set.rumble + (left ? 2 : 1)) % 3; settings_save(); break;
         case GM_JUMP: g_set.jump = (g_set.jump + (left ? 3 : 1)) & 3; cheats_apply(); settings_save(); break;
+        case GM_TRICKS: g_set.tricks = (g_set.tricks + (left ? 2 : 1)) % 3; cheats_apply(); settings_save(); break;
         case GM_BATTLE:
             if (ok && g_set.battle_cpus) { s_page = PAGE_BATTLE; s_sel[PAGE_BATTLE] = 0; break; }
             g_set.battle_cpus = !g_set.battle_cpus; cheats_apply(); settings_save();
@@ -990,16 +1114,25 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         }
         return true;
     }
+    if (s_page == PAGE_PLAYER && (ok || side)) {
+        switch (row_item(PAGE_PLAYER, *sel)) {
+        case PL_CAM: if (ok) { s_page = PAGE_CAM; s_sel[PAGE_CAM] = 0; } break;
+        case PL_MAP:
+        case PL_JOYMAP: if (ok) { s_mset = row_item(PAGE_PLAYER, *sel) == PL_JOYMAP; s_page = PAGE_MAP; s_sel[PAGE_MAP] = 0; } break;
+        case PL_CLOSE: if (ok) { s_open = false; s_block = s_pressed & held; s_block_pl = s_mpl; s_notice[0] = 0; menu_end(); } break;
+        }
+        return true;
+    }
     if (s_page == PAGE_CAM && (ok || side)) {
-        switch (*sel) {
-        case CA_VIEW: /* A on DRIVER FPV or KART FPV: its eye's page */
-            if (ok && g_set.camera) { s_page = PAGE_KART; s_sel[PAGE_KART] = 0; s_kart_sel = g_kart_last >= 0 && g_kart_last < 21 ? g_kart_last : 0; break; }
-            g_set.camera = (g_set.camera + (left ? 2 : 1)) % 3; settings_save(); break;
-        case CA_HEIGHT: g_set.cam_height = (g_set.cam_height + (left ? 3 : 1)) & 3; settings_save(); break;
-        case CA_DIST: g_set.cam_dist = (g_set.cam_dist + (left ? 4 : 1)) % 5; settings_save(); break;
+        switch (row_item(PAGE_CAM, *sel)) {
+        case CA_VIEW: /* A on DRIVER FPV or KART FPV: its eye's page (player 1's: the eyes are everyone's) */
+            if (ok && ED(camera) && !s_mpl) { s_page = PAGE_KART; s_sel[PAGE_KART] = 0; s_kart_sel = g_kart_last >= 0 && g_kart_last < 21 ? g_kart_last : 0; break; }
+            ED(camera) = (ED(camera) + (left ? 2 : 1)) % 3; settings_save(); break;
+        case CA_HEIGHT: ED(cam_height) = (ED(cam_height) + (left ? 3 : 1)) & 3; settings_save(); break;
+        case CA_DIST: ED(cam_dist) = (ED(cam_dist) + (left ? 4 : 1)) % 5; settings_save(); break;
         case CA_FOV: g_set.fov[g_set.wide] = (g_set.fov[g_set.wide] + (left ? 4 : 1)) % 5; settings_save(); break;
-        case CA_FREE: g_set.free_cam = (g_set.free_cam + (left ? 3 : 1)) & 3; settings_save(); break;
-        case CA_BACK: if (ok) s_page = PAGE_MAIN; break;
+        case CA_FREE: ED(free_cam) = (ED(free_cam) + (left ? 3 : 1)) & 3; settings_save(); break;
+        case CA_BACK: if (ok) s_page = page_parent(PAGE_CAM); break;
         }
         return true;
     }
@@ -1037,8 +1170,8 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         }
     } else if (s_page == PAGE_MAP && ok) {
         if (*sel < N_SW) set_action(*sel, (button_action(*sel) + 1) % (N_ACT + 1));
-        else if (*sel == P_RESET) { memcpy(CUR_MAP, CUR_DEFAULT, sizeof g_set.map); s_notice[0] = 0; settings_save(); }
-        else if (map_leave(false)) s_page = PAGE_CTRL;
+        else if (*sel == P_RESET) { memcpy(CUR_MAP, CUR_DEFAULT, sizeof ED(map)); s_notice[0] = 0; settings_save(); }
+        else if (map_leave(false)) s_page = page_parent(PAGE_MAP);
     } else if (s_page == PAGE_UPDATE && ok) {
         if (*sel == U_BACK) s_page = PAGE_MAIN;
         else if (*sel == U_ACTION) {
@@ -1341,7 +1474,7 @@ static void mrow(float x, float y, float w, float rh, float k, bool sel, const c
 }
 
 bool menu_is_open(void) { return s_open; }
-uint64_t menu_blocked(void) { return s_block; }
+uint64_t menu_blocked(int p) { return p == s_block_pl ? s_block : 0; }
 bool menu_take_fullscreen(void) {
     bool w = s_want_fullscreen;
     s_want_fullscreen = false;
@@ -1437,8 +1570,13 @@ void menu_draw(int w, int h, float fps, const char *perf) {
         const char *title = s_page == PAGE_MAP ? (s_mset ? "JOY-CON SIDEWAYS" : "BUTTON MAPPING") : s_page == PAGE_EXIT ? "EXIT THE GAME?"
                             : s_page == PAGE_COLOR ? "COLOR" : s_page == PAGE_DEBUG ? "DEBUG"
                             : s_page == PAGE_GFX ? "GRAPHICS" : s_page == PAGE_UPDATE ? "UPDATE"
-                            : s_page == PAGE_CTRL ? "CONTROLS" : s_page == PAGE_GAME ? "GAME" : s_page == PAGE_BATTLE ? "SINGLE PLAYER BATTLE" : s_page == PAGE_DRAFT ? "DRAFTING" : s_page == PAGE_CAM ? "CAMERA" : s_page == PAGE_KART ? (g_set.camera == 2 ? "KART FPV" : "DRIVER FPV")
+                            : s_page == PAGE_CTRL ? "CONTROLS" : s_page == PAGE_GAME ? "GAME" : s_page == PAGE_BATTLE ? "SINGLE PLAYER BATTLE" : s_page == PAGE_DRAFT ? "DRAFTING" : s_page == PAGE_CAM ? "CAMERA" : s_page == PAGE_KART ? (ED(camera) == 2 ? "KART FPV" : "DRIVER FPV")
                             : s_page == PAGE_MODS ? "MODS" : s_page == PAGE_MULTI ? "MULTIPLAYER" : s_page == PAGE_LAN ? "LAN PLAY" : s_page == PAGE_HUD ? "HUD ASSETS" : s_page == PAGE_CHEATS ? "CHEATS" : s_page == PAGE_SPECIAL ? "SPECIAL ITEMS" : "OPTIONS";
+        char ptitle[48];
+        if (s_mpl) { /* players 2-4: their name on every page */
+            snprintf(ptitle, sizeof ptitle, s_page == PAGE_PLAYER ? "PLAYER %d" : "PLAYER %d %s", s_mpl + 1, title);
+            title = ptitle;
+        }
         panel(x, y, pw, ph, k, title);
         {
             /* "Oct 15 2026 14:08:52" -> "BUILD 1408" (the name of the build's saved .elf), in the
@@ -1601,22 +1739,23 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s == LN_RESTART               ? restart_hint()
                                                    : "B: BACK";
         } else if (s_page == PAGE_GAME) {
-            static const char *labels[GM_COUNT] = {"RACE HUD", "SPEED", "HUD ASSETS", "JUMP HEIGHT", "DRAFTING", "RUMBLE STRENGTH", "SINGLE PLAYER BATTLE MODE", "BACK"};
+            static const char *labels[GM_COUNT] = {"RACE HUD", "SPEED", "HUD ASSETS", "JUMP HEIGHT", "TRICKS", "DRAFTING", "RUMBLE STRENGTH", "SINGLE PLAYER BATTLE MODE", "BACK"};
             const char *values[GM_COUNT] = {HUD_STYLES[g_set.hud_style], g_set.speed_kmh ? "KMH" : "MPH", hud_value(),
-                                            JUMP_NAMES[g_set.jump & 3], g_set.draft ? "ON" : "OFF", RUMBLE_NAMES[g_set.rumble % 3],
+                                            JUMP_NAMES[g_set.jump & 3], g_set.tricks == 2 ? "ON + WIPEOUTS" : g_set.tricks ? "ON" : "OFF", g_set.draft ? "ON" : "OFF", RUMBLE_NAMES[g_set.rumble % 3],
                                             g_set.battle_cpus ? "ON" : "OFF", NULL};
-            const bool more[GM_COUNT] = {false, false, true, false, g_set.draft != 0, false, g_set.battle_cpus, false};
+            const bool more[GM_COUNT] = {false, false, true, false, false, g_set.draft != 0, false, g_set.battle_cpus, false};
             for (int i = 0; i < GM_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, GM_COUNT), pw, rh, k, s_sel[PAGE_GAME] == i, labels[i], values[i], more[i]);
             hint = s_sel[PAGE_GAME] == GM_STYLE ? (g_set.hud_style == 2 ? "ONE BAR ACROSS THE TOP, REAR-VIEW MIRROR, RACE ORDER BELOW. 1 PLAYER" : g_set.hud_style == 1 ? "MODERN: SMALLER, IN THE CORNERS. 1 TO 4 PLAYERS" : "THE GAME'S OWN")
                    : s_sel[PAGE_GAME] == GM_UNITS ? "SPEEDOMETER IN MILES OR KILOMETRES PER HOUR"
                    : s_sel[PAGE_GAME] == GM_HUD  ? "A: CHOOSE   LEFT/RIGHT: ALL ON, ALL OFF"
                    : s_sel[PAGE_GAME] == GM_BATTLE ? (g_set.battle_cpus ? "A: BATTLE KARTS, BOB-OMB HITS   LEFT/RIGHT: OFF"
                                                                         : "CPUS FILL BATTLES TO 4 KARTS. 1 PLAYER: BATTLE ON THE MODE PAGE")
+                   : s_sel[PAGE_GAME] == GM_TRICKS ? (g_lan_play ? "OFF IN LAN PLAY" : g_set.tricks == 2 ? "AS ON, BUT LANDING MID-TRICK SPINS YOU OUT" : "IN THE AIR: D-PAD OR STICK FLICK, JUMP: RIDER TRICKS. LAND CLEAN: BOOST")
                    : s_sel[PAGE_GAME] == GM_RUMBLE ? "VIBRATION STRENGTH. THE GAME'S OWN RUMBLE OPTION MUST BE ON TOO"
                    : s_sel[PAGE_GAME] == GM_DRAFT ? (g_lan_play ? "OFF IN LAN PLAY"
                                                     : g_set.draft ? "A: CPU DRAFTING, STRENGTH, DISTANCE   LEFT/RIGHT: OFF"
                                                                   : "STAY BEHIND A KART AT SPEED TO FILL UP, THEN BOOST. GP AND VS")
-                   : s_sel[PAGE_GAME] == GM_JUMP ? (g_set.map[MAP_JUMP] ? "ONE HOP PER PRESS OF THE JUMP BUTTON"
+                   : s_sel[PAGE_GAME] == GM_JUMP ? (ED(map)[MAP_JUMP] ? "ONE HOP PER PRESS OF THE JUMP BUTTON"
                                                                        : "GIVE JUMP A BUTTON: CONTROLS > BUTTON MAPPING")
                                                  : "B: BACK";
         } else if (s_page == PAGE_DRAFT) {
@@ -1643,19 +1782,34 @@ void menu_draw(int w, int h, float fps, const char *perf) {
             static const char *HEIGHT_NAMES[4] = {"LOW", "MEDIUM", "REGULAR", "HIGH"};
             static const char *DIST_NAMES[5] = {"VERY CLOSE", "CLOSE", "REGULAR", "FAR", "VERY FAR"};
             static const char *FREECAM_NAMES[4] = {"OFF", "SNAP BACK", "EASE BACK", "STAY"};
-            const char *values[CA_COUNT] = {CAMERA_NAMES[g_set.camera % 3], HEIGHT_NAMES[g_set.cam_height & 3], DIST_NAMES[g_set.cam_dist % 5],
-                                            FOV_NAMES[g_set.fov[g_set.wide] % 5], FREECAM_NAMES[g_set.free_cam & 3], NULL};
-            for (int i = 0; i < CA_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, CA_COUNT), pw, rh, k, s_sel[PAGE_CAM] == i, labels[i], values[i], i == CA_VIEW && g_set.camera);
-            hint = s_sel[PAGE_CAM] == CA_VIEW     ? (g_set.camera == 2 ? "A: ADJUST KART FPV" : g_set.camera ? "A: ADJUST DRIVER FPV" : "FIRST PERSON: DRIVER FPV OR KART FPV")
-                   : s_sel[PAGE_CAM] == CA_HEIGHT ? "THE CAMERA BEHIND THE KART. REGULAR: THE GAME'S"
-                   : s_sel[PAGE_CAM] == CA_DIST   ? "HOW FAR BEHIND THE KART. REGULAR: THE GAME'S"
-                   : s_sel[PAGE_CAM] == CA_FOV    ? (g_set.wide ? "RACE CAMERA IN 16:9, DEFAULT WIDER" : "RACE CAMERA IN 4:3, DEFAULT NORMAL")
-                   : s_sel[PAGE_CAM] == CA_FREE   ? (g_set.free_cam == 0 ? "RIGHT STICK LEFT/RIGHT: TURN THE CAMERA ROUND THE KART"
-                                                     : g_set.free_cam == 1 ? "RIGHT STICK TURNS THE CAMERA. LET GO: STRAIGHT BACK"
-                                                     : g_set.free_cam == 2 ? "RIGHT STICK TURNS THE CAMERA. LET GO: GLIDES BACK"
-                                                     : g_set.map[MAP_CAM_RESET] ? "RIGHT STICK TURNS THE CAMERA. CAMERA RESET: BACK"
+            const char *values[CA_COUNT] = {CAMERA_NAMES[ED(camera) % 3], HEIGHT_NAMES[ED(cam_height) & 3], DIST_NAMES[ED(cam_dist) % 5],
+                                            FOV_NAMES[g_set.fov[g_set.wide] % 5], FREECAM_NAMES[ED(free_cam) & 3], NULL};
+            const int n = shown_rows(PAGE_CAM), cur = row_item(PAGE_CAM, s_sel[PAGE_CAM]);
+            for (int r = 0; r < n; r++, ry += rh) {
+                int i = row_item(PAGE_CAM, r);
+                mrow(x, ROW_Y(r, n), pw, rh, k, s_sel[PAGE_CAM] == r, labels[i], values[i], i == CA_VIEW && ED(camera) && !s_mpl);
+            }
+            hint = cur == CA_VIEW     ? (s_mpl ? "FIRST PERSON: DRIVER FPV OR KART FPV" : ED(camera) == 2 ? "A: ADJUST KART FPV" : ED(camera) ? "A: ADJUST DRIVER FPV" : "FIRST PERSON: DRIVER FPV OR KART FPV")
+                   : cur == CA_HEIGHT ? "THE CAMERA BEHIND THE KART. REGULAR: THE GAME'S"
+                   : cur == CA_DIST   ? "HOW FAR BEHIND THE KART. REGULAR: THE GAME'S"
+                   : cur == CA_FOV    ? (g_set.wide ? "RACE CAMERA IN 16:9, DEFAULT WIDER" : "RACE CAMERA IN 4:3, DEFAULT NORMAL")
+                   : cur == CA_FREE   ? (ED(free_cam) == 0 ? "RIGHT STICK LEFT/RIGHT: TURN THE CAMERA ROUND THE KART"
+                                                     : ED(free_cam) == 1 ? "RIGHT STICK TURNS THE CAMERA. LET GO: STRAIGHT BACK"
+                                                     : ED(free_cam) == 2 ? "RIGHT STICK TURNS THE CAMERA. LET GO: GLIDES BACK"
+                                                     : ED(map)[MAP_CAM_RESET] ? "RIGHT STICK TURNS THE CAMERA. CAMERA RESET: BACK"
                                                                                 : "GIVE CAMERA RESET A BUTTON: CONTROLS > BUTTON MAPPING")
                                                   : "B: BACK";
+        } else if (s_page == PAGE_PLAYER) {
+            static const char *labels[PL_COUNT] = {"CAMERA", "BUTTON MAPPING", "JOY-CON SIDEWAYS", "CLOSE"};
+            const int n = shown_rows(PAGE_PLAYER), cur = row_item(PAGE_PLAYER, s_sel[PAGE_PLAYER]);
+            for (int r = 0; r < n; r++, ry += rh) {
+                int i = row_item(PAGE_PLAYER, r);
+                mrow(x, ROW_Y(r, n), pw, rh, k, s_sel[PAGE_PLAYER] == r, labels[i], NULL, i != PL_CLOSE);
+            }
+            hint = cur == PL_CAM      ? "YOUR VIEW, HEIGHT, DISTANCE, FREE CAMERA"
+                   : cur == PL_MAP    ? SW_PC("CHOOSE WHAT EACH OF YOUR BUTTONS DOES", "CHOOSE WHAT EACH OF YOUR BUTTONS DOES WHILE DRIVING")
+                   : cur == PL_JOYMAP ? "YOUR BUTTONS ON ONE JOY-CON HELD SIDEWAYS"
+                                      : "GAME PAUSED   B OR -: CLOSE. THE GAME'S OPTIONS: PLAYER 1";
         } else if (s_page == PAGE_KART) {
             static const char *labels[KA_COUNT] = {"KART", "EYE HEIGHT", "EYE FORWARD", "TILT", "DEFAULTS", "BACK"};
             static char kup[16], kfwd[16], ktilt[16], khint[48];
@@ -1666,7 +1820,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
             for (int i = 0; i < KA_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, KA_COUNT), pw, rh, k, s_sel[PAGE_KART] == i, labels[i], values[i], false);
             int ks = s_sel[PAGE_KART];
             if (ks >= KA_UP && ks <= KA_TILT)
-                snprintf(khint, sizeof khint, "%s. DEFAULT %d", g_set.camera == 2 ? (ks == KA_UP ? "HIGHER THAN THE KART'S VIEW" : ks == KA_FWD ? "AHEAD OF THE KART'S VIEW" : "LOOKS DOWN MORE")
+                snprintf(khint, sizeof khint, "%s. DEFAULT %d", ED(camera) == 2 ? (ks == KA_UP ? "HIGHER THAN THE KART'S VIEW" : ks == KA_FWD ? "AHEAD OF THE KART'S VIEW" : "LOOKS DOWN MORE")
                          : ks == KA_UP ? "ABOVE THE DRIVER'S HEAD" : ks == KA_FWD ? "AHEAD OF THE DRIVER'S HEAD"
                          : "HOW FAR IT LOOKS DOWN", fpv_default(ks));
             hint = ks == KA_KART                ? (!fpv_each_kart() ? "THESE COVER EVERY KART" : s_in_race ? "THE KART YOU ARE DRIVING. SAVED FOR THIS KART ONLY" : "LEFT AND RIGHT CHOOSE THE KART. SAVED FOR EACH KART")

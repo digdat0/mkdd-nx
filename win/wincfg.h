@@ -21,8 +21,8 @@ typedef struct {
     char audio_dev[64]; /* waveOut device name, "" the system's default */
     char disc[260];     /* disc image picked in the launcher, "" the one found next to the .exe */
     int keys[KB_COUNT][KB_KEYS]; /* virtual-key codes, 0 none */
-    /* players 2-4's driving buttons (player 1's are settings.ini's map_*, shared with the Switch);
-     * a player without its own (pmap_set false) drives with player 1's. WIN_MAPS = MAP_COUNT (menu.h). */
+    /* read only: players 2-4's driving buttons as 1.8.4's launcher saved them (p2_map= ..), moved to
+     * settings.ini's p2_* at start (main_win.c) and no longer written here. WIN_MAPS = MAP_COUNT (menu.h). */
 #define WIN_MAPS 12
     bool pmap_set[3];
     uint64_t pmap[3][WIN_MAPS];

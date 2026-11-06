@@ -85,9 +85,9 @@ static bool s_installing;          /* the progress bar is up */
 static bool s_disc_locked;         /* a mod install opened this disc image: it is the one the game plays */
 static char s_discs[16][260];      /* the disc combo's paths (0: automatic) */
 static int s_ndiscs;
-/* The driving maps, one per player: player 1's is settings.ini's (shared with the Switch), players
- * 2-4 have their own once edited here (s_map_own), else drive with player 1's. The page shows and
- * edits the shown controller's player's (s_map_pl). */
+/* The driving maps, one per player (settings.ini, shared with the Switch): players 2-4 have their own
+ * once edited here or in their - menu (s_map_own, g_set.pl[].own), else drive with player 1's. The
+ * page shows and edits the shown controller's player's (s_map_pl). */
 static uint64_t s_maps[4][MAP_COUNT];
 static bool s_map_own[4];
 static int s_map_pl;
@@ -819,7 +819,7 @@ static void build(void) {
     memcpy(s_maps[0], g_set.map, sizeof s_maps[0]);
     s_map_own[0] = true;
     for (int pl = 1; pl < 4; pl++)
-        if ((s_map_own[pl] = g_win.pmap_set[pl - 1])) memcpy(s_maps[pl], g_win.pmap[pl - 1], sizeof s_maps[pl]);
+        if ((s_map_own[pl] = g_set.pl[pl - 1].own)) memcpy(s_maps[pl], g_set.pl[pl - 1].map, sizeof s_maps[pl]);
     for (int r = 0; r < MAP_COUNT; r++) {
         int col = r / 6, x = L + col * 322, yy = y + (r % 6) * 30;
         c_map_lbl[r] = label(P_CTRL, MAP_LABELS[r], x, yy, 116);
@@ -917,8 +917,12 @@ static void apply(void) {
     g_set.audio = checked(c_music);
     g_set.rumble = combo_get(c_rumble);
     memcpy(g_set.map, s_maps[0], sizeof g_set.map);
-    for (int pl = 1; pl < 4; pl++)
-        if ((g_win.pmap_set[pl - 1] = s_map_own[pl])) memcpy(g_win.pmap[pl - 1], s_maps[pl], sizeof g_win.pmap[pl - 1]);
+    for (int pl = 1; pl < 4; pl++) {
+        PlayerSet *ps = &g_set.pl[pl - 1];
+        if (!s_map_own[pl]) continue;
+        if (!ps->own) player_set(0, ps), ps->own = true; /* their camera starts as player 1's */
+        memcpy(ps->map, s_maps[pl], sizeof ps->map);
+    }
     int m = s_mod_sel[combo_get(c_mod)];
     snprintf(g_set.mod, sizeof g_set.mod, "%s", m == 0 ? "auto" : m == 1 ? "off" : MODS[m - 2].key);
     g_set.characters = checked(c_chars);

@@ -28,6 +28,7 @@ typedef struct {
     bool battle_cpus;  /* MODS > SINGLE PLAYER BATTLE MODE (default on): battles filled up to 4 karts with computer karts */
     int battle_karts;  /* MODS > BATTLE KARTS (default 4): the karts in a 1-player battle, 4 to 8 */
     int bomb_hits;     /* MODS > BOB-OMB HITS TO WIN (default 4, the game's): in a 1-player Bob-omb Blast, 4 to 20 */
+    int tricks;        /* GAME > TRICKS: 0 off (the default), 1 on, 2 on + wipeouts (native.c g_tricks) */
     int jump;          /* JUMP: 0 off, 1-3 low / mid / high hop on the JUMP button (map[MAP_JUMP]) */
     int laps;          /* LAPS: Grand Prix and Versus races, 0 the course's own, else 1-7 */
     int free_cam;      /* FREE CAMERA: 0 off, the right stick turns the race camera round the kart and
@@ -66,7 +67,15 @@ typedef struct {
                              * BUTTON MAPPING page's actions (menu.c ACTIONS), one per Switch button */
     uint64_t jmap[MAP_COUNT]; /* the same for a single Joy-Con held sideways (JOY-CON SIDEWAYS), its buttons
                                * as main_switch.c sideways_buttons names them */
+    /* players 2-4's own CAMERA and BUTTON MAPPING (the - menu opened from their controller), saved
+     * as p2_* .. p4_*; own false: they drive with player 1's (player_set) */
+    struct PlayerSet {
+        bool own;
+        int camera, cam_height, cam_dist, free_cam; /* as the fields above */
+        uint64_t map[MAP_COUNT], jmap[MAP_COUNT];
+    } pl[3];
 } Settings;
+typedef struct PlayerSet PlayerSet;
 enum { DOCKED_NATIVE, DOCKED_2X, DOCKED_1_5X, DOCKED_AUTO, DOCKED_3X, DOCKED_4X };
 enum { HANDHELD_NATIVE, HANDHELD_1_25X, HANDHELD_1_5X, HANDHELD_AUTO, HANDHELD_2X, HANDHELD_3X };
 
@@ -95,10 +104,15 @@ void settings_load(const char *path);
 void settings_save(void);
 /* Feed one frame of controller state. Returns true while the menu is open (the game then gets
  * a neutral pad). *quit is set when the player chose Exit. */
-bool menu_input(uint64_t down, uint64_t held, bool *quit);
-/* Player 1's buttons the game must not see yet: pressed in the menu (A, B, -) and still held
- * after it closed. Buttons held from before the menu opened (gas) reach the game at once. */
-uint64_t menu_blocked(void);
+bool menu_input(const uint64_t down[4], const uint64_t held[4], bool *quit);
+/* Player p's buttons the game must not see yet: pressed in the menu (A, B, -) by whoever had it
+ * open and still held after it closed. Buttons held from before the menu opened (gas) reach the game at once. */
+uint64_t menu_blocked(int p);
+/* Player p's (0-3) camera and driving buttons: their own (players 2-4, once set in their menu), else player 1's */
+void player_set(int p, PlayerSet *out);
+/* Every frame: each player's CAMERA settings -> the runtime (g_cam_height, g_cam_dist, g_cam_back,
+ * a CAMERA VIEW change -> that player's g_first_person / g_fp_kart bit) */
+void camera_apply(void);
 /* The menu (or a button capture) is on screen: the game is paused meanwhile. */
 bool menu_is_open(void);
 /* Player chose CONTROLLERS: returns true once, the caller shows the system controller screen. */

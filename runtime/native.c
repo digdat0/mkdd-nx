@@ -2537,8 +2537,8 @@ static void mirror_eye(Ctx *c, uint8_t *M, uint32_t body, const float e[3], cons
     g_mirror_tilt[0] = sinf(tilt), g_mirror_tilt[1] = cosf(tilt);
 }
 volatile float g_cam_pan[4];
-volatile uint32_t g_cam_back, g_cam_reset;
-volatile float g_cam_height = 1.0f, g_cam_dist = 1.0f;
+volatile uint32_t g_cam_back[4], g_cam_reset;
+volatile float g_cam_height[4] = {1.0f, 1.0f, 1.0f, 1.0f}, g_cam_dist[4] = {1.0f, 1.0f, 1.0f, 1.0f};
 #define CAM_MIN_UP 60.0f /* CAMERA HEIGHT's lowest: this far above the kart's centre (about a wheel's height) */
 #define PAN_RATE 0.06f /* radians a frame: half a turn in under a second */
 #define PAN_EASE 0.8f  /* gliding back: this much of the angle kept each frame (1% after 20 frames) */
@@ -2549,12 +2549,12 @@ static float pan_step(unsigned view, uint32_t cam) {
     s_pan_cam[view] = cam;
     if (g_cam_reset >> view & 1) a = 0;
     else if (pan != 0) a = fmodf(a - pan * PAN_RATE, 6.2831853f);
-    else if (g_cam_back == CAM_EASE && a != 0) {
+    else if (g_cam_back[view] == CAM_EASE && a != 0) {
         if (a > 3.1415927f) a -= 6.2831853f;
         else if (a < -3.1415927f) a += 6.2831853f;
         a *= PAN_EASE;
         if (a > -0.005f && a < 0.005f) a = 0;
-    } else if (g_cam_back != CAM_STAY) a = 0;
+    } else if (g_cam_back[view] != CAM_STAY) a = 0;
     return s_pan[view] = a;
 }
 /* v turned by a round the unit axis k (Rodrigues) */
@@ -2650,7 +2650,7 @@ static void v3_norm(float v[3]) {
 }
 /* C_MTXLookAt(cam +0x80, eye, up, at) natively, eye and at also stored as the camera's position
  * (+0x1e8) and look point (+0x1f4): rows right, up, back (eye - at), each with -dot(row, eye). */
-static void cam_look_at(Ctx *c, uint8_t *M, uint32_t cam, const float eye[3], const float at[3], const float up[3]) {
+static void cam_look_at2(Ctx *c, uint8_t *M, uint32_t cam, const float eye[3], const float at[3], const float up[3], bool pos) {
     float z[3] = {eye[0] - at[0], eye[1] - at[1], eye[2] - at[2]};
     v3_norm(z);
     float x[3] = {up[1] * z[2] - up[2] * z[1], up[2] * z[0] - up[0] * z[2], up[0] * z[1] - up[1] * z[0]};
@@ -2662,9 +2662,15 @@ static void cam_look_at(Ctx *c, uint8_t *M, uint32_t cam, const float eye[3], co
         m[4 * i] = r[i][0], m[4 * i + 1] = r[i][1], m[4 * i + 2] = r[i][2];
         m[4 * i + 3] = -(r[i][0] * eye[0] + r[i][1] * eye[1] + r[i][2] * eye[2]);
     }
+    for (int i = 0; i < 12; i++)
+        if (!isfinite(m[i])) return;
     stfn(c, M, cam + 0x80, m, 12);
+    if (!pos) return;
     stfn(c, M, cam + 0x1e8, eye, 3);
     stfn(c, M, cam + 0x1f4, at, 3);
+}
+static void cam_look_at(Ctx *c, uint8_t *M, uint32_t cam, const float eye[3], const float at[3], const float up[3]) {
+    cam_look_at2(c, M, cam, eye, at, up, true);
 }
 static uint64_t i_FUN_802b6bd4(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
@@ -2692,7 +2698,7 @@ static uint64_t i_FUN_802b6bd4(Ctx *c, uint8_t *M, ARGS) {
         ldfn(c, M, cam + 0x90, u, 3);
         mirror_eye(c, M, body, e, a, u, MIRROR_TILT);
     }
-    if (pan_step(view, cam) == 0 && !fp && !back && g_cam_height == 1.0f && g_cam_dist == 1.0f) return 0;
+    if (pan_step(view, cam) == 0 && !fp && !back && g_cam_height[view] == 1.0f && g_cam_dist[view] == 1.0f) return 0;
     float b[12];
     ldfn(c, M, body + 0x110, b, 12);
     float up[3] = {b[1], b[5], b[9]}, fw[3] = {b[2], b[6], b[10]}, eye[3], at[3];
@@ -2735,10 +2741,10 @@ static uint64_t i_FUN_802b6bd4(Ctx *c, uint8_t *M, ARGS) {
         /* CAMERA HEIGHT: the camera's and its look point's heights above the kart scaled (lower
          * looks flatter), the camera never under CAM_MIN_UP above the kart (nor raised by it) */
         /* CAMERA DISTANCE: the camera's offset from the kart across its up axis scaled; the look point stays */
-        float sd = g_cam_dist;
+        float sd = g_cam_dist[view];
         if (sd != 1.0f)
             for (int i = 0; i < 3; i++) eye[i] = b[4 * i + 3] + he * ku[i] + (eye[i] - b[4 * i + 3] - he * ku[i]) * sd;
-        float sc = g_cam_height;
+        float sc = g_cam_height[view];
         if (sc != 1.0f) {
             float he2 = he * sc;
             if (he2 < CAM_MIN_UP) he2 = he < CAM_MIN_UP ? he : CAM_MIN_UP;
@@ -2787,6 +2793,508 @@ static uint64_t i_FUN_801908b4(Ctx *c, uint8_t *M, ARGS) {
 static uint64_t i_FUN_80190a88(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     if (!fp_hidden(c, M, (uint32_t)a0, (uint32_t)a1)) ctx_call_orig(c, g_native_addr[NAT_FUN_80190a88]);
+    return 0;
+}
+
+/* ---- TRICKS (rt.h): the drawn kart spins, the physics don't. FUN_802d3c60 (KartDisp::MakeKartDisp,
+ * each kart each frame, after the cameras: KartCtrl::DynamicsStage2) builds the display matrices
+ * from the kart's pose (KartBody +0x110): the body's display pose +0x1a0 (the body model, both
+ * drivers and the shadow get it: body +0 KartLoader (+0x14 the body's ExModel), +0x20 / +0x24
+ * the drivers, +0x28 the ShadowModel, its height on the ground at +0xa4) and each wheel's
+ * (KartSus +0x158 wheel, +0x1e8 arm, +0x248 shock; KartCtrl (r13 - 0x4e98) +0xc0: KartSus *[4 per
+ * kart]), then FUN_802d320c (MakeTireDispMatrix) and the body's step hand them to the models.
+ * Before FUN_802d320c those matrices are turned round a point above the kart's centre; after
+ * MakeKartDisp they are put back and the shadow gets the level pose again, so nothing else
+ * (water checks, the next frame's matrices) sees the turn. KartDisp +0 = KartBody, +0x5b3 its kart
+ * number; +0x5a4 non-zero while its wheels are on the ground; +0xdc its KartCrash. A press made in
+ * the air starts a trick once the kart is TRICK_MIN_AIR frames in the air and TRICK_MIN_H up (or
+ * TRICK_LONG_AIR frames in the air): a ramp or a drop,
+ * not the drift hop, which lands sooner (presses before take-off don't count: they are steering).
+ * The D-pad (or a stick flick, the front end's): up a front flip, down a backflip, left a flat
+ * spin, right a barrel roll. Early in a trick a second press turns it into another (tk_press):
+ * the same direction a double (two turns), a crossing one a corkscrew (flip and roll at once, as
+ * do two pressed together), the opposite one a whip (left / right: thrown sideways and back) or a
+ * tabletop (up / down: laid on its side and back). Later presses chain the next trick while the
+ * kart stays up. JUMP in the air: the back rider's tricks, superman then cliffhanger (the
+ * DriverModels, +0x18 / +0x1c: their J3DModels' base matrices are the display pose, set in
+ * MakeKartDisp; turned again after it round the rider's own point). Turns are quaternions, so a
+ * trick turned into another blends over a few frames. Landing with every trick finished (or
+ * TRICK_CLEAN through the last) gives a boost (the mini-turbo's: +0x570 0x200, +0x59e frames
+ * left, which DoDash counts down), TRICK_BOOST frames plus TRICK_BOOST_TURN per extra turn;
+ * landing sooner settles the kart upright quickly, no boost, and with g_tricks 2 (WIPEOUTS) spins
+ * the kart out (KartCrash::MakeHalfSpin, FUN_802c9a34, as a wall hit at speed does). A
+ * first-person camera in the kart turns with it (tk_fp_cams). ---- */
+volatile uint32_t g_tricks, g_trick_pad; /* g_tricks: GAME > TRICKS, 0 off, 1 on, 2 with wipeouts (menu.c cheats_apply) */
+#define TRICK_FRAMES 36     /* 0.6 seconds a turn */
+#define TRICK_MIN_AIR 12    /* frames in the air before a trick starts (the drift hop lands sooner), */
+#define TRICK_MIN_H 200.0f  /* and this high above the ground (the shadow), */
+#define TRICK_LONG_AIR 40   /* or this long in the air and TRICK_LATE_H up: a bump stays lower and lands sooner */
+#define TRICK_LATE_H 120.0f /* (a press this close to the ground waits: the trick would only land mid-way) */
+/* a trick that can't finish before the predicted landing doesn't start: a press then is the turn after */
+#define TRICK_DOUBLE_IN 0.5f /* of a single trick: a second press of the same direction makes a double */
+#define TRICK_CROSS_IN 4     /* frames: a crossing direction makes a corkscrew */
+#define TRICK_BACK_IN 10     /* frames: the opposite direction makes a whip / tabletop */
+#define TRICK_CLEAN 0.85f   /* landing this far through the last trick still counts it */
+#define TRICK_WIPE 0.2f     /* WIPEOUTS: landing past this much of a trick (short of TRICK_CLEAN) spins out */
+#define TRICK_BOOST 20
+#define TRICK_BOOST_TURN 15
+#define TRICK_BOOST_MAX 75
+#define TRICK_PIVOT_UP 40.0f
+#define TRICK_SETTLE 0.6f   /* landed mid-trick: this much of the turn left to upright kept each frame */
+#define TRICK_BLEND 0.8f    /* a trick turned into another: this much of the step between kept each frame */
+#define TRICK_JUMP 16       /* tk_pad: the JUMP button (g_jump_held), the rider's tricks */
+enum { TK_IDLE, TK_QUEUED, TK_SPIN, TK_SETTLE, TK_DONE };
+enum { K_NONE, K_FRONT, K_BACK, K_SPIN, K_ROLL, K_CORK_FR, K_CORK_FL, K_CORK_BR, K_CORK_BL, K_WHIP_L, K_WHIP_R,
+       K_TABLE_L, K_TABLE_R, K_COUNT };
+static const char *const TK_NAME[K_COUNT] = {"", "front flip", "backflip", "360", "barrel roll", "corkscrew (front, right)",
+                                             "corkscrew (front, left)", "corkscrew (back, right)", "corkscrew (back, left)",
+                                             "whip (left)", "whip (right)", "tabletop (left)", "tabletop (right)"};
+enum { RD_SUPERMAN = 1, RD_CLIFF };
+typedef struct {
+    uint32_t body, pad_was, presses;
+    int state, kind, next, frame, len, turns, done, air, since[4];
+    float qc[4], qb[4], peak;
+    int rstate, rkind, rnext, rframe, rlen, rcount; /* the back rider's trick, as state / kind / ... */
+    uint32_t rd;                                    /* its DriverModel, 0 until tk_rider measures it */
+    float rup, rfwd;                                /* its head then, in the model's frame */
+    float rh;                                       /* its amount, 0-1 */
+    uint32_t rdc;                                   /* the last measure taken upright (tk_rider_rest), 0 none */
+    float rupc, rfwdc;
+    int calm;                                       /* frames since the kart or rider last turned */
+    float hprev, fall, acc;                         /* kart height last frame, falling speed and its gain a frame */
+} Trick;
+static Trick s_tk[8];
+static float s_tk_a[12];           /* this frame's turn for the kart being built: rotation rows + translation */
+static uint32_t s_tk_body;          /* that kart's body while its matrices are turned, 0 none */
+static float s_tk_save[13][12];     /* the matrices before the turn: +0x1a0, then 4 wheels x 3 */
+static uint32_t s_tk_sus[4];
+static float s_rd_t[12];            /* this frame's turn for the back rider, in its model's own frame; */
+static bool s_rd_on;                /* set by tk_step for the kart being built */
+static bool s_tk_wipe;              /* that kart spins out after MakeKartDisp */
+static float tk_ease(float t) { return t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t); }
+/* out, hold, back: 0 to 1 over the first 30%, 1, back to 0 over the last 35% */
+static float tk_hold(float t) { return t < 0.3f ? tk_ease(t / 0.3f) : t > 0.65f ? tk_ease((1 - t) / 0.35f) : 1; }
+static void q_axis(float q[4], int axis, float a) { q[0] = cosf(a * 0.5f), q[1] = q[2] = q[3] = 0, q[1 + axis] = sinf(a * 0.5f); }
+static void q_mul(float o[4], const float a[4], const float b[4]) {
+    float r[4] = {a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3], a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
+                  a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1], a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0]};
+    memcpy(o, r, sizeof r);
+}
+/* q's turn the short way round, k times as far; returns that turn's angle before scaling */
+static float q_scale(float q[4], float k) {
+    float s = q[0] < 0 ? -1.0f : 1.0f, w = q[0] * s, v = sqrtf(q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+    float a = 2 * atan2f(v, w);
+    if (!(v > 1e-7f) || !isfinite(a)) { q[0] = 1, q[1] = q[2] = q[3] = 0; return 0; }
+    float h = a * k * 0.5f, f = sinf(h) / v * s;
+    q[0] = cosf(h), q[1] *= f, q[2] *= f, q[3] *= f;
+    return a;
+}
+/* the kart's turn (its own frame: x across, y up, z forward) for trick kind at frame of len */
+static void tk_quat(float q[4], int kind, int frame, int len, int turns) {
+    float t = len > 0 ? (float)frame / (float)len : 1, e = 6.2831853f * tk_ease(t), h = tk_hold(t), a[4], b[4];
+    switch (kind) {
+    case K_FRONT: q_axis(q, 0, e * turns); return; /* round x: nose down */
+    case K_BACK: q_axis(q, 0, -e * turns); return;
+    case K_SPIN: q_axis(q, 1, e * turns); return;
+    case K_ROLL: q_axis(q, 2, -e * turns); return;
+    case K_CORK_FR: case K_CORK_FL: case K_CORK_BR: case K_CORK_BL:
+        q_axis(a, 0, kind == K_CORK_FR || kind == K_CORK_FL ? e : -e);
+        q_axis(b, 2, kind == K_CORK_FR || kind == K_CORK_BR ? -e : e);
+        q_mul(q, a, b);
+        return;
+    case K_WHIP_L: case K_WHIP_R: /* thrown sideways, laid over */
+        q_axis(a, 1, (kind == K_WHIP_L ? 1.2f : -1.2f) * h);
+        q_axis(b, 2, (kind == K_WHIP_L ? 0.5f : -0.5f) * h);
+        q_mul(q, a, b);
+        return;
+    case K_TABLE_L: case K_TABLE_R: /* flat on its side, nose a little up */
+        q_axis(a, 2, (kind == K_TABLE_L ? 1.35f : -1.35f) * h);
+        q_axis(b, 0, -0.25f * h);
+        q_mul(q, a, b);
+        return;
+    default: q[0] = 1, q[1] = q[2] = q[3] = 0;
+    }
+}
+static int tk_len(int kind, int turns, int frames) {
+    return kind <= K_ROLL ? (turns > 1 ? frames * 8 / 5 : frames) : kind <= K_CORK_BL ? frames * 4 / 3 : frames * 7 / 6;
+}
+static int tk_turns(int kind, int turns) { return kind <= K_ROLL ? turns : kind <= K_CORK_BL ? 2 : 1; }
+static int tk_single(int d) { return d == TRICK_UP ? K_FRONT : d == TRICK_DOWN ? K_BACK : d == TRICK_LEFT ? K_SPIN : K_ROLL; }
+static int tk_dir_of(int kind) { return kind == K_FRONT ? TRICK_UP : kind == K_BACK ? TRICK_DOWN : kind == K_SPIN ? TRICK_LEFT : kind == K_ROLL ? TRICK_RIGHT : 0; }
+/* the trick becomes kind (turns): blended from where it was when it is already turning */
+static void tk_become(Trick *t, int kind, int turns, int frames, uint32_t kart) {
+    if (t->state == TK_SPIN) {
+        float qn[4], inv[4], qb[4];
+        int len = tk_len(kind, turns, frames);
+        tk_quat(qn, kind, t->frame, len, turns);
+        inv[0] = qn[0], inv[1] = -qn[1], inv[2] = -qn[2], inv[3] = -qn[3];
+        q_mul(qb, t->qc, inv);
+        memcpy(t->qb, qb, sizeof qb);
+        t->len = len;
+        rt_log("trick: kart %u now a %s%s", kart, TK_NAME[kind], turns > 1 ? " (double)" : "");
+    }
+    t->kind = kind, t->turns = turns;
+}
+/* one D-pad direction pressed in the air */
+static void tk_press(Trick *t, int d, uint32_t pad, int frames, uint32_t kart) {
+    int d0 = tk_dir_of(t->kind), opp = d == TRICK_UP ? TRICK_DOWN : d == TRICK_DOWN ? TRICK_UP : d == TRICK_LEFT ? TRICK_RIGHT : TRICK_LEFT;
+    bool vert = d & (TRICK_UP | TRICK_DOWN);
+    int since0 = d0 ? t->since[d0 == TRICK_UP ? 0 : d0 == TRICK_DOWN ? 1 : d0 == TRICK_LEFT ? 2 : 3] : 999;
+    if (t->state == TK_IDLE || t->state == TK_DONE) {
+        t->kind = tk_single(d), t->turns = 1, t->state = TK_QUEUED;
+        return;
+    }
+    bool early = t->state == TK_QUEUED || t->frame <= TRICK_CROSS_IN;
+    if (d0 && t->turns == 1 && !t->next && !!(d0 & (TRICK_UP | TRICK_DOWN)) != vert && early && (pad & d0) && since0 <= TRICK_CROSS_IN) {
+        int v = vert ? d : d0, h = vert ? d0 : d; /* a corkscrew: the flip's way and the roll's */
+        tk_become(t, v == TRICK_UP ? (h == TRICK_RIGHT ? K_CORK_FR : K_CORK_FL) : (h == TRICK_RIGHT ? K_CORK_BR : K_CORK_BL), 1, frames, kart);
+    } else if (d0 == opp && t->turns == 1 && !t->next && (t->state == TK_QUEUED ? since0 <= TRICK_BACK_IN : t->frame <= TRICK_BACK_IN)) {
+        tk_become(t, d0 == TRICK_LEFT ? K_WHIP_L : d0 == TRICK_RIGHT ? K_WHIP_R : d0 == TRICK_UP ? K_TABLE_R : K_TABLE_L, 1, frames, kart);
+    } else if (d == d0 && t->turns == 1 && !t->next && (t->state == TK_QUEUED || t->frame <= t->len * TRICK_DOUBLE_IN)) {
+        tk_become(t, t->kind, 2, frames, kart);
+    } else if (t->state == TK_QUEUED) {
+        t->kind = tk_single(d), t->turns = 1;
+    } else t->next = tk_single(d);
+}
+/* out = a (3x4: rotation + translation) applied to the 3x4 matrix at addr */
+static void tk_apply(Ctx *c, uint8_t *M, uint32_t addr, float save[12]) {
+    float m[12], o[12];
+    ldfn(c, M, addr, m, 12);
+    memcpy(save, m, sizeof m);
+    for (int r = 0; r < 3; r++)
+        for (int k = 0; k < 4; k++)
+            o[4 * r + k] = s_tk_a[4 * r] * m[k] + s_tk_a[4 * r + 1] * m[4 + k] + s_tk_a[4 * r + 2] * m[8 + k] + (k == 3 ? s_tk_a[4 * r + 3] : 0);
+    for (int i = 0; i < 12; i++)
+        if (!isfinite(o[i])) return;
+    stfn(c, M, addr, o, 12);
+}
+/* the controller ports driving this kart (driver, rider): TRICK_* bits and TRICK_JUMP, as hle.c jump() finds them */
+static uint32_t tk_pad(Ctx *c, uint8_t *M, uint32_t kart) {
+    uint32_t ctrl = ld32(c, M, (uint32_t)ctx_gpr(c, 13) - 0x4e98), bits = 0;
+    for (int r = 0; r < 2 && ram_ok(ctrl); r++) {
+        uint32_t pad = ld32(c, M, ctrl + 0x20 + 4 * r + 8 * kart);
+        uint32_t port = ram_ok(pad) ? ld32(c, M, pad + 0xac) : 4;
+        if (port < 4) bits |= (g_trick_pad >> 4 * port & 15) | (g_jump_held >> port & 1 ? TRICK_JUMP : 0);
+    }
+    return bits;
+}
+/* the back rider's turn this frame (s_rd_t, in its model's own frame) round its head (up, fwd) */
+static void tk_rider_mtx(const Trick *t, float up, float fwd) {
+    float h = t->rh, r[9], p[3], tr[3];
+    if (t->rkind == RD_SUPERMAN) { /* laid out flat behind, face down, hands where they were */
+        float a = 1.4f * h, cs = cosf(a), sn = sinf(a);
+        float m[9] = {1, 0, 0, 0, cs, -sn, 0, sn, cs};
+        memcpy(r, m, sizeof r);
+        p[0] = 0, p[1] = up * 0.75f, p[2] = fwd;
+        tr[0] = 0, tr[1] = 30 * h, tr[2] = 0;
+    } else { /* stood up on the kart, leaning back */
+        float a = -0.6f * h, cs = cosf(a), sn = sinf(a);
+        float m[9] = {1, 0, 0, 0, cs, -sn, 0, sn, cs};
+        memcpy(r, m, sizeof r);
+        p[0] = 0, p[1] = 0, p[2] = fwd;
+        tr[0] = 0, tr[1] = 75 * h, tr[2] = 0;
+    }
+    for (int i = 0; i < 3; i++) {
+        s_rd_t[4 * i] = r[3 * i], s_rd_t[4 * i + 1] = r[3 * i + 1], s_rd_t[4 * i + 2] = r[3 * i + 2];
+        s_rd_t[4 * i + 3] = p[i] - (r[3 * i] * p[0] + r[3 * i + 1] * p[1] + r[3 * i + 2] * p[2]) + tr[i];
+    }
+}
+/* this frame's trick for the kart: false when its kart is drawn as the game has it (s_rd_on: its rider not) */
+static bool tk_step(Ctx *c, uint8_t *M, uint32_t body) {
+    uint32_t kart = mld(c, M, body + 0x5b3, 1);
+    uint32_t st = ld32(c, M, body + 0x578);
+    if (kart > 7 || !g_tricks || g_lan_play || !(st & 2) || (st & 0x90)) return false;
+    Trick *t = &s_tk[kart];
+    if (t->body != body) memset(t, 0, sizeof *t), t->body = body, t->qc[0] = 1;
+    uint32_t pad = tk_pad(c, M, kart), press = pad & ~t->pad_was;
+    t->pad_was = pad;
+    bool ground = ld32(c, M, body + 0x5a4) != 0;
+    uint32_t shadow = ld32(c, M, body + 0x28);
+    float h = ram_ok(shadow) ? ldf(c, M, body + 0x12c) - ldf(c, M, shadow + 0xa4) : 0;
+    if (!isfinite(h)) h = 0;
+    static int test = -1; /* MKDD_TRICK_TEST=1: tricks on the ground too (screenshots of the spin) */
+    if (test < 0) test = getenv("MKDD_TRICK_TEST") && atoi(getenv("MKDD_TRICK_TEST")) == 1;
+    if (test) ground = false;
+    if (!ground && h > t->peak) t->peak = h;
+    if (!ground) {
+        t->air++;
+        if (press) t->presses++;
+    } else if (t->air) { /* every jump of 10 frames or more: what tricks go by (tuning) */
+        if (t->air >= 10) rt_log("trick: kart %u was %d frames in the air, %.0f high at most, %u presses, state %d, %d turns done", kart, t->air, t->peak, t->presses, t->state, t->done);
+        t->air = 0, t->presses = 0;
+    }
+    static int frames;
+    if (!frames) { /* MKDD_TRICK_FRAMES: a slower trick for screenshots (tests) */
+        const char *e = getenv("MKDD_TRICK_FRAMES");
+        frames = e && atoi(e) >= 10 && atoi(e) <= 1000 ? atoi(e) : TRICK_FRAMES;
+    }
+    for (int i = 0; i < 4; i++)
+        if (press >> i & 1) t->since[i] = 0;
+        else if (t->since[i] < 999) t->since[i]++;
+    /* frames to the landing (h = fall n + acc n^2 / 2), fall and its gain from the kart's own height, not from
+     * h: the ground below a long flight slopes, which made h drop several times faster; 1e9 while it can't be told */
+    float y = ldf(c, M, body + 0x12c), v = t->air > 1 ? t->hprev - y : 0, land = 1e9f;
+    if (!isfinite(v) || fabsf(v - t->fall) >= 30) v = t->fall; /* a reset or teleport, not a fall */
+    if (t->air > 2) {
+        float a = t->acc * 0.7f + (v - t->fall) * 0.3f;
+        t->acc = a < 0 ? 0 : a > 10 ? 10 : a;
+    } else t->acc = 0;
+    t->fall = t->air > 1 ? v : 0;
+    t->hprev = isfinite(y) ? y : 0;
+    if (!ground && !test && t->air > 4) {
+        float a = t->acc, f = t->fall;
+        if (a > 0.01f) land = (sqrtf(f * f + 2 * a * (h > 0 ? h : 0)) - f) / a;
+        else if (f > 0.5f) land = h / f;
+    }
+    const float kneed = frames * TRICK_CLEAN, rneed = frames * 4 / 3 * TRICK_CLEAN;
+    if (press & 15 && !ground && land < kneed) {
+        rt_log("trick: kart %u press ignored, %.0f frames from landing, %.0f high, falling %.1f", kart, land, h, t->fall);
+        press &= ~15u; /* steering for the turn ahead, not a trick */
+        if (t->state == TK_QUEUED) t->state = TK_IDLE;
+    }
+    if (press & TRICK_JUMP && !ground && land < rneed) press &= ~(uint32_t)TRICK_JUMP;
+    if (press && !ground) {
+        static const int ORDER[4] = {TRICK_UP, TRICK_DOWN, TRICK_LEFT, TRICK_RIGHT};
+        for (int i = 0; i < 4; i++) /* two at once (a diagonal): the second makes the corkscrew */
+            if (press & ORDER[i]) tk_press(t, ORDER[i], pad, frames, kart);
+        if (press & TRICK_JUMP) {
+            int k = t->rcount++ & 1 ? RD_CLIFF : RD_SUPERMAN;
+            if (t->rstate == TK_SPIN) t->rnext = k;
+            else t->rkind = k, t->rstate = TK_QUEUED;
+        }
+    }
+    bool up = (t->air >= TRICK_LONG_AIR && h >= TRICK_LATE_H) || (t->air >= TRICK_MIN_AIR && h >= TRICK_MIN_H) || test; /* a ramp or a drop, not a bump */
+    if (t->state == TK_QUEUED && !ground && land < kneed) t->state = TK_IDLE; /* waited too long: dropped */
+    if (t->rstate == TK_QUEUED && !ground && land < rneed) t->rstate = TK_IDLE;
+    if (t->state == TK_QUEUED && !ground && up) {
+        t->state = TK_SPIN, t->frame = 0, t->len = tk_len(t->kind, t->turns, frames), t->next = 0;
+        t->qb[0] = 1, t->qb[1] = t->qb[2] = t->qb[3] = 0;
+        rt_log("trick: kart %u %s after %d frames in the air, %.0f high, landing in %.0f", kart, TK_NAME[t->kind], t->air, h, land);
+    }
+    if (t->rstate == TK_QUEUED && !ground && up) {
+        t->rstate = TK_SPIN, t->rframe = 0, t->rlen = frames * 4 / 3, t->rnext = 0, t->rd = 0;
+        rt_log("trick: kart %u rider %s", kart, t->rkind == RD_SUPERMAN ? "superman" : "cliffhanger");
+    }
+    s_tk_wipe = false;
+    if (ground) {
+        bool clean = t->state == TK_SPIN && t->frame + 1 >= t->len * TRICK_CLEAN; /* all but done: settles, counts */
+        bool kmid = t->state == TK_SPIN && !clean, rmid = t->rstate == TK_SPIN && t->rframe + 1 < t->rlen * TRICK_CLEAN;
+        if (clean) t->done += tk_turns(t->kind, t->turns), t->next = 0;
+        if (t->rstate == TK_SPIN && !rmid) t->done++;
+        if (kmid || rmid) {
+            rt_log("trick: kart %u landed mid-trick (%d of %d frames, rider %d of %d), no boost", kart, t->frame, t->len, t->rframe, t->rlen);
+            if (g_tricks == 2 && ((kmid && t->frame >= t->len * TRICK_WIPE) || (rmid && t->rframe >= t->rlen * TRICK_WIPE)))
+                s_tk_wipe = true;
+            if (t->state == TK_SPIN) t->state = TK_SETTLE;
+        } else if (t->state == TK_QUEUED || t->state == TK_DONE || clean || t->rstate == TK_SPIN) {
+            if (t->state == TK_QUEUED) rt_log("trick: kart %u landed before a trick could start", kart);
+            if (t->done > 0) { /* landed clean: the mini-turbo's boost, longer for more turns */
+                int n = TRICK_BOOST + TRICK_BOOST_TURN * (t->done - 1);
+                if (n > TRICK_BOOST_MAX) n = TRICK_BOOST_MAX;
+                uint32_t fl = (uint32_t)mld(c, M, body + 0x570, 4), left = (uint32_t)mld(c, M, body + 0x59e, 2);
+                mst(c, M, body + 0x570, 4, fl | 0x200);
+                if (left < (uint32_t)n) mst(c, M, body + 0x59e, 2, (uint32_t)n);
+                rt_log("trick: kart %u landed %d turns from %.0f high, boost %d frames", kart, t->done, t->peak, n);
+            }
+            t->state = clean ? TK_SETTLE : TK_IDLE;
+        }
+        if (t->rstate == TK_SPIN) t->rstate = TK_SETTLE;
+        else if (t->rstate == TK_QUEUED) t->rstate = TK_IDLE;
+        t->done = 0;
+        if (t->state == TK_IDLE && !t->air) t->peak = 0;
+    }
+    /* the kart */
+    if (t->state == TK_SPIN) {
+        float q[4];
+        q_scale(t->qb, TRICK_BLEND);
+        tk_quat(q, t->kind, ++t->frame, t->len, t->turns);
+        q_mul(t->qc, t->qb, q);
+        if (t->frame >= t->len) {
+            t->done += tk_turns(t->kind, t->turns);
+            t->qc[0] = 1, t->qc[1] = t->qc[2] = t->qc[3] = 0;
+            if (ground || test) t->state = TK_IDLE;
+            else if (t->next && land < tk_len(t->next, 1, frames) * TRICK_CLEAN) t->next = 0, t->state = TK_DONE; /* no time left */
+            else if (t->next) { /* the chained trick, right away */
+                t->kind = t->next, t->turns = 1, t->next = 0;
+                t->state = TK_SPIN, t->frame = 0, t->len = tk_len(t->kind, 1, frames);
+                t->qb[0] = 1, t->qb[1] = t->qb[2] = t->qb[3] = 0;
+                rt_log("trick: kart %u then a %s", kart, TK_NAME[t->kind]);
+            } else t->state = TK_DONE;
+        }
+    } else if (t->state == TK_SETTLE) {
+        if (q_scale(t->qc, TRICK_SETTLE) < 0.03f) t->state = TK_IDLE, t->qc[0] = 1, t->qc[1] = t->qc[2] = t->qc[3] = 0, t->peak = 0;
+    }
+    /* the rider */
+    if (t->rstate == TK_SPIN) {
+        t->rh = tk_hold((float)++t->rframe / (float)t->rlen);
+        if (t->rframe >= t->rlen) {
+            if (!ground && !test) t->done++;
+            t->rh = 0, t->rstate = TK_IDLE;
+            if (t->rnext && !ground && land >= rneed) {
+                t->rkind = t->rnext, t->rnext = 0, t->rstate = TK_SPIN, t->rframe = 0, t->rd = 0;
+                rt_log("trick: kart %u then rider %s", kart, t->rkind == RD_SUPERMAN ? "superman" : "cliffhanger");
+            }
+        }
+    } else if (t->rstate == TK_SETTLE) {
+        t->rh *= TRICK_SETTLE;
+        if (t->rh < 0.02f) t->rh = 0, t->rstate = TK_IDLE;
+    }
+    s_rd_on = t->rh > 0; /* tk_rider turns it */
+    if (t->state != TK_SPIN && t->state != TK_SETTLE) return false;
+    /* the turn in the kart's own frame (x across, y up, z forward), carried into the world */
+    float q[9], *w = t->qc;
+    q[0] = 1 - 2 * (w[2] * w[2] + w[3] * w[3]), q[1] = 2 * (w[1] * w[2] - w[0] * w[3]), q[2] = 2 * (w[1] * w[3] + w[0] * w[2]);
+    q[3] = 2 * (w[1] * w[2] + w[0] * w[3]), q[4] = 1 - 2 * (w[1] * w[1] + w[3] * w[3]), q[5] = 2 * (w[2] * w[3] - w[0] * w[1]);
+    q[6] = 2 * (w[1] * w[3] - w[0] * w[2]), q[7] = 2 * (w[2] * w[3] + w[0] * w[1]), q[8] = 1 - 2 * (w[1] * w[1] + w[2] * w[2]);
+    float b[12], u[3][3];
+    ldfn(c, M, body + 0x110, b, 12);
+    for (int k = 0; k < 3; k++) { /* u[k]: the kart's axis k, unit length */
+        float v[3] = {b[k], b[4 + k], b[8 + k]};
+        v3_norm(v);
+        memcpy(u[k], v, sizeof v);
+    }
+    float p[3], rw[9];
+    for (int i = 0; i < 3; i++) p[i] = b[4 * i + 3] + u[1][i] * TRICK_PIVOT_UP;
+    for (int i = 0; i < 3; i++) /* rw = U q U^T, U's columns the axes */
+        for (int j = 0; j < 3; j++) {
+            float s = 0;
+            for (int k = 0; k < 3; k++)
+                for (int l = 0; l < 3; l++) s += u[k][i] * q[3 * k + l] * u[l][j];
+            rw[3 * i + j] = s;
+        }
+    for (int i = 0; i < 3; i++) {
+        s_tk_a[4 * i] = rw[3 * i], s_tk_a[4 * i + 1] = rw[3 * i + 1], s_tk_a[4 * i + 2] = rw[3 * i + 2];
+        s_tk_a[4 * i + 3] = p[i] - (rw[3 * i] * p[0] + rw[3 * i + 1] * p[1] + rw[3 * i + 2] * p[2]);
+    }
+    for (int i = 0; i < 12; i++)
+        if (!isfinite(s_tk_a[i])) return false;
+    return true;
+}
+/* DRIVER / KART FPV: a view whose first-person camera sits in this kart turns with its trick (the
+ * same turn as the kart's matrices, this frame's: the cameras ran before MakeKartDisp). Only the
+ * view matrix (+0x80); the eye and look point stay the kart's for the next frame and the sound. */
+static void tk_fp_cams(Ctx *c, uint8_t *M, uint32_t body) {
+    for (unsigned v = 0; v < 4; v++) {
+        uint32_t cam = s_fp_cam[v];
+        if (!(g_first_person >> v & 1) || !ram_ok(cam) || s_fp_body[v] != body || ld32(c, M, cam) != body ||
+            mld(c, M, cam + 0xe1, 1) != 0 || mld(c, M, cam + 0xe3, 1) != v || !fp_screens(c, M))
+            continue;
+        float e[3], a[3], u[3], e2[3], a2[3], u2[3];
+        ldfn(c, M, cam + 0x1e8, e, 3);
+        ldfn(c, M, cam + 0x1f4, a, 3);
+        ldfn(c, M, cam + 0x90, u, 3);
+        for (int i = 0; i < 3; i++) {
+            const float *r = s_tk_a + 4 * i;
+            e2[i] = r[0] * e[0] + r[1] * e[1] + r[2] * e[2] + r[3];
+            a2[i] = r[0] * a[0] + r[1] * a[1] + r[2] * a[2] + r[3];
+            u2[i] = r[0] * u[0] + r[1] * u[1] + r[2] * u[2];
+        }
+        cam_look_at2(c, M, cam, e2, a2, u2, false);
+    }
+}
+/* the back rider's models (the DriverModel whose head is further back) turned by s_rd_t after
+ * MakeKartDisp gave them the display pose: base matrix = base * s_rd_t, round its own head */
+/* the back rider and its head in the model's frame: false when neither driver reads */
+static bool tk_rider_measure(Ctx *c, uint8_t *M, uint32_t body, uint32_t *d, float *up, float *fwd) {
+    float a[5], b[5];
+    uint32_t d0 = ld32(c, M, body + 0x18), d1 = ld32(c, M, body + 0x1c);
+    bool ha = driver_top(c, M, d0, a), hb = driver_top(c, M, d1, b);
+    *d = ha && hb ? (a[1] < b[1] ? d0 : d1) : ha ? d0 : d1; /* the one further back */
+    const float *hd = ha || hb ? (*d == d0 ? a : b) : NULL;
+    float sc = hd && hd[4] > 1e-3f ? hd[4] : 1;
+    *up = hd ? hd[0] / sc : HEAD_UP, *fwd = hd ? hd[1] / sc : -40;
+    return hd != NULL;
+}
+/* in the air with nothing turning (the joints lag the base a frame, so a measure taken mid-flip is
+ * off by the flip's last step): kept for a rider trick started later in the jump */
+static void tk_rider_rest(Ctx *c, uint8_t *M, uint32_t body, Trick *t, bool turning) {
+    t->calm = turning || t->rh > 0 ? 0 : t->calm < 100 ? t->calm + 1 : t->calm;
+    if (!t->air) t->rdc = 0; /* a new jump, maybe swapped riders */
+    if (!t->air || t->calm < 2 || (t->air & 3)) return; /* every 4th frame is plenty */
+    uint32_t d;
+    float up, fwd;
+    if (tk_rider_measure(c, M, body, &d, &up, &fwd)) t->rdc = d, t->rupc = up, t->rfwdc = fwd;
+}
+static void tk_rider(Ctx *c, uint8_t *M, uint32_t body, Trick *t) {
+    if (!t->rd) { /* measured once per trick, upright (re-measuring the turned joints made it flicker) */
+        bool cached = t->rdc && (t->state == TK_SPIN || t->state == TK_SETTLE || t->calm < 2) && (t->rdc == ld32(c, M, body + 0x18) || t->rdc == ld32(c, M, body + 0x1c));
+        bool read = true;
+        if (cached) t->rd = t->rdc, t->rup = t->rupc, t->rfwd = t->rfwdc;
+        else read = tk_rider_measure(c, M, body, &t->rd, &t->rup, &t->rfwd);
+        rt_log("trick: rider %08x head %.0f up, %.0f ahead%s", t->rd, t->rup, t->rfwd,
+               cached ? " (upright)" : read ? "" : " (not read)");
+    }
+    uint32_t d = t->rd;
+    if (!ram_ok(d) || (d != ld32(c, M, body + 0x18) && d != ld32(c, M, body + 0x1c))) return;
+    tk_rider_mtx(t, t->rup, t->rfwd);
+    uint32_t n = ram_ok(d) ? mld(c, M, d + 4, 2) : 0, mods = ram_ok(d) ? ld32(c, M, d + 0xc) : 0;
+    for (uint32_t i = 0; i < n && i < 8; i++) {
+        uint32_t m = ram_ok(mods) ? ld32(c, M, mods + 4 * i) : 0;
+        if (!ram_ok(m)) continue;
+        float x[12], o[12];
+        ldfn(c, M, m + 0x24, x, 12);
+        for (int r = 0; r < 3; r++)
+            for (int k = 0; k < 4; k++)
+                o[4 * r + k] = x[4 * r] * s_rd_t[k] + x[4 * r + 1] * s_rd_t[4 + k] + x[4 * r + 2] * s_rd_t[8 + k] + (k == 3 ? x[4 * r + 3] : 0);
+        bool ok = true;
+        for (int j = 0; j < 12; j++) ok = ok && isfinite(o[j]);
+        if (ok) stfn(c, M, m + 0x24, o, 12);
+    }
+}
+/* the kart's matrices as the game made them again, the shadow level */
+static void tk_restore(Ctx *c, uint8_t *M, uint32_t body) {
+    if (s_tk_sus[0] == 0) return; /* FUN_802d320c didn't turn them */
+    stfn(c, M, body + 0x1a0, s_tk_save[0], 12);
+    for (int w = 0; w < 4; w++)
+        for (int k = 0; k < 3; k++) stfn(c, M, s_tk_sus[w] + (k == 0 ? 0x158 : k == 1 ? 0x1e8 : 0x248), s_tk_save[1 + 3 * w + k], 12);
+    memset(s_tk_sus, 0, sizeof s_tk_sus);
+    /* ExModel::setBaseTRMtx's copy (+0x4 levels, +0xc J3DModel *[levels] (base matrix +0x24),
+     * +0x2c its own while a level has no model) */
+    uint32_t sh = ld32(c, M, body + 0x28);
+    if (!ram_ok(sh)) return;
+    uint32_t n = mld(c, M, sh + 4, 2), mods = ld32(c, M, sh + 0xc);
+    for (uint32_t i = 0; i < n && i < 8; i++) {
+        uint32_t m = ram_ok(mods) ? ld32(c, M, mods + 4 * i) : 0;
+        stfn(c, M, ram_ok(m) ? m + 0x24 : sh + 0x2c, s_tk_save[0], 12);
+    }
+}
+static uint64_t i_FUN_802d3c60(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t body = ld32(c, M, (uint32_t)a0);
+    s_tk_body = 0, s_rd_on = false, s_tk_wipe = false;
+    bool on = ram_ok(body) && tk_step(c, M, body);
+    bool rider = s_rd_on, wipe = s_tk_wipe;
+    if (on) s_tk_body = body, tk_fp_cams(c, M, body);
+    ctx_call_orig(c, g_native_addr[NAT_FUN_802d3c60]);
+    uint32_t kart = ram_ok(body) ? mld(c, M, body + 0x5b3, 1) : 8;
+    if (rider && kart < 8) tk_rider(c, M, body, &s_tk[kart]);
+    else if (g_tricks && kart < 8 && s_tk[kart].body == body) tk_rider_rest(c, M, body, &s_tk[kart], on);
+    if (on && s_tk_body == body) tk_restore(c, M, body);
+    s_tk_body = 0;
+    uint32_t crash = wipe ? ld32(c, M, body + 0xdc) : 0;
+    if (ram_ok(crash)) { /* KartCrash::MakeHalfSpin(crash, no item): the wall hit's spin-out */
+        const uint32_t args[2] = {crash, 0};
+        rt_log("trick: kart %u wiped out (%d frames in)", kart, s_tk[kart & 7].frame);
+        ctx_call_guest(c, 0x802C9A34u, args, 2);
+    }
+    return 0;
+}
+static uint64_t i_FUN_802d320c(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t body = ld32(c, M, (uint32_t)a0);
+    if (s_tk_body && body == s_tk_body) {
+        uint32_t ctrl = ld32(c, M, (uint32_t)ctx_gpr(c, 13) - 0x4e98), kart = mld(c, M, body + 0x5b3, 1);
+        uint32_t sus[4];
+        bool ok = ram_ok(ctrl) && kart < 8;
+        for (int w = 0; w < 4 && ok; w++) sus[w] = ld32(c, M, ctrl + 0xc0 + 4 * (4 * kart + w)), ok = ram_ok(sus[w]);
+        if (ok) {
+            tk_apply(c, M, body + 0x1a0, s_tk_save[0]);
+            for (int w = 0; w < 4; w++)
+                for (int k = 0; k < 3; k++) tk_apply(c, M, sus[w] + (k == 0 ? 0x158 : k == 1 ? 0x1e8 : 0x248), s_tk_save[1 + 3 * w + k]);
+            memcpy(s_tk_sus, sus, sizeof sus);
+        }
+    }
+    ctx_call_orig(c, g_native_addr[NAT_FUN_802d320c]);
     return 0;
 }
 

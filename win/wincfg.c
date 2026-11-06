@@ -83,11 +83,6 @@ void wincfg_save(void) {
     fprintf(f, "launcher=%d\nfullscreen=%d\nwindow=%dx%d\nvolume=%d\nlatency=%d\naudio_device=%s\ndisc=%s\n", g_win.launcher,
             g_win.fullscreen, g_win.win_w, g_win.win_h, g_win.volume, g_win.latency, g_win.audio_dev, g_win.disc);
     for (int i = 0; i < KB_COUNT; i++) fprintf(f, "%s=%d,%d\n", KB_KEYS_INI[i], g_win.keys[i][0], g_win.keys[i][1]);
-    for (int pl = 0; pl < 3; pl++) {
-        if (!g_win.pmap_set[pl]) continue;
-        fprintf(f, "p%d_map=", pl + 2);
-        for (int i = 0; i < WIN_MAPS; i++) fprintf(f, "%llx%s", (unsigned long long)g_win.pmap[pl][i], i + 1 < WIN_MAPS ? "," : "\n");
-    }
     bool ok = !ferror(f);
     if (fclose(f) || !ok) { remove(INI ".tmp"); return; }
     MoveFileExA(INI ".tmp", INI, MOVEFILE_REPLACE_EXISTING);

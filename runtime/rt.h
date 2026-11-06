@@ -322,15 +322,15 @@ extern volatile int g_kart_test_right, g_kart_test_shot; /* an extra kart picked
 extern volatile uint32_t g_look_back, g_cam_frames[4];
 /* FREE CAMERA (native.c FUN_802b6bd4): view v's right stick sideways, -1..1 (0 inside the dead
  * zone, or FREE CAMERA off): the race camera turns round its kart while held. Let go, it goes
- * back by g_cam_back: CAM_SNAP at once, CAM_EASE gliding, CAM_STAY not (until bit v of
+ * back by g_cam_back[v]: CAM_SNAP at once, CAM_EASE gliding, CAM_STAY not (until bit v of
  * g_cam_reset, view v's CAMERA RESET button held, puts it back). */
 enum { CAM_SNAP, CAM_EASE, CAM_STAY };
 extern volatile float g_cam_pan[4];
-extern volatile uint32_t g_cam_back, g_cam_reset;
-/* CAMERA HEIGHT (native.c FUN_802b6bd4): the chase camera's height above its kart times this; 1 the game's */
-extern volatile float g_cam_height;
+extern volatile uint32_t g_cam_back[4], g_cam_reset;
+/* CAMERA HEIGHT (native.c FUN_802b6bd4): view v's chase camera's height above its kart times [v]; 1 the game's */
+extern volatile float g_cam_height[4];
 /* CAMERA DISTANCE (the same): the chase camera's distance behind its kart (across the kart's up axis) times this */
-extern volatile float g_cam_dist;
+extern volatile float g_cam_dist[4];
 /* Kart screen: every unlocked kart for any pair of drivers, whatever their weight class (nonzero = on). */
 extern volatile uint32_t g_any_kart;
 extern volatile uint32_t g_battle_cpus; /* SINGLE PLAYER BATTLE MODE: battles get computer karts up to 4 */
@@ -357,6 +357,14 @@ extern volatile float g_mt_speed, g_mt_length;
  * hop's upward speed (0: off). One hop per press, players' karts on the ground. */
 extern volatile uint32_t g_jump_held;
 extern volatile float g_jump_power;
+/* TRICKS (native.c): a D-pad press (or a stick flick) while a players' kart is in the air off a
+ * ramp or a drop (not the drift hop) spins the drawn kart once round: up a front flip, down a
+ * backflip, left a flat 360, right a barrel roll; the same again quickly a double, another during
+ * or after it a combo; landing clean a boost. Only what is drawn turns (the physics, camera and
+ * shadow stay level). g_trick_pad: 4 bits per controller port (TRICK_*), the front end's. Off once
+ * the game has entered LAN MODE (g_lan_play). */
+enum { TRICK_UP = 1, TRICK_DOWN = 2, TRICK_LEFT = 4, TRICK_RIGHT = 8 };
+extern volatile uint32_t g_tricks, g_trick_pad;
 #define SPECIAL_ANY 0xFF
 extern volatile uint8_t g_special[21];
 /* Start-up: game lines are logged whatever LOGGING says, each written to the SD card at once, so

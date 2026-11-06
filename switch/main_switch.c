@@ -793,35 +793,46 @@ static void update_pads(void) {
     g_p1_gamecube = s_player_style[0] & HidNpadStyleTag_NpadGc;
 
     if (s_pad_quiet) s_pad_quiet--;
-    /* The - menu belongs to player 1 (a single right Joy-Con: press its stick and +; a GameCube
-     * controller, which has no -: hold Z and press Start). The menu takes both from the game. */
-    PadState *p1 = s_player_src[0] >= 0 ? &s_src[s_player_src[0]] : &s_src[0];
-    u64 down1 = padGetButtonsDown(p1), held1 = padGetButtons(p1);
-    if (single_joycon(s_player_style[0])) {
-        bool left = s_player_style[0] & HidNpadStyleTag_NpadJoyLeft;
-        down1 = sideways_buttons(down1, left), held1 = sideways_buttons(held1, left);
+    /* The - menu: each player's - opens it for them (player 1: everything, players 2-4: their camera
+     * and buttons). A single right Joy-Con: press its stick and +; a GameCube controller, which has
+     * no -: hold Z and press Start. Players 2-4 on a single Joy-Con have - as their + (pause), so
+     * only the right one's stick + + opens theirs. The menu takes both from the game. */
+    uint64_t mdown[4] = {0, 0, 0, 0}, mheld[4] = {0, 0, 0, 0};
+    for (int p = 0; p < 4; p++) {
+        if (p && s_player_src[p] < 0) continue;
+        PadState *ps = s_player_src[p] >= 0 ? &s_src[s_player_src[p]] : &s_src[0];
+        u32 st = s_player_style[p];
+        u64 d = padGetButtonsDown(ps), h = padGetButtons(ps);
+        if (single_joycon(st)) {
+            bool left = st & HidNpadStyleTag_NpadJoyLeft;
+            d = sideways_buttons(d, left), h = sideways_buttons(h, left);
+            if (p) d &= ~HidNpadButton_Minus, h &= ~HidNpadButton_Minus;
+        }
+        if ((st & HidNpadStyleTag_NpadJoyRight) && (h & (HidNpadButton_StickL | HidNpadButton_StickR)) && (d & HidNpadButton_Plus))
+            d |= HidNpadButton_Minus;
+        if ((st & HidNpadStyleTag_NpadGc) && (h & HidNpadButton_ZR) && (d & HidNpadButton_Plus))
+            d |= HidNpadButton_Minus;
+        /* those two count as - while held too (OPEN MENU on hold) */
+        if ((h & HidNpadButton_Plus) && (((st & HidNpadStyleTag_NpadJoyRight) && (h & (HidNpadButton_StickL | HidNpadButton_StickR)))
+                                         || ((st & HidNpadStyleTag_NpadGc) && (h & HidNpadButton_ZR))))
+            h |= HidNpadButton_Minus;
+        mdown[p] = d, mheld[p] = h;
     }
-    if ((s_player_style[0] & HidNpadStyleTag_NpadJoyRight) && (held1 & (HidNpadButton_StickL | HidNpadButton_StickR)) && (down1 & HidNpadButton_Plus))
-        down1 |= HidNpadButton_Minus;
-    if ((s_player_style[0] & HidNpadStyleTag_NpadGc) && (held1 & HidNpadButton_ZR) && (down1 & HidNpadButton_Plus))
-        down1 |= HidNpadButton_Minus;
-    /* those two count as - while held too (OPEN MENU on hold) */
-    if ((held1 & HidNpadButton_Plus) && (((s_player_style[0] & HidNpadStyleTag_NpadJoyRight) && (held1 & (HidNpadButton_StickL | HidNpadButton_StickR)))
-                                         || ((s_player_style[0] & HidNpadStyleTag_NpadGc) && (held1 & HidNpadButton_ZR))))
-        held1 |= HidNpadButton_Minus;
-    bool menu = menu_input(down1, held1, &s_quit);
-    uint32_t jump = 0, cam_reset = 0; /* JUMP (menu.c ACTIONS, GAME > JUMP): the ports holding it, for the game thread */
+    bool menu = menu_input(mdown, mheld, &s_quit);
+    uint32_t jump = 0, cam_reset = 0, trick = 0; /* JUMP (menu.c ACTIONS, GAME > JUMP): the ports holding it, for the game thread */
     /* BUTTON MAPPING is for driving only: menus, the pause screen, the flyover and the results
      * keep the standard buttons (hle.c g_race_drive). Paused in a race, a PAUSE button the
-     * standard layout leaves free resumes too. */
+     * standard layout leaves free resumes too. Each player's own (player_set). */
     uint32_t drive = g_race_drive;
-    const uint64_t *map = drive == 1 ? g_set.map : g_map_default;
     uint64_t std = 0;
     for (int i = 0; i < GC_COUNT; i++) std |= g_map_default[i];
-    uint64_t resume = drive == 2 ? g_set.map[GC_START] & ~std : 0;
     for (int p = 0; p < 4; p++) {
         PadStatus s = {0};
         int src = s_player_src[p];
+        PlayerSet ps;
+        player_set(p, &ps);
+        const uint64_t *map = drive == 1 ? ps.map : g_map_default;
+        uint64_t resume = drive == 2 ? ps.map[GC_START] & ~std : 0;
         s.connected = src >= 0 || p == 0; /* port 1 is always there (the game expects a pad) */
         if (src >= 0 && !menu) {
             PadState *pad = &s_src[src];
@@ -832,10 +843,14 @@ static void update_pads(void) {
                 b = sideways_buttons(b, st & HidNpadStyleTag_NpadJoyLeft);
                 if (p) b = b & HidNpadButton_Minus ? (b & ~HidNpadButton_Minus) | HidNpadButton_Plus : b; /* - is + but for player 1 (the menu) */
             }
-            if (pad == p1) b &= ~menu_blocked();
-            const uint64_t *pmap = single ? (drive == 1 ? g_set.jmap : JOY_MAP_DEFAULT) : map;
+            b &= ~menu_blocked(p);
+            const uint64_t *pmap = single ? (drive == 1 ? ps.jmap : JOY_MAP_DEFAULT) : map;
             if (drive == 1 && (b & pmap[MAP_JUMP])) jump |= 1u << p;
             if (drive == 1 && (b & pmap[MAP_CAM_RESET])) cam_reset |= 1u << p;
+            /* TRICKS (native.c): the D-pad as the controller has it (it still steers too) */
+            if (drive == 1)
+                trick |= (uint32_t)((b & HidNpadButton_Up ? TRICK_UP : 0) | (b & HidNpadButton_Down ? TRICK_DOWN : 0) |
+                                    (b & HidNpadButton_Left ? TRICK_LEFT : 0) | (b & HidNpadButton_Right ? TRICK_RIGHT : 0)) << 4 * p;
             HidAnalogStickState l = padGetStickPos(pad, single && (st & HidNpadStyleTag_NpadJoyRight) ? 1 : 0);
             if (single) { /* the system reports it as held upright: turn it a quarter, rail (SL / SR) on top */
                 s32 x = l.x;
@@ -845,6 +860,19 @@ static void update_pads(void) {
             }
             s.stick_x = stick(l.x);
             s.stick_y = stick(l.y);
+            /* TRICKS by stick too: a flick (from the middle past 80% within a few frames), held as
+             * that D-pad direction while it stays out; plain steering pushes it out slower */
+            if (drive == 1) {
+                static int since_mid[4];
+                static uint32_t flick[4];
+                int ax = l.x < 0 ? -l.x : l.x, ay = l.y < 0 ? -l.y : l.y, m = ax > ay ? ax : ay;
+                if (m < 32767 * 3 / 10) since_mid[p] = 0, flick[p] = 0;
+                else if (since_mid[p] < 100) since_mid[p]++;
+                if (!flick[p] && m > 32767 * 8 / 10 && since_mid[p] <= 5)
+                    flick[p] = ax > ay ? (l.x < 0 ? TRICK_LEFT : TRICK_RIGHT) : (l.y > 0 ? TRICK_UP : TRICK_DOWN);
+                if (m < 32767 * 6 / 10) flick[p] = 0;
+                trick |= flick[p] << 4 * p;
+            }
             if (st & HidNpadStyleTag_NpadGc) map_gc(pad, b, &s);
             else if (single) map_buttons(b, pmap, &s);
             else {
@@ -866,7 +894,7 @@ static void update_pads(void) {
             start_was[p] = start;
             /* FREE CAMERA: the right stick (a GameCube pad's C stick) sideways; races never read it */
             float pan = s.substick_x / 100.0f;
-            g_cam_pan[p] = g_set.free_cam && !single && (pan > 0.3f || pan < -0.3f) ? (pan > 1 ? 1 : pan < -1 ? -1 : pan) : 0;
+            g_cam_pan[p] = ps.free_cam && !single && (pan > 0.3f || pan < -0.3f) ? (pan > 1 ? 1 : pan < -1 ? -1 : pan) : 0;
             /* its RANDOM is GameCube L + R held, as the screen shows: L has no button of its own
              * by default (ZL jumps, L / R are Z), so there Switch L and R are GameCube L and R
              * too (Z only swaps drivers on the kart step); the same on the cup and course pages
@@ -900,8 +928,8 @@ static void update_pads(void) {
             bool single = single_joycon(st); /* its buttons from JOY-CON SIDEWAYS */
             u64 pb = src >= 0 && !menu && !(st & HidNpadStyleTag_NpadGc) && drive == 1 ? padGetButtons(&s_src[src]) : 0;
             if (single) pb = sideways_buttons(pb, st & HidNpadStyleTag_NpadJoyLeft);
-            if (src >= 0 && &s_src[src] == p1) pb &= ~menu_blocked();
-            const uint64_t *pmap = single ? g_set.jmap : map;
+            pb &= ~menu_blocked(p);
+            const uint64_t *pmap = single ? ps.jmap : map;
             bool on = pb & pmap[MAP_FP], kon = pb & pmap[MAP_KFP];
             u32 bit = 1u << p;
             bool fp = g_first_person & bit, kart = g_fp_kart & bit;
@@ -941,8 +969,8 @@ static void update_pads(void) {
         pad_set(p, &s);
     }
     g_jump_held = jump;
+    g_trick_pad = trick;
     g_cam_reset = cam_reset;
-    g_cam_back = g_set.free_cam == 2 ? CAM_EASE : g_set.free_cam == 3 ? CAM_STAY : CAM_SNAP;
 }
 
 static void game_thread(void *arg) {
@@ -1380,23 +1408,8 @@ int main(int argc, char **argv) {
         g_vsplit = g_set.vsplit;
         g_any_kart = g_lan_play ? 0 : g_set.any_kart; /* LAN play: the game's own (rt.h) */
         g_laps = g_lan_play ? 0 : (uint32_t)g_set.laps;
-        {
-            static const float HEIGHTS[4] = {0.45f, 0.7f, 1.0f, 1.5f};
-            static const float DISTS[5] = {0.55f, 0.75f, 1.0f, 1.3f, 1.6f};
-            g_cam_height = HEIGHTS[g_set.cam_height & 3];
-            g_cam_dist = DISTS[g_set.cam_dist % 5];
-        }
         cheats_apply();
-        /* CAMERA VIEW: NORMAL, DRIVER FPV, KART FPV. Player 1's; when it changes (menu or player 1's
-         * button) every player's view follows, players 2-4 can then switch their own again */
-        int cv = g_set.camera % 3;
-        static int s_cv_last = -1;
-        uint32_t cbits = cv == s_cv_last ? 1u : 0xFu;
-        s_cv_last = cv;
-        if (cv) __atomic_or_fetch(&g_first_person, cbits, __ATOMIC_RELAXED);
-        else __atomic_and_fetch(&g_first_person, ~cbits, __ATOMIC_RELAXED);
-        if (cv == 2) __atomic_or_fetch(&g_fp_kart, cbits, __ATOMIC_RELAXED);
-        else __atomic_and_fetch(&g_fp_kart, ~cbits, __ATOMIC_RELAXED);
+        camera_apply(); /* each player's CAMERA (menu.c) */
         g_fp_up = (float)g_set.drv_up, g_fp_fwd = (float)g_set.drv_forward;
         g_fp_tilt = (float)(g_set.drv_tilt < -45 ? -45 : g_set.drv_tilt > 45 ? 45 : g_set.drv_tilt) * 0.017453293f;
         g_kart_eye_on = 1;

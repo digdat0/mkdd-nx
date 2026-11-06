@@ -561,16 +561,23 @@ static void update_pads(void) {
         s_player_src[p] = src_of[p];
     }
     g_p1_gamecube = s_player_src[0] >= 0 && g_pads[s_player_src[0]].gc;
-    u64 held1, down1;
     s32 lx, ly, rx, ry;
-    player_state(0, &held1, &down1, &lx, &ly, &rx, &ry);
-    /* a GameCube controller has no -: Z (ZR here) + Start opens the menu, as on the Switch */
-    if (g_p1_gamecube && (held1 & HidNpadButton_ZR) && (held1 & HidNpadButton_Plus)) {
-        if (down1 & HidNpadButton_Plus) down1 |= HidNpadButton_Minus;
-        held1 |= HidNpadButton_Minus;
+    /* each player's - opens the menu for them (players 2-4: their camera and buttons); a GameCube
+     * controller has no -: Z (ZR here) + Start, as on the Switch */
+    uint64_t mdown[4] = {0, 0, 0, 0}, mheld[4] = {0, 0, 0, 0};
+    for (int p = 0; p < 4; p++) {
+        if (p && s_player_src[p] < 0) continue;
+        u64 h, d;
+        player_state(p, &h, &d, &lx, &ly, &rx, &ry);
+        bool gc = s_player_src[p] >= 0 && g_pads[s_player_src[p]].gc;
+        if (gc && (h & HidNpadButton_ZR) && (h & HidNpadButton_Plus)) {
+            if (d & HidNpadButton_Plus) d |= HidNpadButton_Minus;
+            h |= HidNpadButton_Minus;
+        }
+        mdown[p] = d, mheld[p] = h;
     }
-    bool menu = menu_input(down1, held1, &s_quit);
-    uint32_t jump = 0, cam_reset = 0;
+    bool menu = menu_input(mdown, mheld, &s_quit);
+    uint32_t jump = 0, cam_reset = 0, trick = 0;
     uint32_t drive = g_race_drive;
     uint64_t std = 0;
     for (int i = 0; i < GC_COUNT; i++) std |= g_map_default[i];
@@ -579,21 +586,38 @@ static void update_pads(void) {
         PadStatus s = {0};
         u64 b, down;
         player_state(p, &b, &down, &lx, &ly, &rx, &ry);
-        /* each player's own driving buttons (set in the launcher), else player 1's */
-        _Static_assert(WIN_MAPS == MAP_COUNT, "wincfg.h WIN_MAPS");
-        const uint64_t *pmap = p > 0 && g_win.pmap_set[p - 1] ? g_win.pmap[p - 1] : g_set.map;
-        const uint64_t *map = drive == 1 ? pmap : g_map_default;
-        uint64_t resume = drive == 2 ? pmap[GC_START] & ~std : 0;
+        /* each player's own driving buttons (their - menu, the launcher), else player 1's */
+        PlayerSet ps;
+        player_set(p, &ps);
+        const uint64_t *map = drive == 1 ? ps.map : g_map_default;
+        uint64_t resume = drive == 2 ? ps.map[GC_START] & ~std : 0;
         bool have = s_player_src[p] >= 0 || p == 0;
         s.connected = have;
         if (have && !menu) {
-            if (p == 0) b &= ~menu_blocked();
+            b &= ~menu_blocked(p);
             if (drive == 1 && (b & map[MAP_JUMP])) jump |= 1u << p;
             if (drive == 1 && (b & map[MAP_CAM_RESET])) cam_reset |= 1u << p;
+            /* TRICKS (native.c): the D-pad as the controller has it (it still steers too) */
+            if (drive == 1)
+                trick |= (uint32_t)((b & HidNpadButton_Up ? TRICK_UP : 0) | (b & HidNpadButton_Down ? TRICK_DOWN : 0) |
+                                    (b & HidNpadButton_Left ? TRICK_LEFT : 0) | (b & HidNpadButton_Right ? TRICK_RIGHT : 0)) << 4 * p;
             s.stick_x = stick(lx), s.stick_y = stick(ly);
             s.substick_x = stick(rx), s.substick_y = stick(ry);
             int src = s_player_src[p];
             const Pad *pd = src >= 0 ? &g_pads[src] : NULL;
+            /* TRICKS by stick too (main_switch.c): a flick from the middle past 80% within a few
+             * frames, controllers only (the keyboard's stick keys jump straight out) */
+            if (drive == 1 && pd) {
+                static int since_mid[4];
+                static uint32_t flick[4];
+                int ax = lx < 0 ? -lx : lx, ay = ly < 0 ? -ly : ly, m = ax > ay ? ax : ay;
+                if (m < 32767 * 3 / 10) since_mid[p] = 0, flick[p] = 0;
+                else if (since_mid[p] < 100) since_mid[p]++;
+                if (!flick[p] && m > 32767 * 8 / 10 && since_mid[p] <= 5)
+                    flick[p] = ax > ay ? (lx < 0 ? TRICK_LEFT : TRICK_RIGHT) : (ly > 0 ? TRICK_UP : TRICK_DOWN);
+                if (m < 32767 * 6 / 10) flick[p] = 0;
+                trick |= flick[p] << 4 * p;
+            }
             if (pd && pd->gc) {
                 /* GameCube controller: its own layout and analog L / R (main_switch.c map_gc) */
                 static const struct { u64 bit; uint16_t gc; } GCL[] = {
@@ -621,7 +645,7 @@ static void update_pads(void) {
             if (start && !start_was[p]) g_pause_kind = PAUSE_FULL;
             start_was[p] = start;
             float pan = s.substick_x / 100.0f;
-            g_cam_pan[p] = g_set.free_cam && (pan > 0.3f || pan < -0.3f) ? (pan > 1 ? 1 : pan < -1 ? -1 : pan) : 0;
+            g_cam_pan[p] = ps.free_cam && (pan > 0.3f || pan < -0.3f) ? (pan > 1 ? 1 : pan < -1 ? -1 : pan) : 0;
             if (charpack_select_active() || pause_art_random_shown()) {
                 if (b & HidNpadButton_L) s.button |= PAD_TRIGGER_L;
                 if (b & HidNpadButton_R) s.button |= PAD_TRIGGER_R;
@@ -672,8 +696,8 @@ static void update_pads(void) {
         pad_set(p, &s);
     }
     g_jump_held = jump;
+    g_trick_pad = trick;
     g_cam_reset = cam_reset;
-    g_cam_back = g_set.free_cam == 2 ? CAM_EASE : g_set.free_cam == 3 ? CAM_STAY : CAM_SNAP;
 }
 
 static void game_thread(void *arg) {
@@ -754,6 +778,18 @@ int main(int argc, char **argv) {
     settings_load(CFG_DIR "/settings.ini");
     color_load(CFG_DIR "/color.ini");
     wincfg_load();
+    /* players 2-4's driving buttons from 1.8.4's launcher (windows.ini p2_map ..): theirs in settings.ini now */
+    for (int i = 0; i < 3; i++)
+        if (g_win.pmap_set[i]) {
+            if (!g_set.pl[i].own) {
+                player_set(0, &g_set.pl[i]);
+                g_set.pl[i].own = true;
+                memcpy(g_set.pl[i].map, g_win.pmap[i], sizeof g_set.pl[i].map);
+                rt_log("settings: player %d's buttons moved from windows.ini", i + 2);
+            }
+            g_win.pmap_set[i] = false;
+            settings_save(), wincfg_save();
+        }
     pad_init();
     if ((g_win.launcher || want_launcher) && !no_launcher && !launcher_run()) {
         pad_quit();
@@ -868,21 +904,8 @@ int main(int argc, char **argv) {
         g_vsplit = g_set.vsplit;
         g_any_kart = g_lan_play ? 0 : g_set.any_kart;
         g_laps = g_lan_play ? 0 : (uint32_t)g_set.laps;
-        {
-            static const float HEIGHTS[4] = {0.45f, 0.7f, 1.0f, 1.5f};
-            static const float DISTS[5] = {0.55f, 0.75f, 1.0f, 1.3f, 1.6f};
-            g_cam_height = HEIGHTS[g_set.cam_height & 3];
-            g_cam_dist = DISTS[g_set.cam_dist % 5];
-        }
         cheats_apply();
-        int cv = g_set.camera % 3;
-        static int s_cv_last = -1;
-        uint32_t cbits = cv == s_cv_last ? 1u : 0xFu;
-        s_cv_last = cv;
-        if (cv) __atomic_or_fetch(&g_first_person, cbits, __ATOMIC_RELAXED);
-        else __atomic_and_fetch(&g_first_person, ~cbits, __ATOMIC_RELAXED);
-        if (cv == 2) __atomic_or_fetch(&g_fp_kart, cbits, __ATOMIC_RELAXED);
-        else __atomic_and_fetch(&g_fp_kart, ~cbits, __ATOMIC_RELAXED);
+        camera_apply(); /* each player's CAMERA (menu.c) */
         g_fp_up = (float)g_set.drv_up, g_fp_fwd = (float)g_set.drv_forward;
         g_fp_tilt = (float)(g_set.drv_tilt < -45 ? -45 : g_set.drv_tilt > 45 ? 45 : g_set.drv_tilt) * 0.017453293f;
         g_kart_eye_on = 1;

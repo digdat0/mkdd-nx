@@ -1,5 +1,5 @@
 # MKDD-NX: Mario Kart: Double Dash!! 
-Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo Switch (USA, GM4E01). 
+Static recompilation of the GameCube game Mario Kart: Double Dash!! for Nintendo Switch and Windows (USA, GM4E01). 
 
 **No game code or data is in this repository.** 
 **Bring your own legally dumped disc image of Mario Kart: Double Dash!! (USA, GM4E01). We do not condone piracy and will not respond to requests for game image files!**
@@ -11,6 +11,9 @@ Note: This is an AI assisted project.
 
 **Game**
 
+- **Windows x64 build:** `MKDD-NX-Windows-<version>.zip` from the releases, the same game, menu and
+  mods on a PC, with a launcher for settings, controllers, keys and mods. See
+  [Windows](https://github.com/digdat0/mkdd-nx/wiki/Windows).
 - Close to 60 fps at stock Switch clocks; the heaviest moments drop a few frames. 
 - Plays the USA release (GM4E01) from an `.iso`, `.gcm`, `.ciso` or `.rvz` disc image.
 - 4:3 or 16:9. In 16:9 the game camera is genuinely wider rather than stretched.
@@ -49,6 +52,14 @@ Note: This is an AI assisted project.
   players get MODERN), MPH or KMH, and hiding the position, items, laps, map, speedometer, race
   order, timer or (DASHBOARD) mirror one by one.
 - Jump button, and 1 to 7 laps per Grand Prix or Versus race.
+- **Tricks** (**Game > Tricks**, off by default): off a ramp or a drop, the D-pad or a stick flick
+  flips or spins your kart (front flip, backflip, 360, barrel roll), with doubles, corkscrews,
+  whips, tabletops and combos; JUMP in the air makes your rider do a superman or a cliffhanger.
+  Land clean for a boost; **On + Wipeouts** spins you out if you land mid-trick. A press close to
+  the landing stays steering, so you can set up the next turn. Off in LAN play. Every press and
+  combo: [Tricks](https://github.com/digdat0/mkdd-nx/wiki/Tricks).
+- **Each player's own camera and buttons:** players 2 to 4 pressing − get their own menu
+  (camera view, height, distance, free camera, button mapping); the game's settings stay player 1's.
 - Drafting (**Game > Drafting**, off by default): line up right behind another kart at speed and
   wind streaks show the slipstream filling; stay in it for about 1.25 seconds for a short
   mushroom-style boost. Grand Prix and Versus only, off in LAN play. Press A on it for
@@ -124,6 +135,16 @@ sdmc:/switch/MKDD-NX/
 The first start takes longer while shaders are compiled; later starts reuse them. Press **-** at
 any time for the options menu.
 
+### On Windows
+
+1. Unzip `MKDD-NX-Windows-<version>.zip` from the releases (Windows 10 or 11, x64, a GPU with OpenGL 4.5).
+2. Put your disc image next to `MKDD-NX.exe` and run it. The launcher opens first (disc, graphics,
+   audio, controllers, keyboard, mods); press **PLAY**.
+
+The folders are the same as on the Switch, so the Switch's `switch/MKDD-NX` folder (saves, settings,
+mods) can be copied over as it is. Launcher, keyboard keys and controllers:
+[Windows](https://github.com/digdat0/mkdd-nx/wiki/Windows).
+
 ### App folder
 
 The app creates three folders next to the `.nro` and the disc image:
@@ -145,8 +166,8 @@ itself. Connects and disconnects are logged (`pad:` lines in `mkdd.log`). Full d
 [Controls](https://github.com/digdat0/mkdd-nx/wiki/Controls).
 
 - **Handheld, Pro Controller, Joy-Con pair:** A/B/X/Y as on the GameCube, + = Start,
-  ZR = R (drift), R = Z, left stick (or the D-pad) = control stick. ZL = jump (when Game >
-  Jump is on), L or Y = rear view in races, right stick click = Kart FPV on and off, right stick
+  ZR = R (drift), R = Z, left stick (or the D-pad) = control stick. ZL = L (drift / co-op rider slide
+  left), JUMP has no button until you give it one in Button mapping, L or Y = rear view in races, right stick click = Kart FPV on and off, right stick
   sideways = free camera. Remappable in the menu (applies to all of these; **Reset** on the Button
   mapping page gives these defaults again). In menus L and R are both Z, as before.
 - **Single Joy-Con, held sideways (rail on top):** the stick steers as held, the four face buttons
