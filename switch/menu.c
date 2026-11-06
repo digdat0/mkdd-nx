@@ -9,7 +9,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include "../win/nx_compat.h" /* the Windows build (win/) */
+#include "../win/wincfg.h"
+#define SW_PC(sw, pc) (pc) /* the Switch's text, the PC's */
+#else
 #include <switch.h>
+#define SW_PC(sw, pc) (sw)
+#endif
 
 #include "menu.h"
 #include "gfx.h"
@@ -35,21 +42,22 @@ const uint64_t g_map_default[MAP_COUNT] = {
     [GC_START] = HidNpadButton_Plus, [MAP_KFP] = HidNpadButton_StickR, [MAP_JUMP] = HidNpadButton_ZL,
     [MAP_CAM_RESET] = HidNpadButton_StickL,
 };
-/* BUTTON MAPPING's default (driving): as g_map_default, but L is rear view (GameCube Y, with Y) and
- * only R switches (GameCube Z) */
-static const uint64_t MAP_DRIVE_DEFAULT[MAP_COUNT] = {
+/* BUTTON MAPPING's default (driving): as g_map_default, but L is rear view (GameCube Y, with Y),
+ * only R switches (GameCube Z) and ZL is GameCube L (drift too; in co-op the rider's slide left,
+ * as ZR / GameCube R is the slide right). JUMP has no button until the player gives it one. */
+const uint64_t MAP_DRIVE_DEFAULT[MAP_COUNT] = {
     [GC_A] = HidNpadButton_A, [GC_B] = HidNpadButton_B, [GC_X] = HidNpadButton_X, [GC_Y] = HidNpadButton_Y | HidNpadButton_L,
-    [GC_Z] = HidNpadButton_R, [GC_R] = HidNpadButton_ZR,
-    [GC_START] = HidNpadButton_Plus, [MAP_KFP] = HidNpadButton_StickR, [MAP_JUMP] = HidNpadButton_ZL,
-    [MAP_CAM_RESET] = HidNpadButton_StickL,
+    [GC_Z] = HidNpadButton_R, [GC_L] = HidNpadButton_ZL, [GC_R] = HidNpadButton_ZR,
+    [GC_START] = HidNpadButton_Plus, [MAP_KFP] = HidNpadButton_StickR, [MAP_CAM_RESET] = HidNpadButton_StickL,
 };
 static const char *GC_KEYS[MAP_COUNT] = {"map_a", "map_b", "map_x", "map_y", "map_z", "map_l", "map_r", "map_start", "map_fp", "map_jump", "map_cam_reset", "map_kfp"};
 static const char *JOY_KEYS[MAP_COUNT] = {"joycon_a", "joycon_b", "joycon_x", "joycon_y", "joycon_z", "joycon_l", "joycon_r", "joycon_start",
                                           "joycon_fp", "joycon_jump", "joycon_cam_reset", "joycon_kfp"};
-/* JOY-CON SIDEWAYS's default (driving): main_switch.c's fixed layout, SL drifting too (GameCube L does) */
+/* JOY-CON SIDEWAYS's default (driving): main_switch.c's fixed layout, SL GameCube L and SR GameCube R
+ * (both drift; in co-op the rider slides left / right with them) */
 static const uint64_t JOY_DRIVE_DEFAULT[MAP_COUNT] = {
     [GC_A] = HidNpadButton_A, [GC_B] = HidNpadButton_B, [GC_X] = HidNpadButton_X, [GC_Y] = HidNpadButton_Y,
-    [GC_Z] = HidNpadButton_L | HidNpadButton_StickL, [GC_R] = HidNpadButton_LeftSR | HidNpadButton_LeftSL,
+    [GC_Z] = HidNpadButton_L | HidNpadButton_StickL, [GC_L] = HidNpadButton_LeftSL, [GC_R] = HidNpadButton_LeftSR,
     [GC_START] = HidNpadButton_Plus | HidNpadButton_ZL,
 };
 
@@ -57,9 +65,10 @@ static const uint64_t JOY_DRIVE_DEFAULT[MAP_COUNT] = {
  * d-pad always steer). */
 typedef struct { uint64_t bit; const char *name; } SwButton;
 static const SwButton FULL_BUTTONS[] = {
-    {HidNpadButton_A, "A"}, {HidNpadButton_B, "B"}, {HidNpadButton_X, "X"}, {HidNpadButton_Y, "Y"},
-    {HidNpadButton_L, "L"}, {HidNpadButton_R, "R"}, {HidNpadButton_ZL, "ZL"}, {HidNpadButton_ZR, "ZR"},
-    {HidNpadButton_Plus, "+"}, {HidNpadButton_StickL, "LEFT STICK PRESS"}, {HidNpadButton_StickR, "RIGHT STICK PRESS"},
+    {HidNpadButton_A, SW_PC("A", "A / CROSS")}, {HidNpadButton_B, SW_PC("B", "B / CIRCLE")}, {HidNpadButton_X, SW_PC("X", "X / SQUARE")},
+    {HidNpadButton_Y, SW_PC("Y", "Y / TRIANGLE")}, {HidNpadButton_L, SW_PC("L", "L / LB / L1")}, {HidNpadButton_R, SW_PC("R", "R / RB / R1")},
+    {HidNpadButton_ZL, SW_PC("ZL", "ZL / LT / L2")}, {HidNpadButton_ZR, SW_PC("ZR", "ZR / RT / R2")}, {HidNpadButton_Plus, SW_PC("+", "+ / START")},
+    {HidNpadButton_StickL, "LEFT STICK PRESS"}, {HidNpadButton_StickR, "RIGHT STICK PRESS"},
 };
 /* a single Joy-Con held sideways, rail on top: face buttons by where they are, the shoulder,
  * trigger and stick press whichever Joy-Con it is (main_switch.c sideways_buttons) */
@@ -82,12 +91,14 @@ static uint64_t mappable(void) {
 /* What each Switch button does while driving: an action is the GameCube button it presses
  * (g_set.map[gc] holds the Switch buttons pressing it), or one of the port's own (MAP_FP driver
  * high first person, MAP_KFP kart first person, JUMP, CAMERA RESET). Menus, the pause screen and everything outside driving always use
- * g_map_default (main_switch.c map_full). GameCube L is no action: nothing needs it while driving.
+ * g_map_default (main_switch.c map_full). GameCube L and R both drift; in co-op (two in one kart)
+ * the rider slides left with L and right with R, so each needs a button.
  * Rear view is GameCube Y: in races that player's camera turns around instead (main_switch.c). */
 static const struct { int gc; const char *name, *hint; } ACTIONS[] = {
     {GC_A, "ACCELERATE", "ACCELERATE"},
     {GC_B, "BRAKE / REVERSE", "BRAKE AND REVERSE"},
-    {GC_R, "DRIFT", "HOP AND DRIFT"},
+    {GC_R, "DRIFT / SLIDE RIGHT", "HOP AND DRIFT. CO-OP RIDER: SLIDE RIGHT"},
+    {GC_L, "DRIFT / SLIDE LEFT", "HOP AND DRIFT. CO-OP RIDER: SLIDE LEFT"},
     {GC_X, "USE ITEM", "USE YOUR ITEM"},
     {GC_Z, "SWITCH", "SWAP DRIVER AND RIDER"},
     {GC_Y, "REAR VIEW", "LOOK BEHIND IN RACES"},
@@ -221,6 +232,7 @@ void settings_load(const char *path) {
     bool kfp_seen = false; /* settings from before KART FPV had a button: FIRST PERSON's goes to it */
     bool view_seen = false; /* settings from before DRIVER FPV: their camera (and its eye height) moved over */
     int old_view = 0;
+    int map_version = 0; /* 2: GameCube L has driving buttons (ZL, a Joy-Con's SL) */
     while (fgets(line, sizeof line, f)) {
         char *eq = strchr(line, '=');
         if (!eq) continue;
@@ -289,6 +301,7 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "gpu_test")) g_set.gpu_test = atoi(v) != 0;
         else if (!strcmp(k, "menu_hold")) g_set.menu_hold = atoi(v) == 3 || atoi(v) == 5 ? atoi(v) : 0;
         else if (!strcmp(k, "game_clocks")) g_set.game_clocks = atoi(v) != 0;
+        else if (!strcmp(k, "map_version")) map_version = atoi(v);
         else if (!strcmp(k, "lan")) g_set.lan = atoi(v) != 0;
         else if (!strcmp(k, "lan_peer")) snprintf(g_set.lan_peer, sizeof g_set.lan_peer, "%s", v);
         else if (!strcmp(k, "handheld_res")) g_set.handheld_res = atoi(v) >= 0 && atoi(v) <= HANDHELD_3X ? atoi(v) : HANDHELD_AUTO;
@@ -303,6 +316,15 @@ void settings_load(const char *path) {
         static const int OLD_UP[3] = {-40, -20, DRV_UP}; /* DRIVER LOW, MID, HIGH */
         g_set.camera = old_view == 4 ? 2 : 1;
         if (old_view < 4) g_set.drv_up = OLD_UP[old_view - 1];
+    }
+    /* settings from before GameCube L had a driving button: the co-op rider could not slide left.
+     * ZL goes from JUMP (its old default; GAME > JUMP HEIGHT then asks for a button) to L, a Joy-Con's
+     * SL from DRIFT to L */
+    if (map_version < 2) {
+        if (!g_set.map[GC_L] && g_set.map[MAP_JUMP] == HidNpadButton_ZL)
+            g_set.map[GC_L] = HidNpadButton_ZL, g_set.map[MAP_JUMP] = 0, rt_log("settings: ZL moved from JUMP to DRIFT / SLIDE LEFT");
+        if (!g_set.jmap[GC_L] && (g_set.jmap[GC_R] & HidNpadButton_LeftSL) && (g_set.jmap[GC_R] & ~HidNpadButton_LeftSL))
+            g_set.jmap[GC_L] = HidNpadButton_LeftSL, g_set.jmap[GC_R] &= ~HidNpadButton_LeftSL;
     }
     if (!kfp_seen && g_set.map[MAP_FP]) g_set.map[MAP_KFP] = g_set.map[MAP_FP], g_set.map[MAP_FP] = 0;
     /* one action per Switch button (older builds could give one button several), the first in
@@ -322,7 +344,8 @@ void settings_load(const char *path) {
     }
     s_mset = 0;
     apply_logging();
-    settings_log();
+    if (map_version < 2) settings_save(); /* the moved buttons, once (settings_save logs them) */
+    else settings_log();
 }
 
 void settings_save(void) {
@@ -335,6 +358,7 @@ void settings_save(void) {
             g_set.profiler, g_set.mod, g_set.handheld_res, g_set.hud_hide, g_set.hud_style, g_set.speed_kmh, g_set.camera, g_set.drv_up, g_set.drv_forward, g_set.drv_tilt, g_set.kart_up, g_set.kart_forward, g_set.kart_tilt, g_set.any_kart);
     fprintf(f, "gpu_test=%d\n", g_set.gpu_test);
     fprintf(f, "menu_hold=%d\n", g_set.menu_hold);
+    fprintf(f, "map_version=2\n");
     fprintf(f, "drafting=%d\ncpu_draft=%d\ndraft_strength=%d\ndraft_distance=%d\n", g_set.draft, g_set.draft_cpu,
             g_set.draft_power, g_set.draft_range);
     fprintf(f, "mt_cpu=%d\nsingle_battle=%d\nbattle_karts=%d\nbomb_hits=%d\nperfect_start=%d\n", g_set.mt_cpu, g_set.battle_cpus, g_set.battle_karts, g_set.bomb_hits, g_set.perfect_start);
@@ -464,14 +488,14 @@ static void link_text(char *val, size_t vn, char *hint, size_t hn) {
     eth_status(&st);
     if (!st.up || !g_lan_play) { /* the adapter opens at start-up; LAN mode starts with its first send */
         snprintf(val, vn, g_lan_on ? "NOT STARTED" : "OFF");
-        snprintf(hint, hn, g_lan_on ? "STARTS WITH WI-FI MODE ON THE TITLE SCREEN" : "LAN PLAY IS OFF");
+        snprintf(hint, hn, g_lan_on ? SW_PC("STARTS WITH WI-FI MODE ON THE TITLE SCREEN", "STARTS WITH LAN MODE ON THE TITLE SCREEN") : "LAN PLAY IS OFF");
     } else if (!st.consoles) {
         snprintf(val, vn, "LOOKING...");
-        snprintf(hint, hn, st.seconds < 10 ? "LOOKING FOR OTHER CONSOLES ON THIS NETWORK"
+        snprintf(hint, hn, st.seconds < 10 ? SW_PC("LOOKING FOR OTHER CONSOLES ON THIS NETWORK", "LOOKING FOR OTHER PCS AND SWITCHES ON THIS NETWORK")
                                            : "NONE FOUND: NOT ON A GUEST NETWORK? ELSE SET LAN PEER");
     } else if (st.silent == st.consoles) {
         snprintf(val, vn, "%u FOUND", st.consoles);
-        snprintf(hint, hn, "NO TIMES: THE OTHER CONSOLE HAS AN OLDER BUILD");
+        snprintf(hint, hn, SW_PC("NO TIMES: THE OTHER CONSOLE HAS AN OLDER BUILD", "NO TIMES: THE OTHER ONE HAS AN OLDER BUILD"));
     } else {
         snprintf(val, vn, "%u FOUND, %u MS", st.consoles, st.rtt_ms);
         if (st.loss_pct < 0) snprintf(hint, hn, "ROUND TRIP %u MS, UP TO %u. MEASURING LOSS...", st.rtt_ms, st.rtt_max_ms);
@@ -596,7 +620,7 @@ void special_apply(void) {
 }
 static const char *CAMERA_NAMES[3] = {"NORMAL", "DRIVER FPV", "KART FPV"};
 enum { U_THIS, U_LATEST, U_ACTION, U_BACK, U_COUNT };
-enum { G_WIDE, G_BORDER, G_DOCKED, G_HANDHELD, G_ANISO, G_COLOR, G_BACK, G_COUNT };
+enum { G_WIDE, G_FULL, G_BORDER, G_DOCKED, G_HANDHELD, G_ANISO, G_COLOR, G_BACK, G_COUNT }; /* G_FULL: PC only */
 /* HUD ASSETS page: one row per element (HUD_* bit 1 << row), single player races */
 enum { HU_PLACE, HU_ITEMS, HU_LAPS, HU_MAP, HU_SPEED, HU_ORDER, HU_TIME, HU_MIRROR, HU_BACK, HU_COUNT };
 static const char *HUD_LABELS[HU_COUNT] = {"POSITION", "ITEMS", "LAPS", "MAP", "SPEEDOMETER", "RACE ORDER", "RACE TIMER", "REAR-VIEW MIRROR", "BACK"};
@@ -615,6 +639,29 @@ enum { D_FPS, D_LOG, D_PROF, D_GPUTEST, D_CLOCKS, D_BACK, D_COUNT };
 static const char *FPS_NAMES[3] = {"OFF", "FPS", "FPS + TIMES"};
 static const char *RUMBLE_NAMES[3] = {"OFF", "LOW", "HIGH"};
 static bool s_want_controllers;
+static bool s_want_fullscreen; /* FULL SCREEN (PC): main_win.c switches it */
+#ifdef _WIN32
+#define FULLSCREEN_ON g_win.fullscreen
+#else
+#define FULLSCREEN_ON false
+#endif
+
+/* Rows one build leaves out: the PC has no handheld mode, controller pairing, Joy-Con sideways
+ * mapping, clocks, GPU test or updater; the Switch has no FULL SCREEN. On those pages a row
+ * number (s_sel) is not the item: row_item turns it into one. */
+static bool item_hidden(int page, int item);
+static int item_count(int page);
+static int shown_rows(int page) {
+    int n = 0;
+    for (int i = 0; i < item_count(page); i++) n += !item_hidden(page, i);
+    return n;
+}
+static int row_item(int page, int row) {
+    int c = item_count(page);
+    for (int i = 0, n = 0; i < c; i++)
+        if (!item_hidden(page, i) && n++ == row) return i;
+    return c - 1; /* past the end: BACK */
+}
 static bool s_want_peer; /* LAN PEER: the keyboard (main_switch.c) */
 #define P_RESET N_SW
 #define P_BACK (N_SW + 1)
@@ -662,13 +709,23 @@ static bool map_leave(bool force) {
     return true;
 }
 
+static bool item_hidden(int page, int item) {
+#ifdef _WIN32
+    return (page == PAGE_GFX && item == G_HANDHELD) || (page == PAGE_CTRL && (item == C_JOYMAP || item == C_SYNC)) ||
+           (page == PAGE_DEBUG && (item == D_GPUTEST || item == D_CLOCKS)) || (page == PAGE_MAIN && item == M_UPDATE);
+#else
+    return page == PAGE_GFX && item == G_FULL;
+#endif
+}
+static int item_count(int page) { return page == PAGE_GFX ? G_COUNT : page == PAGE_CTRL ? C_COUNT : page == PAGE_DEBUG ? D_COUNT : 0; }
+
 static int page_rows(int page) {
     switch (page) {
     case PAGE_MAIN: return M_EXIT + 1;
     case PAGE_MAP: return P_COUNT;
     case PAGE_COLOR: return K_COUNT;
-    case PAGE_DEBUG: return D_COUNT;
-    case PAGE_GFX: return G_COUNT;
+    case PAGE_DEBUG: return shown_rows(PAGE_DEBUG);
+    case PAGE_GFX: return shown_rows(PAGE_GFX);
     case PAGE_GAME: return GM_COUNT;
     case PAGE_BATTLE: return BT_COUNT;
     case PAGE_DRAFT: return DR_COUNT;
@@ -680,7 +737,7 @@ static int page_rows(int page) {
     case PAGE_MULTI: return MP_COUNT;
     case PAGE_LAN: return LN_COUNT; /* the most it shows */
     case PAGE_UPDATE: return U_COUNT;
-    case PAGE_CTRL: return C_COUNT;
+    case PAGE_CTRL: return shown_rows(PAGE_CTRL);
     case PAGE_HUD: return hud_rows();
     default: return 1;
     }
@@ -768,7 +825,7 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         return true;
     }
     if (s_page == PAGE_DEBUG && (ok || side)) {
-        switch (*sel) {
+        switch (row_item(PAGE_DEBUG, *sel)) {
         case D_FPS: g_set.show_fps = (g_set.show_fps + (left ? 2 : 1)) % 3; settings_save(); break;
         case D_LOG:
             /* A / right: next mode, left: previous */
@@ -784,8 +841,9 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         return true;
     }
     if (s_page == PAGE_GFX && (ok || side)) {
-        switch (*sel) {
+        switch (row_item(PAGE_GFX, *sel)) {
         case G_WIDE: g_set.wide = !g_set.wide; settings_save(); break;
+        case G_FULL: s_want_fullscreen = true; break;
         case G_COLOR:
             if (ok) { s_page = PAGE_COLOR; s_sel[PAGE_COLOR] = 0; }
             else { g_color.mode = (g_color.mode + (left ? COLOR_MODES - 1 : 1)) % COLOR_MODES; s_color_dirty = true; color_save(); }
@@ -819,10 +877,10 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
         return true;
     }
     if (s_page == PAGE_CTRL && (ok || side)) {
-        switch (*sel) {
+        switch (row_item(PAGE_CTRL, *sel)) {
         case C_SYNC: if (ok) { s_want_controllers = true; s_open = false; s_block = s_pressed & held; } break;
         case C_MAP:
-        case C_JOYMAP: if (ok) { s_mset = *sel == C_JOYMAP; s_page = PAGE_MAP; s_sel[PAGE_MAP] = 0; } break;
+        case C_JOYMAP: if (ok) { s_mset = row_item(PAGE_CTRL, *sel) == C_JOYMAP; s_page = PAGE_MAP; s_sel[PAGE_MAP] = 0; } break;
         case C_HOLD: g_set.menu_hold = left ? (g_set.menu_hold == 0 ? 5 : g_set.menu_hold == 5 ? 3 : 0) : (g_set.menu_hold == 0 ? 3 : g_set.menu_hold == 3 ? 5 : 0); settings_save(); break;
         case C_BACK: if (ok) s_page = PAGE_MAIN; break;
         }
@@ -960,7 +1018,8 @@ bool menu_input(uint64_t down, uint64_t held, bool *quit) {
     }
     if (s_page == PAGE_MAIN && side && *sel >= M_EXIT) {
         /* EXIT GAME, UPDATE, DEBUG from left to right, no wrapping */
-        *sel = left ? (*sel == M_DEBUG ? M_UPDATE : M_EXIT) : (*sel == M_EXIT ? M_UPDATE : M_DEBUG);
+        bool upd = !item_hidden(PAGE_MAIN, M_UPDATE);
+        *sel = left ? (*sel == M_DEBUG && upd ? M_UPDATE : M_EXIT) : (*sel == M_EXIT && upd ? M_UPDATE : M_DEBUG);
         return true;
     }
     if (s_page == PAGE_MAIN && ok) {
@@ -1085,6 +1144,31 @@ static void round_box(float x, float y, float w, float h, float r, uint32_t c) {
     quad(x, y, w, h, c, c, SH_ROUND, 0, 0, par);
 }
 static void star(float cx, float cy, float r, uint32_t c) { quad(cx - r, cy - r, 2 * r, 2 * r, c, c, SH_STAR, 0, 0, NULL); }
+/* PC: a hint's buttons with player 1's keys beside them: "A: SELECT" -> "A (X): SELECT" (a button
+ * is a word of its own followed by ":", " OR " or " TO "); the Switch's as they are */
+static const char *key_hint(const char *h) {
+#ifdef _WIN32
+    static char out[2][192];
+    static int which;
+    char *o = out[which ^= 1];
+    size_t n = 0;
+    for (const char *p = h; *p && n + 1 < sizeof out[0]; p++) {
+        o[n++] = *p;
+        int kb = *p == 'A' ? KB_A : *p == 'B' ? KB_B : *p == 'Y' ? KB_Y : *p == '-' ? KB_MINUS : -1;
+        if (kb < 0 || (p != h && p[-1] != ' ') || !(p[1] == ':' || !strncmp(p + 1, " OR ", 4) || !strncmp(p + 1, " TO ", 4))) continue;
+        char name[32];
+        wincfg_key_name(g_win.keys[kb][0], name, sizeof name);
+        if (!name[0]) continue;
+        for (char *c = name; *c; c++) *c = (char)toupper((unsigned char)*c);
+        int w = snprintf(o + n, sizeof out[0] - n, " (%s)", name);
+        if (w > 0) n += (size_t)w < sizeof out[0] - n ? (size_t)w : sizeof out[0] - n - 1;
+    }
+    o[n] = 0;
+    return o;
+#else
+    return h;
+#endif
+}
 static void arrow(float x, float y, float w, float h, uint32_t c) { quad(x, y, w, h, c, c, SH_ARROW, 0, 0, NULL); }
 /* a line (x0, y0) to (x1, y1), wd px wide, colour c0 at its start to c1 at its end */
 static void line(float x0, float y0, float x1, float y1, float wd, uint32_t c0, uint32_t c1) {
@@ -1258,6 +1342,11 @@ static void mrow(float x, float y, float w, float rh, float k, bool sel, const c
 
 bool menu_is_open(void) { return s_open; }
 uint64_t menu_blocked(void) { return s_block; }
+bool menu_take_fullscreen(void) {
+    bool w = s_want_fullscreen;
+    s_want_fullscreen = false;
+    return w;
+}
 bool menu_take_controllers(void) {
     bool r = s_want_controllers;
     s_want_controllers = false;
@@ -1320,10 +1409,10 @@ void menu_draw(int w, int h, float fps, const char *perf) {
         eth_status(&st);
         st.up = st.up && g_lan_play; /* the game opens the adapter at start-up: only once LAN mode sends */
         char net[48] = "";
-        if (st.up && !st.consoles) snprintf(net, sizeof net, "WI-FI: LOOKING");
-        else if (st.up && st.silent == st.consoles) snprintf(net, sizeof net, "WI-FI: %u FOUND", st.consoles);
-        else if (st.up && st.loss_pct >= 0) snprintf(net, sizeof net, "WI-FI %u MS (UP TO %u) %d%% LOST", st.rtt_ms, st.rtt_max_ms, st.loss_pct);
-        else if (st.up) snprintf(net, sizeof net, "WI-FI %u MS", st.rtt_ms);
+        if (st.up && !st.consoles) snprintf(net, sizeof net, SW_PC("WI-FI: LOOKING", "LAN: LOOKING"));
+        else if (st.up && st.silent == st.consoles) snprintf(net, sizeof net, SW_PC("WI-FI: %u FOUND", "LAN: %u FOUND"), st.consoles);
+        else if (st.up && st.loss_pct >= 0) snprintf(net, sizeof net, SW_PC("WI-FI %u MS (UP TO %u) %d%% LOST", "LAN %u MS (UP TO %u) %d%% LOST"), st.rtt_ms, st.rtt_max_ms, st.loss_pct);
+        else if (st.up) snprintf(net, sizeof net, SW_PC("WI-FI %u MS", "LAN %u MS"), st.rtt_ms);
         float sp = px * 0.6f, lines = (times ? 1.0f : 0.0f) + (net[0] ? 1.0f : 0.0f);
         float bw = text_w(s, px);
         if (times && text_w(perf, sp) > bw) bw = text_w(perf, sp);
@@ -1381,14 +1470,15 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                 float bs = 28 * k;
                 if (bs > rh * 0.6f) bs = rh * 0.6f;
                 float bx = x + pw - 30 * k, bxs[2], bws[2];
-                for (int i = 1; i >= 0; i--) {
+                const int b0 = item_hidden(PAGE_MAIN, M_UPDATE) ? 1 : 0; /* PC: DEBUG only */
+                for (int i = 1; i >= b0; i--) {
                     bws[i] = mtext_w(blabel[i], bs) + 40 * k;
                     bx -= bws[i];
                     bxs[i] = bx;
                     bx -= 16 * k;
                 }
-                mrow(x, yb, bxs[0] - x + 12 * k, rh, k, msel == M_EXIT, "EXIT GAME", NULL, false);
-                for (int i = 0; i < 2; i++) {
+                mrow(x, yb, bxs[b0] - x + 12 * k, rh, k, msel == M_EXIT, "EXIT GAME", NULL, false);
+                for (int i = b0; i < 2; i++) {
                     bool sel = msel == M_UPDATE + i, lit = i == 0 && (us.state == UPD_AVAILABLE || us.state == UPD_READY);
                     round_box(bxs[i], yb + rh * 0.1f, bws[i], rh * 0.8f, 10 * k, sel ? 0x5AA0FFE8u : 0x2457C8FFu);
                     mtext(bxs[i] + 20 * k, yb + (rh - bs) * 0.5f, bs, sel ? C_SEL_T : lit ? C_TITLE_T : C_VAL_T,
@@ -1401,37 +1491,49 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s_sel[PAGE_MAIN] == M_GFX    ? "WIDESCREEN, RESOLUTION, FILTERING, COLOR"
                    : s_sel[PAGE_MAIN] == M_CAM    ? "VIEW, HEIGHT, DISTANCE, FIELD OF VIEW, FREE CAMERA"
                    : s_sel[PAGE_MAIN] == M_MODS   ? "GAME MODS, HD TEXTURES"
-                   : s_sel[PAGE_MAIN] == M_MULTI  ? "LAN PLAY OVER WI-FI WITH OTHER CONSOLES"
-                   : s_sel[PAGE_MAIN] == M_CTRL   ? "BUTTON MAPPING, SYNC CONTROLLERS"
+                   : s_sel[PAGE_MAIN] == M_MULTI  ? SW_PC("LAN PLAY OVER WI-FI WITH OTHER CONSOLES", "LAN PLAY WITH OTHER PCS AND SWITCHES")
+                   : s_sel[PAGE_MAIN] == M_CTRL   ? SW_PC("BUTTON MAPPING, SYNC CONTROLLERS", "BUTTON MAPPING, OPEN MENU")
                    : s_sel[PAGE_MAIN] == M_GAME   ? "RACE HUD, SPEED, HUD ASSETS, JUMP, RUMBLE, SINGLE PLAYER BATTLE"
                    : s_sel[PAGE_MAIN] == M_CHEATS ? "UNLOCK ALL, NO WEIGHT CLASSES, SPECIAL ITEMS, MINI-TURBO, LAPS"
                    : s_sel[PAGE_MAIN] == M_DEBUG  ? "FPS AND FRAME TIMES, LOGS, PROFILER"
                    : s_sel[PAGE_MAIN] == M_UPDATE ? uhint
-                   : s_sel[PAGE_MAIN] == M_EXIT   ? "A: EXIT THE GAME   RIGHT: UPDATE, DEBUG"
+                   : s_sel[PAGE_MAIN] == M_EXIT   ? SW_PC("A: EXIT THE GAME   RIGHT: UPDATE, DEBUG", "A: EXIT THE GAME   RIGHT: DEBUG")
                                                   : "GAME PAUSED   A: SELECT   B OR -: CLOSE";
         } else if (s_page == PAGE_CTRL) {
             static const char *labels[C_COUNT] = {"BUTTON MAPPING", "JOY-CON SIDEWAYS", "SYNC CONTROLLERS", "OPEN MENU", "BACK"};
             const char *values[C_COUNT] = {NULL, NULL, NULL, g_set.menu_hold == 3 ? "HOLD 3 SEC" : g_set.menu_hold == 5 ? "HOLD 5 SEC" : "PRESS", NULL};
             static const bool more[C_COUNT] = {false, false, true, false, false};
-            for (int i = 0; i < C_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, C_COUNT), pw, rh, k, s_sel[PAGE_CTRL] == i, labels[i], values[i], more[i]);
-            hint = s_sel[PAGE_CTRL] == C_SYNC     ? "PAIR CONTROLLERS, SET THE PLAYER ORDER, SINGLE JOY-CONS"
-                   : s_sel[PAGE_CTRL] == C_MAP    ? "CHOOSE WHAT EACH SWITCH BUTTON DOES"
-                   : s_sel[PAGE_CTRL] == C_JOYMAP ? "BUTTONS OF ONE JOY-CON HELD SIDEWAYS"
-                   : s_sel[PAGE_CTRL] == C_HOLD   ? "HOLD - TO OPEN THIS MENU, TO KEEP CHEATS FROM CHILDREN"
+            const int n = shown_rows(PAGE_CTRL), cur = row_item(PAGE_CTRL, s_sel[PAGE_CTRL]);
+            for (int r = 0; r < n; r++, ry += rh) {
+                int i = row_item(PAGE_CTRL, r);
+                mrow(x, ROW_Y(r, n), pw, rh, k, s_sel[PAGE_CTRL] == r, labels[i], values[i], more[i]);
+            }
+            hint = cur == C_SYNC     ? "PAIR CONTROLLERS, SET THE PLAYER ORDER, SINGLE JOY-CONS"
+                   : cur == C_MAP    ? SW_PC("CHOOSE WHAT EACH SWITCH BUTTON DOES", "CHOOSE WHAT EACH CONTROLLER BUTTON DOES WHILE DRIVING")
+                   : cur == C_JOYMAP ? "BUTTONS OF ONE JOY-CON HELD SIDEWAYS"
+                   : cur == C_HOLD   ? "HOLD - TO OPEN THIS MENU, TO KEEP CHEATS FROM CHILDREN"
                                                   : "B: BACK";
         } else if (s_page == PAGE_GFX) {
-            static const char *labels[G_COUNT] = {"WIDESCREEN", "4:3 EDGE BORDER", "DOCKED RESOLUTION", "HANDHELD RESOLUTION",
-                                                  "TEXTURE FILTERING", "COLOR", "BACK"};
-            const char *values[G_COUNT] = {g_set.wide ? "16:9" : "4:3", g_set.border ? "ON" : "OFF", DOCKED_NAMES[g_set.docked_res],
-                                           HANDHELD_NAMES[g_set.handheld_res], ANISO_NAMES[g_set.aniso % 5], COLOR_NAMES[g_color.mode], NULL};
-            static const bool more[G_COUNT] = {false, false, false, false, false, true, false};
-            for (int i = 0; i < G_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, G_COUNT), pw, rh, k, s_sel[PAGE_GFX] == i, labels[i], values[i], more[i]);
-            hint = s_sel[PAGE_GFX] == G_WIDE     ? "16:9: WIDER VIEW, RACE HUD AT THE SCREEN EDGES"
-                   : s_sel[PAGE_GFX] == G_BORDER ? "4:3: CHECKERED BORDER BESIDE THE RACE"
-                   : s_sel[PAGE_GFX] == G_DOCKED ? g_set.docked_res == DOCKED_4X ? "ABOUT 60 FPS WITH 1 PLAYER; 2 TO 4 PLAYERS RUN SLOWER" : g_set.docked_res == DOCKED_3X ? "VERY SHARP, BUT THE FRAME RATE CAN DROP" : "ON THE TV, 1080P OUTPUT. AUTO: 2X, LOWER WHEN THE FRAME RATE DROPS"
-                   : s_sel[PAGE_GFX] == G_HANDHELD ? g_set.handheld_res == HANDHELD_3X ? "OVERCLOCK RECOMMENDED: ABOUT 30 FPS AT STOCK CLOCKS" : g_set.handheld_res == HANDHELD_2X ? "VERY SHARP, BUT THE FRAME RATE CAN DROP" : "SHARPER IN HANDHELD. AUTO: 1.5X, LOWER WHEN THE FRAME RATE DROPS"
-                   : s_sel[PAGE_GFX] == G_ANISO  ? "SHARPER TEXTURES AT ANGLES: ROADS AND WALLS IN THE DISTANCE"
-                   : s_sel[PAGE_GFX] == G_COLOR  ? "A: ADJUST   LEFT/RIGHT: ACCURATE, VIVID, CUSTOM"
+            static const char *labels[G_COUNT] = {"WIDESCREEN", "FULL SCREEN", "4:3 EDGE BORDER", SW_PC("DOCKED RESOLUTION", "RENDER RESOLUTION"),
+                                                  "HANDHELD RESOLUTION", "TEXTURE FILTERING", "COLOR", "BACK"};
+            const char *values[G_COUNT] = {g_set.wide ? "16:9" : "4:3", FULLSCREEN_ON ? "ON" : "OFF", g_set.border ? "ON" : "OFF",
+                                           DOCKED_NAMES[g_set.docked_res], HANDHELD_NAMES[g_set.handheld_res], ANISO_NAMES[g_set.aniso % 5],
+                                           COLOR_NAMES[g_color.mode], NULL};
+            static const bool more[G_COUNT] = {false, false, false, false, false, false, true, false};
+            const int n = shown_rows(PAGE_GFX), cur = row_item(PAGE_GFX, s_sel[PAGE_GFX]);
+            for (int r = 0; r < n; r++, ry += rh) {
+                int i = row_item(PAGE_GFX, r);
+                mrow(x, ROW_Y(r, n), pw, rh, k, s_sel[PAGE_GFX] == r, labels[i], values[i], more[i]);
+            }
+            hint = cur == G_WIDE     ? "16:9: WIDER VIEW, RACE HUD AT THE SCREEN EDGES"
+                   : cur == G_FULL   ? "THE WHOLE SCREEN, NO WINDOW BORDER. ALSO F11 OR ALT+ENTER"
+                   : cur == G_BORDER ? "4:3: CHECKERED BORDER BESIDE THE RACE"
+                   : cur == G_DOCKED && SW_PC(0, 1) ? (g_set.docked_res >= DOCKED_3X ? "VERY SHARP: NEEDS A FAST GRAPHICS CARD"
+                                                       : "AUTO: FITS THE WINDOW. HIGHER IS SHARPER, BUT SLOWER")
+                   : cur == G_DOCKED ? g_set.docked_res == DOCKED_4X ? "ABOUT 60 FPS WITH 1 PLAYER; 2 TO 4 PLAYERS RUN SLOWER" : g_set.docked_res == DOCKED_3X ? "VERY SHARP, BUT THE FRAME RATE CAN DROP" : "ON THE TV, 1080P OUTPUT. AUTO: 2X, LOWER WHEN THE FRAME RATE DROPS"
+                   : cur == G_HANDHELD ? g_set.handheld_res == HANDHELD_3X ? "OVERCLOCK RECOMMENDED: ABOUT 30 FPS AT STOCK CLOCKS" : g_set.handheld_res == HANDHELD_2X ? "VERY SHARP, BUT THE FRAME RATE CAN DROP" : "SHARPER IN HANDHELD. AUTO: 1.5X, LOWER WHEN THE FRAME RATE DROPS"
+                   : cur == G_ANISO  ? "SHARPER TEXTURES AT ANGLES: ROADS AND WALLS IN THE DISTANCE"
+                   : cur == G_COLOR  ? "A: ADJUST   LEFT/RIGHT: ACCURATE, VIVID, CUSTOM"
                                                  : "B: BACK";
         } else if (s_page == PAGE_MODS) {
             static const char *labels[MD_COUNT] = {"LEVEL PACK", "STEREO MUSIC", "HD TEXTURES", "EXTRA CHARACTERS", "EXTRA KARTS", "RESTART NOW", "BACK"};
@@ -1448,7 +1550,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                                             NULL, NULL};
             for (int i = 0; i < MD_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, MD_COUNT), pw, rh, k, s_sel[PAGE_MODS] == i, labels[i], values[i], false);
             char hd_hint[64];
-            if (!hdtex_available()) snprintf(hd_hint, sizeof hd_hint, "PUT HD-TEXTURES.BIN IN THE MKDD-NX FOLDER");
+            if (!hdtex_available()) snprintf(hd_hint, sizeof hd_hint, SW_PC("PUT HD-TEXTURES.BIN IN THE MKDD-NX FOLDER", "PUT HD-TEXTURES.BIN IN MODS/HD"));
             else if (!g_set.hd_textures) snprintf(hd_hint, sizeof hd_hint, "COMMUNITY HD TEXTURE PACK");
             else snprintf(hd_hint, sizeof hd_hint, "COMMUNITY HD TEXTURE PACK: %u IN USE", render_hd_in_use());
             const int s = s_sel[PAGE_MODS];
@@ -1487,12 +1589,12 @@ void menu_draw(int w, int h, float fps, const char *perf) {
             for (int i = 0; i < n; i++, ry += rh) mrow(x, ROW_Y(i, n), pw, rh, k, s_sel[PAGE_LAN] == i, labels[lan_item(i)], values[lan_item(i)], false);
             const int s = lan_item(s_sel[PAGE_LAN] < n ? s_sel[PAGE_LAN] : n - 1);
             static char lan_hint[96];
-            snprintf(lan_hint, sizeof lan_hint, "THIS CONSOLE: %s. A: TYPE THE OTHER'S. LEFT/RIGHT: ANY", own_ip());
+            snprintf(lan_hint, sizeof lan_hint, SW_PC("THIS CONSOLE: %s. A: TYPE THE OTHER'S. LEFT/RIGHT: ANY", "THIS PC: %s. SET THE OTHER'S IN THE LAUNCHER. LEFT/RIGHT: ANY"), own_ip());
             unsigned pick = mods_pick(s_mods_found);
             bool rtgp = MOD_IS_RTGP(pick); /* and its Baby / Classic */
             hint = s == LN_LAN && lan_pending()  ? "CHANGES AFTER A RESTART: SEE RESTART NOW"
                    : s == LN_LAN && rtgp           ? "NOT WITH RETRO TRACK GRAND PRIX: ITS LAN MODE DOESN'T RUN"
-                   : s == LN_LAN                   ? "LAN MODE ON THE TITLE SCREEN, OVER WI-FI. SAME MOD ON EVERY CONSOLE"
+                   : s == LN_LAN                   ? SW_PC("LAN MODE ON THE TITLE SCREEN, OVER WI-FI. SAME MOD ON EVERY CONSOLE", "LAN MODE ON THE TITLE SCREEN. SAME MOD ON EVERY PC AND SWITCH")
                    : s == LN_PEER && lan_pending() ? "CHANGES AFTER A RESTART: SEE RESTART NOW"
                    : s == LN_PEER                  ? lan_hint
                    : s == LN_LINK                  ? link_hint
@@ -1582,7 +1684,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
             for (int i = 0; i < CH_COUNT; i++, ry += rh)
                 mrow(x, ROW_Y(i, CH_COUNT), pw, rh, k, s_sel[PAGE_CHEATS] == i, labels[i], values[i], i == CH_SPECIAL && g_set.special_mode == 2);
             hint = g_lan_play && s_sel[PAGE_CHEATS] != CH_UNLOCK && s_sel[PAGE_CHEATS] != CH_BACK
-                       ? "OFF AFTER LAN MODE UNTIL A RESTART: EVERY CONSOLE MUST PLAY THE SAME GAME"
+                       ? SW_PC("OFF AFTER LAN MODE UNTIL A RESTART: EVERY CONSOLE MUST PLAY THE SAME GAME", "OFF AFTER LAN MODE UNTIL A RESTART: EVERY PLAYER MUST PLAY THE SAME GAME")
                    : s_sel[PAGE_CHEATS] == CH_UNLOCK  ? "ALL CHARACTERS, KARTS, CUPS: NEVER WRITTEN TO YOUR SAVE"
                    : s_sel[PAGE_CHEATS] == CH_KARTS ? "ANY UNLOCKED KART FOR ANY DRIVERS, WHATEVER THEIR WEIGHT"
                    : s_sel[PAGE_CHEATS] == CH_SPECIAL ? (g_set.special_mode == 2 ? "A: PICK A SPECIAL PER CHARACTER. FROM THE NEXT RACE"
@@ -1640,12 +1742,16 @@ void menu_draw(int w, int h, float fps, const char *perf) {
             static const char *labels[D_COUNT] = {"SHOW FPS", "LOGGING", "PROFILER", "GPU TEST", "CLOCKS", "BACK"};
             const char *values[D_COUNT] = {FPS_NAMES[g_set.show_fps % 3], LOG_NAMES[(unsigned)g_set.logging % LOG_MODES], g_set.profiler ? "ON" : "OFF", g_set.gpu_test ? "ON" : "OFF",
                                            g_set.game_clocks ? "GAME" : "SYSTEM", NULL};
-            for (int i = 0; i < D_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, D_COUNT), pw, rh, k, s_sel[PAGE_DEBUG] == i, labels[i], values[i], false);
-            hint = s_sel[PAGE_DEBUG] == D_FPS      ? "TIMES: MS PER FRAME OF GAME, GRAPHICS AND RENDER THREADS"
-                   : s_sel[PAGE_DEBUG] == D_LOG    ? "DEBUG LOGS ON THE SD CARD, FOR BUG REPORTS"
-                   : s_sel[PAGE_DEBUG] == D_PROF   ? "PERFORMANCE PROFILE FOR BUG REPORTS, FROM THE NEXT START"
-                   : s_sel[PAGE_DEBUG] == D_GPUTEST ? "COMPARES GPU SETTINGS IN RACES. NEEDS LOGGING. NEXT START"
-                   : s_sel[PAGE_DEBUG] == D_CLOCKS ? (g_set.game_clocks ? "HANDHELD GPU 460 MHZ, FASTER LOADING. FROM THE NEXT START"
+            const int n = shown_rows(PAGE_DEBUG), cur = row_item(PAGE_DEBUG, s_sel[PAGE_DEBUG]);
+            for (int r = 0; r < n; r++, ry += rh) {
+                int i = row_item(PAGE_DEBUG, r);
+                mrow(x, ROW_Y(r, n), pw, rh, k, s_sel[PAGE_DEBUG] == r, labels[i], values[i], false);
+            }
+            hint = cur == D_FPS      ? "TIMES: MS PER FRAME OF GAME, GRAPHICS AND RENDER THREADS"
+                   : cur == D_LOG    ? SW_PC("DEBUG LOGS ON THE SD CARD, FOR BUG REPORTS", "DEBUG LOGS IN THE LOGS FOLDER, FOR BUG REPORTS")
+                   : cur == D_PROF   ? "PERFORMANCE PROFILE FOR BUG REPORTS, FROM THE NEXT START"
+                   : cur == D_GPUTEST ? "COMPARES GPU SETTINGS IN RACES. NEEDS LOGGING. NEXT START"
+                   : cur == D_CLOCKS ? (g_set.game_clocks ? "HANDHELD GPU 460 MHZ, FASTER LOADING. FROM THE NEXT START"
                                                                         : "LEFT TO THE SYSTEM OR AN OVERCLOCK TOOL. FROM THE NEXT START")
                                                    : "B: BACK";
         } else if (s_page == PAGE_COLOR) {
@@ -1683,12 +1789,13 @@ void menu_draw(int w, int h, float fps, const char *perf) {
             ry = y + top + rh * (float)(rows - 2) / 2; /* the two lines in the middle of the box */
             mtext(x + (pw - mtext_w(l1, ts)) / 2, ry + (rh - ts) / 2, ts, C_VAL_T, C_VAL_B, l1);
             ry += rh;
-            const char *l2 = "A: EXIT   B: BACK";
+            const char *l2 = key_hint("A: EXIT   B: BACK");
             mtext(x + (pw - mtext_w(l2, ts)) / 2, ry + (rh - ts) / 2, ts, C_TITLE_T, C_TITLE_B, l2);
             ry += rh;
         }
 #undef ROW_Y
         if (hint) {
+            hint = key_hint(hint);
             /* MarioFont, as the build number; a long one is made smaller to fit the box */
             float hs = 26 * k, hw = mtext_w(hint, hs), most = pw - 48 * k;
             if (hw > most) { hs *= most / hw; hw = most; }

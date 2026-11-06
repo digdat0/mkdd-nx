@@ -17,7 +17,11 @@
 #include <string.h>
 #include <strings.h>
 
+#ifdef _WIN32
+#include "../win/nx_compat.h" /* the Windows build (win/) */
+#else
 #include <switch.h>
+#endif
 #include "gfx.h"
 
 #include "charpack_art.h"

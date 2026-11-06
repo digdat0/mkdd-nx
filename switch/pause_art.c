@@ -12,7 +12,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include "../win/nx_compat.h" /* the Windows build (win/) */
+#else
 #include <switch.h>
+#endif
 #include "gfx.h"
 
 #include "menu.h"

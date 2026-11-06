@@ -73,6 +73,7 @@ enum { HANDHELD_NATIVE, HANDHELD_1_25X, HANDHELD_1_5X, HANDHELD_AUTO, HANDHELD_2
 extern Settings g_set;
 /* The standard layout: what every screen outside driving uses, whatever BUTTON MAPPING says */
 extern const uint64_t g_map_default[MAP_COUNT];
+extern const uint64_t MAP_DRIVE_DEFAULT[MAP_COUNT]; /* BUTTON MAPPING's default (driving) */
 /* HD textures converted by tools/hdtex_pack.py, in the app folder's mods/hd/ */
 #define HD_FILE "hd-textures.bin"
 
@@ -103,6 +104,7 @@ bool menu_is_open(void);
 /* Player chose CONTROLLERS: returns true once, the caller shows the system controller screen. */
 bool menu_take_controllers(void);
 bool menu_take_peer(void); /* LAN PEER picked: show the keyboard */
+bool menu_take_fullscreen(void); /* FULL SCREEN picked (PC only): switch it */
 /* Draw the overlay (menu if open, FPS and perf line if enabled) over the default framebuffer. */
 void menu_draw(int w, int h, float fps, const char *perf);
 /* Read the MarioFont letters from the (opened) disc; later calls do nothing. */
