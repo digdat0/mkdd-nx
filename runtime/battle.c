@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "charpack.h"
+#include "coins.h"
 #include "route.h"
 #include "rt.h"
 
@@ -129,11 +130,13 @@ uint64_t i_loadCrsData__6CourseFb(Ctx *c, uint8_t *M, ARGS) {
     bool battle = mode >= 4 && mode <= 7;
     s_route_cpus = false, s_nets = 0, s_cl_n = 0, s_cl_base = 0;
     bai_reset();
+    uint32_t bol_hash = 0;
     static unsigned races; /* (its number: rt_log drops repeated lines) */
     if (IS_RAM(bol)) rt_log("race %u: mode %u, course %#x, %u karts, %u players", ++races, mode, (unsigned)mld(c, M, bol + 0x19, 1), ld16(c, M, RACE_INFO + 0x1c), ld16(c, M, RACE_INFO + 0x1e));
     if (IS_RAM(bol) && IS_RAM(bol + BOL_HEAD)) {
         uint32_t h = 2166136261u;
         for (uint32_t i = 0; i < BOL_HEAD; i++) h = (h ^ mld(c, M, bol + i, 1)) * 16777619u;
+        bol_hash = h;
         route_course(mld(c, M, bol + 0x19, 1), h, battle);
         float (*pts)[3] = s_cl_pts;
         static int16_t grp[ROUTE_POINTS];
@@ -180,6 +183,7 @@ uint64_t i_loadCrsData__6CourseFb(Ctx *c, uint8_t *M, ARGS) {
         }
     }
     ctx_call_orig(c, g_native_addr[NAT_loadCrsData__6CourseFb]);
+    coins_course(c, M, IS_RAM(bol + BOL_HEAD) ? bol : 0, bol_hash, mode);
     return 0;
 }
 /* KartCtrl::IsMiniGame (battle modes 4-7). A battle sets up no computer drivers (RivalKart) and

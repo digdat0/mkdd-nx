@@ -3,6 +3,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include "rt.h"
 
 #define CISO_HEADER 0x8000
@@ -198,6 +199,7 @@ static uint8_t *s_seen;      /* files already read once (logged) */
 static unsigned s_nfiles;
 static uint8_t *s_ov_header, *s_ov_fst;
 static char s_mod_name[128];
+static bool s_is_mod;     /* a mod (else only a language folder) */
 /* the last few mod files read, kept open (a stream reads one file in small pieces) */
 #define OPEN_FILES 4
 static struct { FILE *f; int file; unsigned used; } s_open[OPEN_FILES];
@@ -315,67 +317,228 @@ unsigned disc_overlay_stream_count(void) { return s_from_streams; }
 
 #define OV_ALIGN 0x8000u
 #define OV_DOL 0x20000u   /* past the image's boot header, BI2 and apploader */
+/* ---- language folder ----
+ * A PAL disc's language files (MKDD-NX Tools extracts them: <dir>/AwardData, CourseName, MRAM_Locale
+ * and SceneData, each the PAL disc's <folder>/<Language>/ files) are added to the file table as
+ * those folders' <Language>/ sub-folders, which the USA game reads once its language is set
+ * (hle.c, g_language). */
+static const char *s_lang_dir, *s_lang_name;
+static bool s_lang_on; /* the table has the language's files */
+void disc_overlay_set_language(const char *dir, const char *name) { s_lang_dir = dir, s_lang_name = name; }
+bool disc_overlay_language(void) { return s_ext && s_lang_on; }
+#define LANG_FILES_MAX 1024 /* files a language folder adds, at most */
+static const char *const LANG_TOPS[] = {"AwardData", "CourseName", "MRAM_Locale", "SceneData"};
+static int name_cmp(const void *a, const void *b) { return strcasecmp(*(char *const *)a, *(char *const *)b); }
+
+/* Index of the directory called name among dir's entries (dir..end-1 are its own), 0 if none. */
+static uint32_t fst_child_dir(const uint8_t *fst, uint32_t n, const char *names, size_t names_len,
+                              uint32_t i, uint32_t end, const char *name) {
+    while (i < end && i < n) {
+        const uint8_t *e = fst + i * 12;
+        uint32_t no = BE32(e) & 0xFFFFFF;
+        uint32_t next = e[0] ? BE32(e + 8) : i + 1;
+        if (e[0] && no < names_len && !strcasecmp(names + no, name)) return i;
+        if (next <= i) return 0; /* damaged */
+        i = next;
+    }
+    return 0;
+}
+
+/* *fst (*size bytes, malloc'd) with the language folder's files added under each of LANG_TOPS
+ * that the table has and that has no such sub-folder yet. Returns the files added; on failure
+ * (out of memory) the table is left as it was. */
+static unsigned fst_add_language(uint8_t **fst, uint32_t *size) {
+    unsigned added = 0;
+    for (size_t t_i = 0; t_i < sizeof LANG_TOPS / sizeof *LANG_TOPS; t_i++) {
+        uint8_t *f = *fst;
+        uint32_t n = BE32(f + 8);
+        const char *names = (const char *)f + n * 12;
+        size_t names_len = *size - n * 12;
+        uint32_t t = fst_child_dir(f, n, names, names_len, 1, n, LANG_TOPS[t_i]);
+        if (!t || BE32(f + t * 12 + 4) != 0) continue; /* a top-level folder only */
+        uint32_t ins = BE32(f + t * 12 + 8);
+        if (ins <= t || ins > n || fst_child_dir(f, n, names, names_len, t + 1, ins, s_lang_name)) continue;
+        char dir[512];
+        snprintf(dir, sizeof dir, "%s/%s", s_lang_dir, LANG_TOPS[t_i]);
+        DIR *d = opendir(dir);
+        if (!d) continue;
+        static char *list[LANG_FILES_MAX];
+        static uint32_t sizes[LANG_FILES_MAX];
+        unsigned cnt = 0, left_out = 0;
+        size_t add_names = strlen(s_lang_name) + 1;
+        for (struct dirent *de; (de = readdir(d));) {
+            char path[768];
+            snprintf(path, sizeof path, "%s/%s", dir, de->d_name);
+            long sz = de->d_name[0] == '.' ? -1 : file_size(path);
+            if (sz < 0) continue;
+            if (cnt == LANG_FILES_MAX || strlen(de->d_name) > 200 || !(list[cnt] = strdup(de->d_name))) { left_out++; continue; }
+            add_names += strlen(de->d_name) + 1;
+            cnt++;
+        }
+        closedir(d);
+        if (left_out) rt_log("lang: %s: %u files left out (over %d, a name over 200 characters, or out of memory)", dir, left_out, LANG_FILES_MAX);
+        qsort(list, cnt, sizeof *list, name_cmp);
+        for (unsigned i = 0; i < cnt; i++) {
+            char path[768];
+            snprintf(path, sizeof path, "%s/%s", dir, list[i]);
+            long sz = file_size(path);
+            sizes[i] = sz > 0 ? (uint32_t)sz : 0;
+        }
+        uint32_t k = 1 + cnt, n2 = n + k;
+        uint8_t *out = cnt ? malloc((size_t)n2 * 12 + names_len + add_names) : NULL;
+        if (out) {
+            /* entries: up to the folder's end, the new ones, the rest; directories after the
+             * insertion point (and the folder and the root, which end there) shift by k */
+            memcpy(out, f, (size_t)ins * 12);
+            memcpy(out + (size_t)(ins + k) * 12, f + (size_t)ins * 12, (size_t)(n - ins) * 12);
+            for (uint32_t i = 0; i < n2; i++) {
+                if (i >= ins && i < ins + k) continue;
+                uint8_t *e = out + (size_t)i * 12;
+                if (!e[0]) continue;
+                uint32_t old = i < ins ? i : i - k, parent = BE32(e + 4), end = BE32(e + 8);
+                if (i > 0 && parent >= ins) put_be32(e + 4, parent + k);
+                if (end > ins || (end == ins && (old == 0 || old == t))) put_be32(e + 8, end + k);
+            }
+            char *nm = (char *)out + (size_t)n2 * 12;
+            memcpy(nm, names, names_len);
+            size_t at = names_len;
+            uint8_t *e = out + (size_t)ins * 12;
+            put_be32(e, 0x01000000u | (uint32_t)at);
+            put_be32(e + 4, t);
+            put_be32(e + 8, ins + k);
+            at += (size_t)sprintf(nm + at, "%s", s_lang_name) + 1;
+            for (unsigned i = 0; i < cnt; i++) {
+                e = out + (size_t)(ins + 1 + i) * 12;
+                put_be32(e, (uint32_t)at);
+                put_be32(e + 4, 0);
+                put_be32(e + 8, sizes[i]);
+                at += (size_t)sprintf(nm + at, "%s", list[i]) + 1;
+            }
+            put_be32(out + 8, n2); /* the root's entry count */
+            free(f);
+            *fst = out;
+            *size = (uint32_t)((size_t)n2 * 12 + at);
+            added += cnt;
+        }
+        for (unsigned i = 0; i < cnt; i++) free(list[i]);
+        if (cnt && !out) break;
+    }
+    return added;
+}
+
+/* rel ("SceneData/French/title.arc") -> the language folder's copy of it; false if rel isn't a
+ * language file */
+static bool lang_source(const char *rel, char *path, size_t len) {
+    const char *a = s_lang_on ? strchr(rel, '/') : NULL;
+    size_t l = s_lang_name ? strlen(s_lang_name) : 0;
+    if (!a || strncasecmp(a + 1, s_lang_name, l) || a[1 + l] != '/' || strchr(a + 2 + l, '/')) return false;
+    snprintf(path, len, "%s/%.*s/%s", s_lang_dir, (int)(a - rel), rel, a + 2 + l);
+    return true;
+}
+
+/* mod_dir NULL: the image's own DOL and table, with only the language added */
 bool disc_overlay(const char *mod_dir, char *err, size_t errlen) {
     if (!s_file) { snprintf(err, errlen, "no disc image open"); return false; }
     if (s_ext) return true;
+    if (!mod_dir && !(s_lang_dir && s_lang_name)) { snprintf(err, errlen, "no mod and no language"); return false; }
+    const char *what = mod_dir ? mod_dir : s_lang_dir;
     char path[512];
-    snprintf(path, sizeof path, "%s/sys/main.dol", mod_dir);
-    long dol_size = file_size(path);
-    if (dol_size <= 0x100) { snprintf(err, errlen, "%s: no sys/main.dol", mod_dir); return false; }
-    snprintf(path, sizeof path, "%s/sys/fst.bin", mod_dir);
-    long fst_size = file_size(path);
-    FILE *f = fst_size >= 12 && fst_size < (4l << 20) ? fopen(path, "rb") : NULL;
-    if (!f) { snprintf(err, errlen, "%s: no sys/fst.bin", mod_dir); return false; }
-    uint8_t *fst = malloc((size_t)fst_size);
-    bool ok = fst && fread(fst, 1, (size_t)fst_size, f) == (size_t)fst_size;
-    fclose(f);
-    uint32_t n = ok ? BE32(fst + 8) : 0;
-    if (!ok || (uint64_t)n * 12 > (uint64_t)fst_size) {
-        free(fst);
-        snprintf(err, errlen, "%s: sys/fst.bin is damaged", mod_dir);
-        return false;
+    long dol_size = 0, fst_size = 0;
+    uint8_t *fst = NULL;
+    if (mod_dir) {
+        snprintf(path, sizeof path, "%s/sys/main.dol", mod_dir);
+        dol_size = file_size(path);
+        if (dol_size <= 0x100) { snprintf(err, errlen, "%s: no sys/main.dol", mod_dir); return false; }
+        snprintf(path, sizeof path, "%s/sys/fst.bin", mod_dir);
+        fst_size = file_size(path);
+        FILE *f = fst_size >= 12 && fst_size < (4l << 20) ? fopen(path, "rb") : NULL;
+        if (!f) { snprintf(err, errlen, "%s: no sys/fst.bin", mod_dir); return false; }
+        fst = malloc((size_t)fst_size);
+        bool ok = fst && fread(fst, 1, (size_t)fst_size, f) == (size_t)fst_size;
+        fclose(f);
+        if (!ok) { free(fst); snprintf(err, errlen, "%s: sys/fst.bin is damaged", mod_dir); return false; }
     }
-    s_ov_fst = fst;
     uint8_t *image_fst = NULL;
-    uint32_t image_fst_size = 0;
-    s_files = calloc(n + 1, sizeof *s_files);
-    s_seen = calloc(n + 1, 1);
+    uint32_t image_fst_size = 0, image_fst_off = 0;
     unsigned cap = 0;
     uint8_t *hdr = s_ov_header = malloc(0x440);
-    if (!s_files || !hdr) goto oom;
+    if (!hdr) { free(fst); snprintf(err, errlen, "out of memory"); return false; }
+    s_ov_fst = fst; /* freed with the overlay from here on */
     pmutex_lock(&s_lock); /* the read-ahead worker reads the image too */
     img_read(0, hdr, 0x440);
+    image_fst_off = BE32(hdr + 0x424);
     image_fst_size = BE32(hdr + 0x428);
-    if (image_fst_size >= 12 && image_fst_size < (16u << 20) && (image_fst = malloc(image_fst_size)))
-        img_read(BE32(hdr + 0x424), image_fst, image_fst_size);
+    if (image_fst_size >= 12 && image_fst_size < (16u << 20) && image_fst_off >= 0x440 && (image_fst = malloc(image_fst_size)))
+        img_read(image_fst_off, image_fst, image_fst_size);
     pmutex_unlock(&s_lock);
-    if (!image_fst) { snprintf(err, errlen, "the disc image's file table is damaged"); goto fail; }
-    uint32_t fst_voff = (OV_DOL + (uint32_t)dol_size + OV_ALIGN - 1) & ~(OV_ALIGN - 1);
-    put_be32(hdr + 0x420, OV_DOL);
+    if (!image_fst || (uint64_t)BE32(image_fst + 8) * 12 > image_fst_size) {
+        snprintf(err, errlen, "the disc image's file table is damaged");
+        goto fail;
+    }
+    if (!mod_dir) { /* the image's own table */
+        if (!(fst = s_ov_fst = malloc(image_fst_size))) goto oom;
+        memcpy(fst, image_fst, image_fst_size);
+        fst_size = image_fst_size;
+    }
+    if ((uint64_t)BE32(fst + 8) * 12 > (uint64_t)fst_size || BE32(fst + 8) == 0) {
+        snprintf(err, errlen, "%s: sys/fst.bin is damaged", what);
+        goto fail;
+    }
+    unsigned lang_files = 0;
+    s_lang_on = false;
+    if (s_lang_dir && s_lang_name) {
+        uint32_t sz = (uint32_t)fst_size;
+        lang_files = fst_add_language(&fst, &sz);
+        s_ov_fst = fst;
+        fst_size = sz;
+        char probe[96];
+        uint64_t o;
+        uint32_t s;
+        snprintf(probe, sizeof probe, "SceneData/%s/title.arc", s_lang_name);
+        s_lang_on = find_in(fst, (uint32_t)fst_size, probe, &o, &s);
+        snprintf(probe, sizeof probe, "MRAM_Locale/%s/MRAMLoc.arc", s_lang_name);
+        s_lang_on = s_lang_on && find_in(fst, (uint32_t)fst_size, probe, &o, &s);
+        if (!s_lang_on) rt_log("lang: %s has no %s files (SceneData/title.arc, MRAM_Locale/MRAMLoc.arc): the game stays in English", s_lang_dir, s_lang_name);
+        if (!s_lang_on && !mod_dir) { snprintf(err, errlen, "%s: no %s files", s_lang_dir, s_lang_name); goto fail; }
+    }
+    uint32_t n = BE32(fst + 8);
+    s_files = calloc(n + 1, sizeof *s_files);
+    s_seen = calloc(n + 1, 1);
+    if (!s_files || !s_seen) goto oom;
+
+    uint32_t fst_voff;
+    if (mod_dir) { /* the image's boot header, BI2 and apploader, then the mod's DOL */
+        fst_voff = (OV_DOL + (uint32_t)dol_size + OV_ALIGN - 1) & ~(OV_ALIGN - 1);
+        put_be32(hdr + 0x420, OV_DOL);
+        if (!add_ext(&cap, (Extent){0, 0, 0x440, X_MEM, 0, hdr}) ||
+            !add_ext(&cap, (Extent){0x440, 0x440, OV_DOL - 0x440, X_IMAGE, 0, NULL})) goto oom;
+        snprintf(path, sizeof path, "%s/sys/main.dol", mod_dir);
+        if (!(s_files[s_nfiles] = strdup(path)) ||
+            !add_ext(&cap, (Extent){OV_DOL, 0, (uint32_t)dol_size, X_FILE, (uint16_t)s_nfiles++, NULL})) goto oom;
+    } else { /* everything before the image's table as it is (its DOL among it) */
+        fst_voff = (image_fst_off + OV_ALIGN - 1) & ~(OV_ALIGN - 1);
+        if (!add_ext(&cap, (Extent){0, 0, 0x440, X_MEM, 0, hdr}) ||
+            !add_ext(&cap, (Extent){0x440, 0x440, image_fst_off - 0x440, X_IMAGE, 0, NULL})) goto oom;
+    }
     put_be32(hdr + 0x424, fst_voff);
     put_be32(hdr + 0x428, (uint32_t)fst_size);
     put_be32(hdr + 0x42C, (uint32_t)fst_size);
-    if (!add_ext(&cap, (Extent){0, 0, 0x440, X_MEM, 0, hdr}) ||
-        !add_ext(&cap, (Extent){0x440, 0x440, OV_DOL - 0x440, X_IMAGE, 0, NULL})) goto oom;
-    snprintf(path, sizeof path, "%s/sys/main.dol", mod_dir);
-    if (!(s_files[s_nfiles] = strdup(path)) ||
-        !add_ext(&cap, (Extent){OV_DOL, 0, (uint32_t)dol_size, X_FILE, (uint16_t)s_nfiles++, NULL}) ||
-        !add_ext(&cap, (Extent){fst_voff, 0, (uint32_t)fst_size, X_MEM, 0, fst})) goto oom;
+    if (!add_ext(&cap, (Extent){fst_voff, 0, (uint32_t)fst_size, X_MEM, 0, fst})) goto oom;
 
-    /* every file entry: the mod's copy, else the image's; laid out in table order */
+    /* every file entry: the mod's copy, else the language folder's, else the image's; laid out in table order */
     const char *names = (const char *)fst + n * 12;
     size_t names_len = (size_t)fst_size - n * 12;
     uint64_t voff = fst_voff + (uint64_t)fst_size;
-    unsigned from_mod = 0, from_image = 0;
+    unsigned from_mod = 0, from_image = 0, from_lang = 0;
     uint32_t dir_end[64], dir_name[64];
     int depth = 0;
     for (uint32_t i = 1; i < n; i++) {
         uint8_t *e = fst + i * 12;
         while (depth > 0 && i >= dir_end[depth - 1]) depth--;
         uint32_t no = BE32(e) & 0xFFFFFF;
-        if (no >= names_len) { snprintf(err, errlen, "%s: sys/fst.bin is damaged", mod_dir); goto fail; }
+        if (no >= names_len) { snprintf(err, errlen, "%s: sys/fst.bin is damaged", what); goto fail; }
         if (e[0]) { /* directory: its entries run to BE32(e + 8) */
-            if (depth == 64 || BE32(e + 8) <= i || BE32(e + 8) > n) { snprintf(err, errlen, "%s: sys/fst.bin is damaged", mod_dir); goto fail; }
+            if (depth == 64 || BE32(e + 8) <= i || BE32(e + 8) > n) { snprintf(err, errlen, "%s: sys/fst.bin is damaged", what); goto fail; }
             dir_name[depth] = no;
             dir_end[depth++] = BE32(e + 8);
             continue;
@@ -386,14 +549,19 @@ bool disc_overlay(const char *mod_dir, char *err, size_t errlen) {
         snprintf(rel + (k < sizeof rel ? k : sizeof rel - 1), sizeof rel - (k < sizeof rel ? k : sizeof rel - 1), "%s", names + no);
         voff = (voff + OV_ALIGN - 1) & ~(uint64_t)(OV_ALIGN - 1);
         long sz = -1;
+        bool lang = false;
         if (s_stream_dir && !strncasecmp(rel, "AudioRes/Stream/", 16)) {
             snprintf(path, sizeof path, "%s/%s", s_stream_dir, rel + 16);
             sz = stream_size(path);
             if (sz >= 0) s_from_streams++;
         }
-        if (sz < 0) {
+        if (sz < 0 && mod_dir) {
             snprintf(path, sizeof path, "%s/files/%s", mod_dir, rel);
             sz = file_size(path);
+        }
+        if (sz < 0 && lang_source(rel, path, sizeof path)) {
+            sz = file_size(path);
+            lang = sz >= 0;
         }
         Extent x = {voff, 0, 0, X_FILE, 0, NULL};
         if (sz >= 0) {
@@ -401,12 +569,13 @@ bool disc_overlay(const char *mod_dir, char *err, size_t errlen) {
             if (s_nfiles >= 0xFFFF || !(s_files[s_nfiles] = strdup(path))) goto oom;
             x.size = (uint32_t)sz;
             x.file = (uint16_t)s_nfiles++;
-            from_mod++;
+            if (lang) from_lang++;
+            else from_mod++;
         } else {
             uint64_t ioff;
             uint32_t isz;
             if (!find_in(image_fst, image_fst_size, rel, &ioff, &isz)) {
-                snprintf(err, errlen, "%s: %s is in the mod's file table but neither in files/ nor on the disc", mod_dir, rel);
+                snprintf(err, errlen, "%s: %s is in the file table but neither in its folder nor on the disc", what, rel);
                 goto fail;
             }
             x.kind = X_IMAGE;
@@ -418,10 +587,14 @@ bool disc_overlay(const char *mod_dir, char *err, size_t errlen) {
         put_be32(e + 8, x.size);
         if (x.size && !add_ext(&cap, x)) goto oom;
         voff += x.size;
-        if (voff > 0xFFFFFFFFull) { snprintf(err, errlen, "%s: the mod's files are over 4 GB", mod_dir); goto fail; }
+        if (voff > 0xFFFFFFFFull) { snprintf(err, errlen, "%s: the files are over 4 GB", what); goto fail; }
     }
-    const char *slash = strrchr(mod_dir, '/');
-    snprintf(s_mod_name, sizeof s_mod_name, "%s", slash ? slash + 1 : mod_dir);
+    if (mod_dir) {
+        const char *slash = strrchr(mod_dir, '/');
+        snprintf(s_mod_name, sizeof s_mod_name, "%s", slash ? slash + 1 : mod_dir);
+    } else
+        s_mod_name[0] = 0;
+    s_is_mod = mod_dir != NULL;
     free(image_fst);
     pmutex_lock(&s_lock); /* live from the next read on */
     s_ext = s_build;
@@ -430,20 +603,24 @@ bool disc_overlay(const char *mod_dir, char *err, size_t errlen) {
     s_want = NO_REQ;
     s_layout++;
     pmutex_unlock(&s_lock);
-    rt_log("mod: %s: %u files from the mod (%u streams from %s), %u from the disc image, %.0f MB disc", s_mod_name, from_mod,
-           s_from_streams, s_stream_dir ? s_stream_dir : "no stream folder", from_image, (double)voff / 1048576);
+    if (mod_dir)
+        rt_log("mod: %s: %u files from the mod (%u streams from %s), %u from the disc image, %.0f MB disc", s_mod_name, from_mod,
+               s_from_streams, s_stream_dir ? s_stream_dir : "no stream folder", from_image, (double)voff / 1048576);
+    if (s_lang_on)
+        rt_log("lang: %s: %u files from %s (%u added to the file table)", s_lang_name, from_lang, s_lang_dir, lang_files);
     return true;
 oom:
     snprintf(err, errlen, "out of memory");
 fail:
     s_from_streams = 0;
+    s_lang_on = false;
     free(image_fst);
     overlay_free();
     return false;
 }
 
-bool disc_overlay_active(void) { return s_ext != NULL; }
-const char *disc_overlay_name(void) { return s_ext ? s_mod_name : NULL; }
+bool disc_overlay_active(void) { return s_ext && s_is_mod; }
+const char *disc_overlay_name(void) { return s_ext && s_is_mod ? s_mod_name : NULL; }
 
 /* Read n bytes at disc offset off. Missing CISO blocks and reads past the end are zero. */
 void disc_read(uint64_t off, void *out, size_t n) {

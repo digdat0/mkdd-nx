@@ -15,6 +15,22 @@
 #include "table.h"
 
 uint64_t g_dvd_reads;
+uint32_t g_language;
+
+/* KartLocale (GM4E01, r13 = 0x803D1420): System::init's first call, localize, sets the language at
+ * r13-0x68e0 from the region the disc was made for (US: 0, English); DVDInit comes right after, so
+ * that is where g_language replaces it. The other locale flags stay the US game's (LAN play checks
+ * one of them). Only when getLanguage still reads that address: a mod's code may move it. */
+#define LANG_ADDR 0x803CAB40u
+#define LANG_GET 0x80139410u /* KartLocale::getLanguage: lwz r3,-0x68e0(r13); blr */
+static void language_apply(void) {
+    static bool said;
+    if (!g_language || g_language > 4) return;
+    bool known = m_read_be(LANG_GET, 4) == 0x806D9720u && m_read_be(LANG_GET + 4, 4) == 0x4E800020u;
+    if (known) m_write_be(LANG_ADDR, 4, g_language);
+    if (!said) rt_log(known ? "lang: the game's language set to %u" : "lang: this game's code has no known language setting: %u not set", g_language);
+    said = true;
+}
 
 enum {
     H_NONE,
@@ -521,6 +537,7 @@ bool rt_hle(Ctx *c, uint32_t addr) {
     case H_DVD_INIT: {
         uint32_t a = m_addr_of("__DVDFSInit");
         if (a) ctx_call(c, a);
+        language_apply();
         break;
     }
     case H_DVD_READ_ABS: {

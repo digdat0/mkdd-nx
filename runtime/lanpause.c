@@ -12,6 +12,7 @@
  * natives (native.h NATIVE_LIST). GM4E01 addresses; MKDD Plus and RTGP have the same ones. */
 #include "native_impl.h"
 #include "rt.h"
+#include "coins.h"
 
 #define PM_THIS 0x803CB6D8u     /* PauseManager::mThis: +0 net (no pause), +0x11 game over, +0x18 pause end */
 #define PM_IS_PAUSE 0x803CB6DCu /* PauseManager::mIsPause */
@@ -24,6 +25,8 @@
 #define P2D_DRAW 0x80128050u    /* Pause2D::draw, 108 bytes */
 #define CHOICE_NONE 0xd
 #define CHOICE_QUIT 8
+#define CHOICE_RETRY 1
+#define CHECK_CHOICE 0x801A03A8u /* RaceDirector::checkPauseChoice, 428 bytes: where RETRY restarts the race */
 #define MODE_GP 2
 
 static bool lr_in(uint32_t lr, uint32_t f, uint32_t size) { return lr - f < size; }
@@ -68,6 +71,7 @@ uint64_t i_getPauseChoice__12PauseManagerFv(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     ctx_call_orig(c, g_native_addr[NAT_getPauseChoice__12PauseManagerFv]);
     uint32_t r = (uint32_t)ctx_gpr(c, 3);
+    if (r == CHOICE_RETRY && lr_in((uint32_t)RD(c, 0x1020, 4), CHECK_CHOICE, 428)) coins_restart();
     if (r != CHOICE_QUIT || !lan_race(c, M)) return r;
     if (!ld32(c, M, RESET_STATE)) {
         if (mld(c, M, RESET_STATE + 9, 1)) {

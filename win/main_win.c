@@ -262,6 +262,7 @@ void win_swap(void) {
 
 /* ---- input: SDL2 controllers (pad_sdl.c) + the keyboard -> Switch button bits ---- */
 static Pad s_kbd; /* the keyboard, merged into player 1 */
+static int s_kbd_players = 1; /* --kbd-players N (testing split screen): the keyboard drives players 1-N */
 static int s_player_src[4] = {-1, -1, -1, -1}; /* g_pads slot of each player, -1 none */
 
 static void stick_bits(u64 *b, s32 x, s32 y, bool left) {
@@ -314,7 +315,7 @@ static void player_state(int pl, u64 *held, u64 *down, s32 *lx, s32 *ly, s32 *rx
         Pad *p = &g_pads[src];
         *held = p->b, *down = p->b & ~p->prev, *lx = p->lx, *ly = p->ly, *rx = p->rx, *ry = p->ry;
     }
-    if (pl == 0) {
+    if (pl < s_kbd_players) {
         Pad *k = &s_kbd;
         *held |= k->b, *down |= k->b & ~k->prev;
         if (k->lx || k->ly) *lx = k->lx, *ly = k->ly;
@@ -566,7 +567,7 @@ static void update_pads(void) {
      * controller has no -: Z (ZR here) + Start, as on the Switch */
     uint64_t mdown[4] = {0, 0, 0, 0}, mheld[4] = {0, 0, 0, 0};
     for (int p = 0; p < 4; p++) {
-        if (p && s_player_src[p] < 0) continue;
+        if (p >= s_kbd_players && s_player_src[p] < 0) continue;
         u64 h, d;
         player_state(p, &h, &d, &lx, &ly, &rx, &ry);
         bool gc = s_player_src[p] >= 0 && g_pads[s_player_src[p]].gc;
@@ -591,7 +592,7 @@ static void update_pads(void) {
         player_set(p, &ps);
         const uint64_t *map = drive == 1 ? ps.map : g_map_default;
         uint64_t resume = drive == 2 ? ps.map[GC_START] & ~std : 0;
-        bool have = s_player_src[p] >= 0 || p == 0;
+        bool have = s_player_src[p] >= 0 || p < s_kbd_players;
         s.connected = have;
         if (have && !menu) {
             b &= ~menu_blocked(p);
@@ -746,12 +747,22 @@ static void relaunch(void) {
 
 int main(int argc, char **argv) {
     /* MKDD-NX.exe <disc image>: that one instead of the one next to the .exe (made absolute first) */
-    /* --launcher: show the launcher (as holding Shift at start does), --play: skip it */
+    /* --launcher: show the launcher (as holding Shift at start does), --play: skip it,
+     * --kbd-players N: the keyboard plays as players 1-N too (testing split screen),
+     * --hud-log N: log the race HUD's pictures at race frame N (mkdd.log, "hudlog") */
     static char arg_disc[MAX_PATH];
     bool want_launcher = GetAsyncKeyState(VK_SHIFT) < 0, no_launcher = false;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--launcher")) want_launcher = true;
         else if (!strcmp(argv[i], "--play")) no_launcher = true;
+        else if (!strcmp(argv[i], "--kbd-players") && i + 1 < argc) {
+            int n = atoi(argv[++i]);
+            s_kbd_players = n < 1 ? 1 : n > 4 ? 4 : n;
+        }
+        else if (!strcmp(argv[i], "--hud-log") && i + 1 < argc) {
+            int n = atoi(argv[++i]);
+            g_hud_log = n > 0 ? (uint32_t)n : 0;
+        }
         else if (!GetFullPathNameA(argv[i], sizeof arg_disc, arg_disc, NULL)) arg_disc[0] = 0;
     }
     go_home();
@@ -837,6 +848,20 @@ int main(int argc, char **argv) {
                 pick = 0;
             }
         }
+        /* MODS > LANGUAGE: a PAL disc's language files from mods/lang, for the standard game only (a level
+         * pack's menus and course names are its own, in English) */
+        static char lang_dir[256];
+        unsigned langs = langs_find(MODS_DIR);
+        int lang = pick ? 0 : langs_pick(langs);
+        if (pick && langs_pick(langs)) rt_log("lang: %s with a level pack: the game stays in English", LANG_NAMES[langs_pick(langs)]);
+        if (lang) {
+            snprintf(lang_dir, sizeof lang_dir, MODS_DIR "/lang/%s", LANG_NAMES[lang]);
+            disc_overlay_set_language(lang_dir, LANG_NAMES[lang]);
+            if (!disc_overlay(NULL, err, sizeof err)) rt_log("lang: %s; the game stays in English", err);
+        }
+        if (lang && !disc_overlay_language()) lang = 0;
+        g_language = (uint32_t)lang;
+        menu_set_langs(langs, lang);
         menu_set_mods(found, pick);
         struct stat st;
         bool kf = stat(MODS_DIR "/karts", &st) == 0 && S_ISDIR(st.st_mode);
@@ -896,7 +921,7 @@ int main(int argc, char **argv) {
         render_set_backdrop(g_set.wide && title);
         static const float FOV_SCALE[5] = {1.0f, 1.15f, 1.3f, 1.45f, 2.0f};
         g_fov_scale = FOV_SCALE[g_set.fov[g_set.wide] % 5];
-        g_hud_hide = g_set.hud_hide & HUD_ALL;
+        g_hud_hide = g_set.hud_hide & (HUD_ALL | HUD_COINS);
         g_hud_modern = g_set.hud_style >= 1;
         g_hud_pills = g_set.hud_style >= 2;
         g_hud_mirror = g_set.hud_style == 2 && !(g_set.hud_hide & HUD_MIRROR);
@@ -916,6 +941,7 @@ int main(int argc, char **argv) {
             g_kart_add[i][2] = (float)g_set.kart_add[i][2] * 0.017453293f;
         }
         render_set_hud43(wide);
+        g_hud_wide = wide;
         render_set_hd(g_set.hd_textures);
         static const float ANISO[5] = {1, 2, 4, 8, 16};
         render_set_aniso(ANISO[g_set.aniso % 5]);

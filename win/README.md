@@ -38,6 +38,8 @@ Game settings go to `config/settings.ini` (shared with the Switch build); window
 Controllers go through SDL2: Xbox, PlayStation 4/5, Switch Pro, Joy-Con pairs, PowerA and other Switch
 pads, and GameCube controllers on the official adapter (needs the WinUSB driver, e.g. via Zadig). Others work
 with SDL's `gamecontrollerdb.txt` in `config/`. Players 1-4 are the controllers in the order they connect.
+For testing split screen without more controllers, `MKDD-NX.exe --kbd-players N` makes the keyboard play as players 1-N
+(`--hud-log N` logs the race HUD's pictures at race frame N to `logs/mkdd.log`).
 Buttons go by their label (PlayStation: Cross = A, Circle = B, Square = X, Triangle = Y); LB/RB = L/R,
 LT/RT = ZL/ZR, Start = +, Back or Guide = − (the menu). GameCube controllers keep their own layout
 (Z + Start opens the menu).

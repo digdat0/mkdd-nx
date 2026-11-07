@@ -41,12 +41,20 @@ void rvz_read(uint64_t off, uint8_t *out, size_t n);
 uint32_t disc_read_u32(uint64_t off);
 bool disc_find(const char *path, uint64_t *off, uint32_t *size); /* file in the disc's FST */
 /* Play a mod extracted to mod_dir (sys/main.dol, sys/fst.bin, files/) over the open image: from
- * then on the disc is the mod's, its missing files taken from the image. */
+ * then on the disc is the mod's, its missing files taken from the image. mod_dir NULL: the image
+ * itself, with only the language folder (disc_overlay_set_language) added. */
 bool disc_overlay(const char *mod_dir, char *err, size_t errlen);
+/* before disc_overlay: a PAL disc's language files (dir/AwardData, CourseName, MRAM_Locale, SceneData,
+ * as MKDD-NX Tools extracts them) added as those folders' <name>/ sub-folders. Both strings must last */
+void disc_overlay_set_language(const char *dir, const char *name);
+bool disc_overlay_language(void); /* the overlay has the language's files */
+/* the game's language from System::init on (hle.c): 0 English (the USA game's), 1 French, 2 German,
+ * 3 Italian, 4 Spanish; set it only when disc_overlay_language() */
+extern uint32_t g_language;
 /* before disc_overlay: a folder of .ast files played instead of the mod's streams of those names (NULL none) */
 void disc_overlay_set_streams(const char *dir);
 unsigned disc_overlay_stream_count(void); /* how many it took */
-bool disc_overlay_active(void);
+bool disc_overlay_active(void); /* a mod is played (not only a language) */
 const char *disc_overlay_name(void); /* the mod folder's name, NULL without one */
 /* Replace n bytes at disc offset off in every later read (front-end layout fixes; at most 1024 bytes). */
 void disc_patch(uint64_t off, const void *bytes, size_t n);
@@ -290,7 +298,8 @@ extern volatile uint32_t g_log_mask;
 /* Race HUD elements not drawn, 1 to 4 players (native.c drawK2D): HUD_* bits. HUD_TIME only
  * until that player finishes. */
 enum { HUD_PLACE = 1, HUD_ITEMS = 2, HUD_LAPS = 4, HUD_MAP = 8, HUD_SPEED = 16, HUD_ORDER = 32, HUD_TIME = 64, HUD_ALL = 127,
-       HUD_MIRROR = 128 }; /* DASHBOARD's rear-view mirror (the menu's only: g_hud_mirror) */
+       HUD_MIRROR = 128,   /* DASHBOARD's rear-view mirror (the menu's only: g_hud_mirror) */
+       HUD_COINS = 256 };  /* the coin counter (coins.c), 1 to 4 players */
 extern volatile uint32_t g_hud_hide;
 /* Race HUD style, 1-4 players while racing (native.c MODERN): 0 the game's, 1 smaller, in the
  * corners and the top centre. g_hud_pills (with g_hud_modern): DASHBOARD, one bar of panels across the

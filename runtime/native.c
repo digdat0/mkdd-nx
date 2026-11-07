@@ -7,6 +7,7 @@
 #include <strings.h>
 #include "rt.h"
 #include "charpack.h"
+#include "coins.h"
 #include "plat.h"
 #include "route.h"
 #include "table.h"
@@ -2513,7 +2514,7 @@ static uint64_t i_FUN_8000a260(Ctx *c, uint8_t *M, ARGS) {
  * until CAMERA RESET; a new camera (next race, respawn) starts straight. ---- */
 volatile uint32_t g_first_person;
 volatile uint32_t g_look_back, g_cam_frames[4];
-volatile uint32_t g_hud_mirror;
+volatile uint32_t g_hud_mirror, g_hud_wide, g_split3_vi;
 volatile float g_mirror_eye[2], g_mirror_tilt[2] = {0.25882f, 0.96593f};
 #define MIRROR_BEHIND 170.0f /* this far behind the kart's centre: clear of the kart */
 #define MIRROR_TILT 0.2618f         /* the mirror looks this much further down than the camera (15 degrees) */
@@ -3786,6 +3787,15 @@ static uint64_t i_draw__12J3DMatPacketFv(Ctx *c, uint8_t *M, ARGS) {
 
 /* J3DDrawBuffer::drawHead(): every packet of every bucket (+0: bucket array, +4: count; packets
  * linked by +4), packet->draw() (vtable +0xc; J3DMatPacket::draw natively). */
+/* gx.c's three-player frame rule (g_split3_vi): marked whenever a three-player race (gRaceInfo +0x1e
+ * players) draws its karts' items (RaceMgr's RaceDrawer +0x30, its opaque buffer +8), every race frame
+ * of every view, the intro and the game's pause included; and at each race HUD draw */
+static void split3_mark(Ctx *c, uint8_t *M, uint32_t buf) {
+    if (ld16(c, M, 0x803B145Cu + 0x1e) != 3) return;
+    uint32_t rm = ld32(c, M, ctx_gpr(c, 13) - 0x5c38), rd = ram_ptr(rm) ? ld32(c, M, rm + 0x1c) : 0;
+    uint32_t items = ram_ptr(rd) ? ld32(c, M, rd + 0x30) : 0;
+    if (ram_ptr(items) && buf == ld32(c, M, items + 8)) g_split3_vi = g_vi_count + 1;
+}
 static uint64_t i_drawHead__13J3DDrawBufferCFv(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t b = (uint32_t)a0;
@@ -3796,6 +3806,8 @@ static uint64_t i_drawHead__13J3DDrawBufferCFv(Ctx *c, uint8_t *M, ARGS) {
             if (fn == 0x80050078u) i_draw__12J3DMatPacketFv(c, M, pk, 0, 0, 0, 0, 0, 0, 0);
             else gcall(c, M, fn, pk, 0, 0);
         }
+    coins_draw(c, M, b); /* (this race has coins: g_coins at its start; a change waits for the next race) */
+    split3_mark(c, M, b);
     return 0;
 }
 
@@ -4399,6 +4411,12 @@ static bool s_pill_todo;     /* ... DASHBOARD: its panels still to come */
 static bool s_mirror_ask;    /* ... DASHBOARD with the mirror on: no HUD piece drawn yet (drawK2D asks at the first) */
 static uint32_t s_pill_seen, s_pill_last; /* DASHBOARD: the groups drawn this frame, the last (bits by group - MGT_PLACE) */
 static void pill_new_race(void);
+static uint32_t s_coin_todo;           /* this Race2D draw: the counters still to come (bits by view) */
+static bool s_coin_track;              /* ... any wanted: the lap count's pictures followed (coin_seen; nothing done without coins) */
+static bool s_coin_row;                /* ... DASHBOARD: its panel drawn (pill_panels) */
+static float s_coin_e;                 /* ... and the panels' strength */
+static void coin_new_race(void);
+static void coin_frame_start(Ctx *c, uint8_t *M, int n);
 static bool s_hud_one;       /* ... single player (one screen) */
 static bool s_hud_two;       /* ... two players (top and bottom screens) */
 static int s_hud_n;          /* ... the number of screens */
@@ -4434,6 +4452,8 @@ static void race_hud_call(Ctx *c, uint8_t *M, uint32_t fn, uint32_t self, uint32
     s_pill_todo = one && g_hud_pills && s_modern;
     s_mirror_ask = s_pill_todo && g_hud_mirror;
     if (zone == 1) s_pill_last = s_pill_seen, s_pill_seen = 0;
+    if (zone == 1) coin_frame_start(c, M, n);
+    if (n >= 3 && ld16(c, M, 0x803B145Cu + 0x1e) == 3) g_split3_vi = g_vi_count + 1; /* gx.c: three players (gRaceInfo +0x1e), the fourth screen's frame */
     if (one && zone == 1 && g_speed_kmh) hud_kmh(c, M, self);
     /* Bob-omb Blast's stars (+0xb10: x, y of 4 places in each of 3 sets, 0x20 a set): p1_race.blo, which never had
      * a battle, keeps them above the screen. Brought down to the top right, as on the two player screens. */
@@ -4470,7 +4490,7 @@ static void race_hud_call(Ctx *c, uint8_t *M, uint32_t fn, uint32_t self, uint32
     ctx_set_gpr(c, 1, old);
     hud_zone(0);
     s_hud_zone = s_hud_hide = s_hud_call = s_zone_now = s_hud_racing = 0;
-    s_modern = s_hud_one = s_hud_two = s_mirror_ask = false;
+    s_modern = s_hud_one = s_hud_two = s_mirror_ask = false, s_coin_todo = 0;
     s_hud_n = 0;
 }
 volatile uint32_t g_race_frames, g_hud_log; /* g_hud_log: rt.h */
@@ -7078,11 +7098,12 @@ static int order_kart(Ctx *c, uint8_t *M, uint32_t pic) {
 }
 /* The player's kart: RaceInfo (RaceMgr +0x38) +0x114, view 0's target kart, or -1. Read from the
  * race's data, not J2DManager's tables (their addresses differ in MKDD Plus's main.dol). */
-static int player_kart(Ctx *c, uint8_t *M) {
+static int view_kart(Ctx *c, uint8_t *M, int view) { /* view 0-3's target kart (+0x114 + 2 * view), or -1 */
     uint32_t rm = ld32(c, M, ctx_gpr(c, 13) - 0x5c38), info = IS_RAM(rm) ? ld32(c, M, rm + 0x38) : 0;
-    int k = IS_RAM(info) ? (int16_t)ld16(c, M, info + 0x114) : -1;
+    int k = IS_RAM(info) && view >= 0 && view < 4 ? (int16_t)ld16(c, M, info + 0x114 + 2 * (uint32_t)view) : -1;
     return k >= 0 && k < 8 ? k : -1;
 }
+static int player_kart(Ctx *c, uint8_t *M) { return view_kart(c, M, 0); }
 static bool kart_is_player(Ctx *c, uint8_t *M, int kart) { return kart >= 0 && kart == player_kart(c, M); }
 /* The speed of the player's kart, as Race2D's getter (FUN_802b146c): the kart (r13 -0x4e98 +0xa0 + 4 *
  * the kart) +0x444 times a constant, or another constant while +0x578 has 0x200; 0 when not known. */
@@ -7123,8 +7144,13 @@ static float order_roll(Ctx *c, uint8_t *M, int kart) {
 #define LAP_GROW 1.36f                /* the word LAP at the height of the lap count */
 #define LAP_DX 12.5f                  /* ... the count moved right for it */
 #define ITEM_FRAME 33.0f               /* an item's frame (its picture, 90 x 90 with a margin) in the row */
-enum { ROW_ITEMS, ROW_PLACE, ROW_LAP, ROW_TIME, ROW_SPEED, ROWS };
-static const float ROW_W[ROWS] = {70, 33, 72 + LAP_DX, 108, 88.5f + SPEED_PAD}; /* the panels' widths, 4 apart */
+enum { ROW_ITEMS, ROW_PLACE, ROW_LAP, ROW_TIME, ROW_SPEED, ROW_COINS, ROWS };
+static const float ROW_W[ROWS] = {70, 33, 72 + LAP_DX, 108, 88.5f + SPEED_PAD, 70}; /* the panels' widths, 4 apart; the coins' (native.c coin_hud) */
+#define MIRROR_PAD 10.0f /* layout units between the mirror and the row */
+/* the mirror's right edge in layout units: mirror_draw's X1 (render_dk.c, render_gl.c: 97, or 190 squeezed
+ * as the widescreen HUD's left side). Change them together */
+#define MIRROR_EDGE_43 97.0f
+#define MIRROR_EDGE_WIDE (608 * (0.5f + ((0.5f + (190.0f / 608 - 0.5f) * 0.75f - 0.125f) - 0.5f) / 0.75f))
 static float s_row[ROWS];              /* ... where each starts this frame: the row is centred */
 static float s_item_ref[2][3];         /* the two items' frames last drawn: middle, scale */
 static float s_item_u[2] = {-0.5f, 0.5f}; /* ... their places in the panel (-0.5 left, 0.5 right): the game's larger (its front
@@ -7155,6 +7181,7 @@ static void pill_new_race(void) {
     s_speed_dx = s_map_dy = 0;
     s_meter_flash = 0;
     s_pill_seen = s_pill_last = 0;
+    coin_new_race();
 }
 static bool pill_tex(Ctx *c, uint8_t *M) {
     if (s_pill_obj) return true;
@@ -7230,6 +7257,26 @@ static void pill_line(Ctx *c, uint8_t *M, float x0, float y0, float x1, float y1
     }
     hw_gather_copy(q, sizeof q);
 }
+/* the picture being drawn's TEV setup as the game's plain picture with these TEV colours (the texture
+ * between them, times the vertex colours), its fields put back after */
+static void k2d_tev(Ctx *c, uint8_t *M, uint32_t self, uint32_t black, uint32_t white) {
+    uint32_t c14c = ld32(c, M, self + 0x14c), c148 = ld32(c, M, self + 0x148), count = mld(c, M, self + 0x110, 1);
+    mst(c, M, self + 0x14c, 4, black);
+    mst(c, M, self + 0x148, 4, white);
+    mst(c, M, self + 0x110, 1, 1);
+    mst(c, M, self + 0xb3, 1, 0); /* not opaque: its mode that uses the vertex colours */
+    vcall1(c, 0x8012cae4u, self); /* setTevModeK2D */
+    mst(c, M, self + 0x14c, 4, c14c);
+    mst(c, M, self + 0x148, 4, c148);
+    mst(c, M, self + 0x110, 1, count);
+}
+static void k2d_identity(Ctx *c, uint8_t *M) {
+    uint32_t old_sp = frame_push(c, M, 0x40), sp = old_sp - 0x40;
+    const float id[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+    stfn(c, M, sp + 8, id, 12);
+    n_GXLoadPosMtxImm(c, M, sp + 8, 0, 0, 0, 0, 0, 0, 0);
+    frame_pop(c, old_sp);
+}
 static void pill_zone(uint32_t z) {
     if (s_zone_now != z) hud_zone(s_zone_now = z);
 }
@@ -7266,22 +7313,10 @@ static int order_tick(Ctx *c, uint8_t *M, int rank[8]) {
  * TEV setup as the game's plain picture, its fields put back after. */
 static void pill_panels(Ctx *c, uint8_t *M, uint32_t self, float e) {
     if (!pill_tex(c, M)) return;
-    uint32_t c14c = ld32(c, M, self + 0x14c), c148 = ld32(c, M, self + 0x148), count = mld(c, M, self + 0x110, 1);
-    mst(c, M, self + 0x14c, 4, 0);
-    mst(c, M, self + 0x148, 4, 0xFFFFFFFFu);
-    mst(c, M, self + 0x110, 1, 1);
-    mst(c, M, self + 0xb3, 1, 0); /* not opaque: its mode that uses the vertex colours */
-    vcall1(c, 0x8012cae4u, self); /* setTevModeK2D */
-    mst(c, M, self + 0x14c, 4, c14c);
-    mst(c, M, self + 0x148, 4, c148);
-    mst(c, M, self + 0x110, 1, count);
+    k2d_tev(c, M, self, 0, 0xFFFFFFFFu);
     vcall1(c, 0x800bd5d8u, 1); /* GXSetNumTexGens */
     i_GXLoadTexObj(c, M, s_pill_obj, 0, 0, 0, 0, 0, 0, 0);
-    uint32_t old_sp = frame_push(c, M, 0x40), sp = old_sp - 0x40;
-    const float id[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
-    stfn(c, M, sp + 8, id, 12);
-    n_GXLoadPosMtxImm(c, M, sp + 8, 0, 0, 0, 0, 0, 0, 0);
-    frame_pop(c, old_sp);
+    k2d_identity(c, M);
     uint32_t dark = pill_col(PILL_DARK, PILL_ALPHA, e);
     if (s_hud_call == 2) {
         int rank[8];
@@ -7305,10 +7340,18 @@ static void pill_panels(Ctx *c, uint8_t *M, uint32_t self, float e) {
     if (!(s_speed_dx >= 0)) s_speed_dx = 0; /* NaN too */
     const float *wd = ROW_W;
     const bool on[ROWS] = {[ROW_ITEMS] = PILL_SEEN(MGT_ITEMS) || (!(s_hud_hide & HUD_ITEMS) && (PILL_SEEN(MGT_PLACE) || PILL_SEEN(MGT_LAP))), /* no item held: its panel still there, the row keeps still; none when turned off */
-                           [ROW_PLACE] = PILL_SEEN(MGT_PLACE), [ROW_LAP] = PILL_SEEN(MGT_LAP), [ROW_TIME] = PILL_SEEN(MGT_TIME), [ROW_SPEED] = PILL_SEEN(MGT_SPEED)};
+                           [ROW_PLACE] = PILL_SEEN(MGT_PLACE), [ROW_LAP] = PILL_SEEN(MGT_LAP), [ROW_TIME] = PILL_SEEN(MGT_TIME), [ROW_SPEED] = PILL_SEEN(MGT_SPEED),
+                           [ROW_COINS] = s_coin_todo && (s_pill_last & ((2u << (MGT_SPEED - MGT_PLACE)) - 1))}; /* with any of the others */
+    s_coin_row = on[ROW_COINS], s_coin_e = e;
     float total = -4;
     for (int i = 0; i < ROWS; i++) total += on[i] ? wd[i] + 4 : 0;
     float x = 304 - total / 2;
+    /* the mirror (render_gl.c / render_dk.c mirror_draw: right edge 97 layout units, 190 with the
+     * widescreen HUD's squeeze) at the top left: the row starts MIRROR_PAD right of it */
+    if (g_hud_mirror) {
+        float edge = g_hud_wide ? MIRROR_EDGE_WIDE : MIRROR_EDGE_43;
+        if (x < edge + MIRROR_PAD) x = edge + MIRROR_PAD;
+    }
     pill_zone(4);
     for (int i = 0; i < ROWS; i++)
         if (on[i]) {
@@ -7851,6 +7894,7 @@ static uint64_t i_FUN_8029fd40(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t ctrl = (uint32_t)a0;
     ctx_call_orig(c, g_native_addr[NAT_FUN_8029fd40]);
+    coins_frame(c, M, ctrl);
     uint32_t lvl = g_draft, mode = ld32(c, M, 0x803B1464u); /* gRaceInfo +8, the race mode: GP 2, VS 3 */
     float far = DRAFT_FAR[g_draft_range < 3 ? g_draft_range : 1];
     if (lvl < 1 || lvl > 3 || (mode != 2 && mode != 3) || !ram_ptr(ctrl) || (ld32(c, M, ctrl + 0x224) & 1)) return 0;
@@ -8015,6 +8059,245 @@ static void hud_face(Ctx *c, uint8_t *M, uint32_t self, uint32_t *at, uint32_t *
     *at = jt + 0xc, *was = img3;
     mst(c, M, jt + 0xc, 4, (img3 & ~0x1FFFFFu) | ((copy & RAM_MASK) >> 5));
 }
+/* The coin counters (coins.c, HUD ASSETS' COINS), one a screen: the coins its kart holds, in
+ * the game's own digits (race2d.arc mariofont_number_0 .. 9, IA4 32 x 32: the lap count's, found by
+ * name through JKRGetNameResource's JKRFileLoader::getGlbResource(name, NULL), every mounted archive)
+ * and a coin of the panels' texture to their right, white, the size of the lap count's digit (ml1_1; CLASSIC the time's).
+ * From the pictures drawn the frame before, so it follows them as they slide: CLASSIC left of the
+ * time (time1*: TIME and its digits; right of the lap count when the time is not drawn);
+ * MODERN left of the lap count (m1_lap, ml1_*), as far from it as the time (time1*) is on its right;
+ * DASHBOARD in a panel of its own after the speed's (ROW_COINS). Drawn at the race HUD's first piece (Race2D::draw), through
+ * that picture's TEV setup as the panels; its own drawing puts its state back after. */
+#define G_getGlbResource 0x80014594u
+#define CDIG_W 32                      /* a digit's texture: 32 x 32 */
+#define COIN_ICON 0.8f                 /* the coin's size: the digits' drawn height times this */
+typedef struct {
+    bool on;
+    float x0, y0, x1, y1;
+} CoinBox;
+typedef struct {
+    bool ok;                           /* the lap's digit seen */
+    CoinBox lap, time;                 /* the lap's, the time's pictures together */
+    float dy0, dy1;                    /* the lap's digit's picture (top, bottom) */
+    float th, wx0;                     /* the time's digits' height (its tallest picture but the word); the word's left (0: not drawn) */
+    uint32_t alpha, zone, time_zone;   /* ... its alpha and HUD zone; the time's zone */
+} CoinAnchor;
+static CoinAnchor s_ca_now[4], s_ca_last[4]; /* by view: this frame's, the frame before's */
+static uint32_t s_cdig_obj;            /* 10 GXTexObj (0x20 each) in the charpack pool, 0: not made yet */
+static uint32_t s_cdig_timg[10];       /* the digits' ResTIMG this race (0: not found yet) */
+static bool s_cdig_tried;              /* ... looked for this race */
+static uint8_t s_cdig_x0[10], s_cdig_x1[10], s_cdig_y0, s_cdig_y1; /* the digits' drawn columns, rows (alpha) */
+
+static void coin_new_race(void) {
+    memset(s_cdig_timg, 0, sizeof s_cdig_timg);
+    s_cdig_tried = false;
+    memset(s_ca_now, 0, sizeof s_ca_now), memset(s_ca_last, 0, sizeof s_ca_last);
+}
+static bool cdig_valid(Ctx *c, uint8_t *M, uint32_t t) {
+    return IS_RAM(t) && IS_RAM(t + 0x20) && mld(c, M, t, 1) == 2 && ld16(c, M, t + 2) == CDIG_W && ld16(c, M, t + 4) == CDIG_W &&
+           IS_RAM(t + ld32(c, M, t + 0x1c)) && IS_RAM(t + ld32(c, M, t + 0x1c) + CDIG_W * CDIG_W - 1);
+}
+/* the 10 digits found and their texture objects made, once a race (again if one stops being a digit) */
+static bool coin_digits(Ctx *c, uint8_t *M) {
+    bool all = true;
+    for (int d = 0; d < 10 && all; d++) all = s_cdig_timg[d] && cdig_valid(c, M, s_cdig_timg[d]);
+    if (all) return true;
+    if (s_cdig_tried) return false;
+    s_cdig_tried = true;
+    if (!s_cdig_obj) s_cdig_obj = charpack_reserve(10 * 0x20);
+    if (!s_cdig_obj || !IS_RAM(s_cdig_obj + 10 * 0x20 - 1)) {
+        s_cdig_obj = 0;
+        rt_log("coins: no room for the counter's digits");
+        return false;
+    }
+    s_cdig_y0 = CDIG_W - 1, s_cdig_y1 = 0;
+    for (int d = 0; d < 10; d++) {
+        char name[32];
+        snprintf(name, sizeof name, "mariofont_number_%d.bti", d);
+        uint32_t old = frame_push(c, M, 0x40), sp = old - 0x40;
+        for (size_t i = 0; i <= strlen(name); i++) mst(c, M, sp + 8 + (uint32_t)i, 1, (uint8_t)name[i]);
+        const uint32_t a[] = {sp + 8, 0};
+        uint32_t t = ctx_call_guest(c, G_getGlbResource, a, 2);
+        frame_pop(c, old);
+        if (!cdig_valid(c, M, t)) {
+            memset(s_cdig_timg, 0, sizeof s_cdig_timg);
+            rt_log("coins: %s not found (%08x): no counter", name, t);
+            return false;
+        }
+        s_cdig_timg[d] = t;
+        /* IA4: a byte a texel (alpha the high nibble) in 8 x 4 tiles */
+        uint32_t img = t + ld32(c, M, t + 0x1c);
+        int x0 = CDIG_W, x1 = -1;
+        for (int y = 0; y < CDIG_W; y++)
+            for (int x = 0; x < CDIG_W; x++) {
+                uint32_t at = (uint32_t)(((y / 4) * (CDIG_W / 8) + x / 8) * 32 + (y % 4) * 8 + x % 8);
+                if (mld(c, M, img + at, 1) >> 4 < 3) continue;
+                x0 = x < x0 ? x : x0, x1 = x > x1 ? x : x1;
+                if (y < s_cdig_y0) s_cdig_y0 = (uint8_t)y;
+                if (y > s_cdig_y1) s_cdig_y1 = (uint8_t)y;
+            }
+        if (x1 < x0) x0 = 4, x1 = CDIG_W - 5; /* empty: a plain width */
+        s_cdig_x0[d] = (uint8_t)x0, s_cdig_x1[d] = (uint8_t)x1;
+        uint32_t obj = s_cdig_obj + 0x20 * (uint32_t)d;
+        const uint32_t init[] = {obj, img, CDIG_W, CDIG_W, 2 /* GX_TF_IA4 */, 0, 0, 0};
+        ctx_call_guest(c, 0x800BF358u, init, 8); /* GXInitTexObj */
+    }
+    if (s_cdig_y1 < s_cdig_y0) s_cdig_y0 = 4, s_cdig_y1 = CDIG_W - 5;
+    rt_log("coins: counter digits found (0 at %08x, rows %u-%u)", s_cdig_timg[0], s_cdig_y0, s_cdig_y1);
+    return true;
+}
+/* one textured quad (layout units), corner colours top left, top right, bottom right, bottom left */
+static void k2d_quad(Ctx *c, uint8_t *M, float x, float y, float w, float h, const uint32_t col[4]) {
+    const float xs[4] = {x, x + w, x + w, x}, ys[4] = {y, y, y + h, y + h};
+    const uint8_t ts[4] = {0, 0x80, 0x80, 0}, tt[4] = {0, 0, 0x80, 0x80};
+    n_GXBegin(c, M, 0x80, 0, 4, 0, 0, 0, 0, 0);
+    uint8_t q[4 * 14], *o = q;
+    for (int v = 0; v < 4; v++, o += 14) {
+        uint32_t u;
+        memcpy(&u, &xs[v], 4);
+        put_be(o, 4, u);
+        memcpy(&u, &ys[v], 4);
+        put_be(o + 4, 4, u);
+        put_be(o + 8, 4, col[v]);
+        o[12] = ts[v];
+        o[13] = tt[v];
+    }
+    hw_gather_copy(q, sizeof q);
+}
+/* view's counter wanted this race HUD draw: this race has coins (GAME > COINS at its start), not turned off, its kart
+ * known and still racing (gone at its GOAL: the lap count it follows goes, the finish's TIME and results move the
+ * pictures it would follow elsewhere) */
+static bool coin_wanted(Ctx *c, uint8_t *M, int view) {
+    return coins_racing() && !(s_hud_hide & HUD_COINS) && view_kart(c, M, view) >= 0 && view_racing(c, M, view);
+}
+/* drawK2D, a picture's final matrix (mtx) and colours (cols: drawK2D's four): the lap's, kept for the counter */
+static void box_add(CoinBox *b, float x0, float y0, float x1, float y1) {
+    if (!b->on) b->on = true, b->x0 = x0, b->y0 = y0, b->x1 = x1, b->y1 = y1;
+    b->x0 = fminf(b->x0, x0), b->y0 = fminf(b->y0, y0), b->x1 = fmaxf(b->x1, x1), b->y1 = fmaxf(b->y1, y1);
+}
+static void coin_seen(Ctx *c, uint8_t *M, uint32_t self, uint32_t mtx, float w, float h, uint32_t cols) {
+    char t[9];
+    pane_tag(c, M, self, t);
+    /* the tags carry the player (1-4): mlN_* the lap count, mN_lap the word LAP, timeN* the time */
+    bool lap = (!strncmp(t, "ml", 2) && t[3] == '_') || (t[0] == 'm' && !strcmp(t + 2, "_lap")), tim = !strncmp(t, "time", 4);
+    char d = lap ? (t[1] == 'l' ? t[2] : t[1]) : tim ? t[4] : 0;
+    if (d < '1' || d > '4') return;
+    CoinAnchor *a = &s_ca_now[d - '1'];
+    CoinBox *b = lap ? &a->lap : &a->time; /* the word TIME too (CLASSIC) */
+    bool word = tim && t[5] == '7' && !t[6]; /* timeN7: the word TIME */
+    float m[12];
+    ldfn(c, M, mtx, m, 12);
+    float x0 = 1e30f, x1 = -1e30f, y0 = 1e30f, y1 = -1e30f;
+    for (int k = 0; k < 4; k++) {
+        float u = k & 1 ? w : 0, v = k & 2 ? h : 0, x = m[0] * u + m[1] * v + m[3], y = m[4] * u + m[5] * v + m[7];
+        x0 = x < x0 ? x : x0, x1 = x > x1 ? x : x1, y0 = y < y0 ? y : y0, y1 = y > y1 ? y : y1;
+    }
+    if (!(x0 > -1000 && x1 < 2000 && y0 > -1000 && y1 < 2000)) return; /* NaN too */
+    box_add(b, x0, y0, x1, y1);
+    if (b == &a->time) a->time_zone = s_zone_now & 0xFF, a->th = !word ? fmaxf(a->th, y1 - y0) : a->th, a->wx0 = !word ? a->wx0 : x0;
+    if (!(t[0] == 'm' && t[1] == 'l' && t[3] == '_' && t[4] == '1' && !t[5])) return; /* mlN_1: the lap's digit */
+    a->ok = true, a->dy0 = y0, a->dy1 = y1;
+    a->alpha = ld32(c, M, cols) & 0xFF, a->zone = s_zone_now & 0xFF; /* its top left corner's */
+}
+/* Race2D::draw starting (race_hud_call): last frame's lap kept, the counter to draw this one */
+static void coin_frame_start(Ctx *c, uint8_t *M, int n) {
+    memcpy(s_ca_last, s_ca_now, sizeof s_ca_now);
+    memset(s_ca_now, 0, sizeof s_ca_now);
+    s_coin_todo = 0;
+    for (int v = 0; v < n && v < 4; v++) s_coin_todo |= (uint32_t)coin_wanted(c, M, v) << v;
+    s_coin_track = s_coin_todo != 0;
+    s_coin_row = false;
+}
+/* the counter (layout units): its digits' quads kq x CDIG_W wide each, from x; ytop their top */
+static float coin_width(const char *s, float kq) {
+    float w = 0;
+    for (const char *p = s; *p; p++) w += (float)(s_cdig_x1[*p - '0'] - s_cdig_x0[*p - '0'] + 1) * kq;
+    float d = (float)(s_cdig_y1 - s_cdig_y0 + 1) * kq * COIN_ICON; /* the coin */
+    return w + 0.12f * d + d;
+}
+static void coin_hud(Ctx *c, uint8_t *M, uint32_t self, int view) {
+    int kart = view_kart(c, M, view);
+    if (kart < 0 || !coin_digits(c, M)) return;
+    char s[4];
+    snprintf(s, sizeof s, "%d", coins_held(kart) % 100);
+    CoinAnchor a = s_ca_last[view];
+    float h, x, ytop, kq;
+    uint32_t zone, alpha;
+    float dh = a.ok ? a.dy1 - a.dy0 : 0; /* the lap's digit's height */
+    if (s_coin_row && s_hud_one) { /* DASHBOARD (one player): its panel */
+        h = dh > 8 && dh < 60 ? dh : 22, kq = h / CDIG_W;
+        float wd = coin_width(s, kq);
+        x = s_row[ROW_COINS] + (ROW_W[ROW_COINS] - wd) / 2;
+        ytop = 21 - (float)(s_cdig_y0 + s_cdig_y1 + 1) / 2 * kq; /* the digits' middle at y 21, as the row's pictures */
+        alpha = (uint32_t)(255 * s_coin_e), zone = 4;
+    } else if (s_modern) {
+        if (!a.ok || !a.lap.on || !(s_modern_t[view & 3] >= 0.5f)) return; /* the lap count not drawn, or sliding back at the finish */
+        h = dh, kq = h / CDIG_W;
+        if (!(h > 4 && h < 200)) return;
+        float gap = a.time.on && a.time.x0 > a.lap.x1 ? a.time.x0 - a.lap.x1 : 0.6f * h;
+        gap = fminf(fmaxf(gap, 0.25f * h), 3 * h);
+        x = a.lap.x0 - gap - coin_width(s, kq);
+        ytop = a.dy0;
+        alpha = a.alpha, zone = a.zone;
+    } else { /* CLASSIC: left of the time, else right of the lap count */
+        h = a.time.on && a.th > 4 ? a.th : a.ok ? dh : 28, kq = h / CDIG_W; /* the time's digits' size */
+        if (!(h > 4 && h < 200)) return;
+        float wd = coin_width(s, kq);
+        if (a.time.on) {
+            x = (a.wx0 > 0 ? a.wx0 : a.time.x0) - 0.4f * h - wd;
+            ytop = (a.time.y0 + a.time.y1) / 2 - (float)(s_cdig_y0 + s_cdig_y1 + 1) / 2 * kq; /* the digits' middle at its middle */
+            /* on the time's side of the widescreen HUD (gx.c: a draw's side is its middle's, +-0.2 of
+             * the screen; the counter's own middle would leave it in the middle): zones 4-6 a side */
+            float mid = (a.time.x0 + a.time.x1) / 608 - 1;
+            alpha = 255, zone = (a.time_zone & 0xFF) != 1 ? a.time_zone : mid > 0.2f ? 6 : mid < -0.2f ? 5 : 4;
+        } else if (a.ok && a.lap.on) {
+            x = a.lap.x1 + 0.25f * h, ytop = a.dy0;
+            alpha = a.alpha, zone = a.zone;
+        } else
+            return;
+    }
+    /* two players (either split): under the lap count, the lap digit's size (over it when it's in its
+     * screen's lower half: the place under it, the bottom screen). Off the screen's left,
+     * or the left quarters of three and four (the place left of the lap count): right of the lap
+     * count; the right quarters (the place right of it): left of it */
+    bool two = s_hud_n == 2, left4 = s_hud_n >= 3 && a.lap.x0 + a.lap.x1 < 608, right4 = s_hud_n >= 3 && !left4;
+    if (two && !s_coin_row && a.ok && a.lap.on && dh > 4 && dh < 200) {
+        h = dh, kq = h / CDIG_W;
+        float top = s_vsplit_on || view == 0 ? 0 : 224, tall = s_vsplit_on ? 448 : 224;
+        bool over = a.lap.y0 + a.lap.y1 > 2 * top + tall;
+        x = a.lap.x0, alpha = a.alpha, zone = a.zone;
+        ytop = over ? a.lap.y0 - 0.2f * h - (float)(s_cdig_y1 + 1) * kq : a.lap.y1 + 0.2f * h - (float)s_cdig_y0 * kq;
+    } else if ((x < 2 || left4 || right4) && !s_coin_row && a.ok && a.lap.on) {
+        x = right4 ? a.lap.x0 - 0.4f * h - coin_width(s, kq) : a.lap.x1 + 0.25f * h;
+        ytop = a.dy0 + (a.dy1 - a.dy0 - h) / 2, alpha = a.alpha, zone = a.zone;
+    }
+    if (s_hud_logging) HUDLOG("coin view %d x %.1f y %.1f h %.1f zone %u alpha %u", view, x, ytop, h, zone, alpha);
+    if (!alpha) return;
+    uint32_t col[4] = {0xFFFFFF00u | alpha, 0xFFFFFF00u | alpha, 0xFFFFFF00u | alpha, 0xFFFFFF00u | alpha};
+    if (s_zone_now != zone) hud_zone(s_zone_now = zone);
+    vcall1(c, 0x800bd5d8u, 1); /* GXSetNumTexGens */
+    k2d_identity(c, M);
+    /* the digits */
+    k2d_tev(c, M, self, 0, 0xFFFFFFFFu);
+    float pen = x;
+    for (const char *p = s; *p; p++) {
+        int d = *p - '0';
+        i_GXLoadTexObj(c, M, s_cdig_obj + 0x20 * (uint32_t)d, 0, 0, 0, 0, 0, 0, 0);
+        k2d_quad(c, M, pen - (float)s_cdig_x0[d] * kq, ytop, CDIG_W * kq, CDIG_W * kq, col);
+        pen += (float)(s_cdig_x1[d] - s_cdig_x0[d] + 1) * kq;
+    }
+    /* the coin: a dark rim, gold, a light slot */
+    if (!pill_tex(c, M)) return;
+    i_GXLoadTexObj(c, M, s_pill_obj, 0, 0, 0, 0, 0, 0, 0);
+    float d = (float)(s_cdig_y1 - s_cdig_y0 + 1) * kq * COIN_ICON, cx = pen + 0.12f * d + d / 2, cy = ytop + (float)(s_cdig_y0 + s_cdig_y1 + 1) / 2 * kq;
+    pill_draw(c, M, cx - d / 2, cy - d / 2, d, d, d / 2, pill_col(0x5A2E0000u, alpha, 1));
+    float r = d * 0.42f;
+    pill_draw(c, M, cx - r, cy - r, 2 * r, 2 * r, r, pill_col(0xE89A1000u, alpha, 1));
+    r = d * 0.34f;
+    pill_draw(c, M, cx - r, cy - r, 2 * r, 2 * r, r, pill_col(0xFFCC2800u, alpha, 1));
+    pill_draw(c, M, cx - d * 0.08f, cy - d * 0.22f, d * 0.16f, d * 0.44f, d * 0.08f, pill_col(0xFFF6C000u, alpha, 1));
+}
+
 /* K2DPicture::drawK2D(f32 x, f32 y, f32 w, f32 h, bool tev): when visible (+0xb0): per texture
  * (count u8 +0x110) its load (vtable +0x100), GXSetNumTexGens(count), alpha +0xb3 = +0xb2, the
  * corner colours (getNewColor into four white words), the TEV setup (setTevModeK2D when tev,
@@ -8081,6 +8364,12 @@ static uint64_t i_drawK2D__10K2DPictureFffffb(Ctx *c, uint8_t *M, ARGS) {
             pill_panels(c, M, self, e);
         }
         if (meter && e >= 1) return 0;
+    }
+    if (s_coin_todo && (uint32_t)a5 & 0xFF && hud_piece(c, M, self, &player)) {
+        uint32_t todo = s_coin_todo;
+        s_coin_todo = 0;
+        for (int v = 0; v < 4; v++)
+            if (todo >> v & 1) coin_hud(c, M, self, v);
     }
     uint32_t old_sp = frame_push(c, M, 0x80), sp = old_sp - 0x80;
     uint32_t hud_at = 0, hud_was = 0;
@@ -8204,6 +8493,7 @@ static uint64_t i_drawK2D__10K2DPictureFffffb(Ctx *c, uint8_t *M, ARGS) {
         ldfn(c, M, mtx, m, 12);
         HUDLOG("z%u g%d k%d %-8s m %.3f %.3f %.1f / %.3f %.3f %.1f wh %.1f %.1f", s_zone_now, mg, kart, t, m[0], m[1], m[3], m[4], m[5], m[7], w, h);
     }
+    if (s_coin_track && s_hud_call == 1 && s_hud_n >= 1 && s_hud_n <= 4) coin_seen(c, M, self, mtx, w, h, sp + 0x18);
     n_GXLoadPosMtxImm(c, M, mtx, 0, 0, 0, 0, 0, 0, 0);
     n_GXBegin(c, M, 0x80, 0, 4, 0, 0, 0, 0, 0);
     float zero = ldf(c, M, (uint32_t)RD(c, REG_R2, 4) - 0x69a8);

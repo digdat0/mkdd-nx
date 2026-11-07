@@ -8,10 +8,13 @@ others are shown:
     Wii Characters tools/wiichar.py              a Mario Kart Wii driver (.szs) -> a character folder
     Wii Karts     tools/wiikart.py               a Mario Kart Wii kart (.szs) -> an extra kart folder
     Battle Routes tools/route_editor.py          the routes the computer karts drive in battles
+    Coins         tools/coin_editor.py           the coins on each race course
+    Languages     tools/langpack.py              a PAL disc's French, German, Italian, Spanish -> mods/lang
 
     py -3 tools/mkddnx_tools.py                  the window (from source)
     MKDD-NX-Tools --cli ...                      tools/charpack.py's command line
     MKDD-NX-Tools --convert PACK OUT             tools/hdtex_app/hdtex_gui.py's headless check
+    MKDD-NX-Tools --languages DISC OUT           tools/langpack.py's command line
 
 Closing the window asks each open tool first (unsaved routes, a conversion running). Packaged as
 one .exe / .dmg by tools/build_tools_app.py.
@@ -41,6 +44,10 @@ TOOLS = [
                        "driving like it, with a preview. Karts only, not bikes.", "Wii-Karts", "wiikart"),
     ("Battle Routes", "Edit the routes the computer karts drive in single player battles, on the game's arena maps.",
      "Route-Editor", "routes"),
+    ("Coins", "Place the coins on each race course (GAME > COINS), on the game's course maps, or start from the layout "
+              "the game makes.", "Coins", "coins"),
+    ("Languages", "Copy the French, German, Italian and Spanish menus and texts from your European (PAL) disc image, "
+                  "to play in those languages (MODS > LANGUAGE).", "Languages", "langs"),
 ]
 
 
@@ -55,9 +62,15 @@ def make_tool(kind, frame):
     if kind == "wiikart":
         import wiikart
         return wiikart.gui(frame)
+    if kind == "langs":
+        import langpack
+        return langpack.gui(frame)
     if kind == "hdtex":
         import hdtex_gui
         return hdtex_gui.App(frame)
+    if kind == "coins":
+        import coin_editor
+        return coin_editor.open_editor(frame)
     import route_editor
     return route_editor.open_editor(frame)
 
@@ -137,6 +150,9 @@ def main():
     if "--cli" in sys.argv:
         import charpack
         sys.exit(charpack.cli(sys.argv[1:]))
+    if len(sys.argv) == 4 and sys.argv[1] == "--languages":
+        import langpack
+        sys.exit(langpack.main(sys.argv[2:]))
     if len(sys.argv) == 4 and sys.argv[1] == "--convert":
         import hdtex_gui
         hdtex_gui.main()

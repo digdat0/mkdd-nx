@@ -1227,6 +1227,20 @@ int main(int argc, char **argv) {
                 }
             }
         }
+        /* MODS > LANGUAGE: a PAL disc's language files from mods/lang, for the standard game only (a level
+         * pack's menus and course names are its own, in English) */
+        static char lang_dir[256];
+        unsigned langs = langs_find(MODS_DIR);
+        int lang = pick ? 0 : langs_pick(langs);
+        if (pick && langs_pick(langs)) rt_log("lang: %s with a level pack: the game stays in English", LANG_NAMES[langs_pick(langs)]);
+        if (lang) {
+            snprintf(lang_dir, sizeof lang_dir, MODS_DIR "/lang/%s", LANG_NAMES[lang]);
+            disc_overlay_set_language(lang_dir, LANG_NAMES[lang]);
+            if (!disc_overlay(NULL, err, sizeof err)) rt_log("lang: %s; the game stays in English", err);
+        }
+        if (lang && !disc_overlay_language()) lang = 0;
+        g_language = (uint32_t)lang;
+        menu_set_langs(langs, lang);
         menu_set_mods(found, pick);
         {
             struct stat st;
@@ -1400,7 +1414,7 @@ int main(int argc, char **argv) {
         render_set_backdrop(g_set.wide && title);
         static const float FOV_SCALE[5] = {1.0f, 1.15f, 1.3f, 1.45f, 2.0f}; /* tan(fovy / 2) times: NORMAL, WIDE, WIDER, WIDEST, WIDEEE */
         g_fov_scale = FOV_SCALE[g_set.fov[g_set.wide] % 5];
-        g_hud_hide = g_set.hud_hide & HUD_ALL;
+        g_hud_hide = g_set.hud_hide & (HUD_ALL | HUD_COINS);
         g_hud_modern = g_set.hud_style >= 1;
         g_hud_pills = g_set.hud_style >= 2;
         g_hud_mirror = g_set.hud_style == 2 && !(g_set.hud_hide & HUD_MIRROR);
@@ -1420,6 +1434,7 @@ int main(int argc, char **argv) {
             g_kart_add[i][2] = (float)g_set.kart_add[i][2] * 0.017453293f;
         }
         render_set_hud43(wide);
+        g_hud_wide = wide;
         render_set_hd(g_set.hd_textures);
         static const float ANISO[5] = {1, 2, 4, 8, 16};
         render_set_aniso(ANISO[g_set.aniso % 5]);

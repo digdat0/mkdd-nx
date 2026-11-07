@@ -2213,6 +2213,11 @@ static void draw(uint32_t cmd, const uint8_t *c) {
         }
     }
     if (hud && xmin <= -0.98f && xmax >= 0.98f && !(textured && G.movie)) hud = false;
+    /* three-player races only (a three-player race drawn a few retraces ago), outside the race HUD: half
+     * the width, the middle to an edge, is the fourth screen's frame over its camera view, widened with
+     * the 3D view (the menus' half-width pictures stay the HUD's) */
+    if (hud && !G.hud_zone && g_split3_vi && g_vi_count + 1 - g_split3_vi < 8 &&
+        ((fabsf(xmin) < 0.02f && xmax >= 0.98f) || (xmin <= -0.98f && fabsf(xmax) < 0.02f))) hud = false;
     if (G.hud_zone == 3) hud = false; /* WipeManager: fades over the (widened) 3D view */
     uint32_t side = 0;
     if (hud && G.hud_zone) {

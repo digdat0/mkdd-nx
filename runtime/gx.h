@@ -42,6 +42,8 @@ enum { MG_NONE, MG_PLACE, MG_ITEMS, MG_LAP, MG_TIME, MG_MAP, MG_ORDER, MG_SPEED,
 typedef struct { float ox, oy, nx, ny, s; uint32_t zone; } HudMove;
 extern const HudMove g_hud_move[MG_COUNT];
 extern volatile uint32_t g_hud_mirror;    /* native.c: DASHBOARD with HUD ASSETS' REAR-VIEW MIRROR on */
+extern volatile uint32_t g_hud_wide;      /* native.c: the widescreen HUD (render_set_hud43) */
+extern volatile uint32_t g_split3_vi;     /* native.c split3_mark: g_vi_count + 1 at the last three-player race draw (0: none yet) */
 #define HUD_ZONE_MIRROR 0x4D495252u      /* native.c's HUD marker: this frame's race HUD is DASHBOARD's, one player: draw the mirror */
 extern volatile float g_mirror_eye[2];  /* where the rear-view mirror looks back from in the camera's view, x and z */
 extern volatile float g_mirror_tilt[2]; /* ... how much further down than the camera it looks: sin, cos */

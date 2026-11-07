@@ -1240,12 +1240,24 @@ def write_map(routes, key, added, removed):
     return path
 
 
-def game_collision(disc_path=None, mod_dir=None):
+def is_arena(name):
+    return re.fullmatch(r"mini\d+l?\.arc", name) is not None
+
+
+def is_race_course(name):
+    """a race course's archive (not an arena, the award stand or the ending)"""
+    return name.endswith(".arc") and not is_arena(name) and not re.fullmatch(r"(award|ending)l?\.arc", name)
+
+
+def game_collision(disc_path=None, mod_dir=None, want=None, with_bol=False):
     """{key: [(3 vertices (x, y, z), type)]}: the game's battle arenas' collision (Course/Mini*.arc's
     _course.bco), read from the user's own disc image (never kept). The type's high byte: 0x01 road,
-    0x02 wall, 0x0a and 0x12 out of bounds, 0x0d a pipe, 0x04 ice and 0x13 Tilt-a-Kart's rim (ROAD)"""
+    0x02 wall, 0x0a and 0x12 out of bounds, 0x0d a pipe, 0x04 ice and 0x13 Tilt-a-Kart's rim (ROAD).
+    want: which archives (a test of the file's lower-case name; default the arenas, is_race_course
+    the race courses); with_bol: {key: (tris, the BOL's bytes, the archive's name)}"""
     import struct
     import build_from_iso, charpack
+    want = want or (lambda n: re.fullmatch(r"mini\d+\.arc", n) is not None)  # the arenas (mini1l.arc...: the same ones)
     arcs = []  # (name, the file's bytes, read when needed)
     if disc_path:
         raw = build_from_iso.Disc(disc_path)
@@ -1256,10 +1268,10 @@ def game_collision(disc_path=None, mod_dir=None):
 
         d = Disc(disc_path)
         arcs += [(name, lambda name=name: d.file(name)) for name in sorted(d.files)
-                 if re.fullmatch(r"course/mini\d+\.arc", name)]  # (mini1l.arc...: the same arenas)
+                 if name.startswith("course/") and want(name[7:])]  # (mini1l.arc...: the same arenas, skipped by key)
     if mod_dir:  # a mod's course sets (MKDD Plus: files/Cours0..4/Mini*.arc)
         for path in sorted(glob.glob(os.path.join(glob.escape(mod_dir), "files", "*", "*.arc"))):
-            if re.fullmatch(r"mini\d+\.arc", os.path.basename(path).lower()):
+            if want(os.path.basename(path).lower()):
                 arcs.append((os.path.relpath(path, mod_dir), lambda path=path: open(path, "rb").read()))
     out = {}
     for name, data in arcs:
@@ -1282,7 +1294,7 @@ def game_collision(disc_path=None, mod_dir=None):
         key = f"{bol[0x19]:02x}_{h:08x}"
         if key not in out and mod_dir:
             print(f"{key}: {name}")
-        out.setdefault(key, tris)
+        out.setdefault(key, (tris, bol, name) if with_bol else tris)
     return out
 
 

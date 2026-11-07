@@ -43,12 +43,14 @@ Note: This is an AI assisted project.
 - Up to 4x resolution docked and 3x handheld, with an Auto mode that keeps the frame rate.
 - Anisotropic filtering and colour options.
 - Race HUD styles: Classic, Modern and Dashboard (speed dial and rear-view mirror), MPH or KMH, every piece can be hidden.
+- [Coins](https://github.com/digdat0/mkdd-nx/wiki/Coins) on every race course in Grand Prix and Versus, mods' courses too; place your own with MKDD-NX Tools (`coins/`).
 
 **Mods** (see [Mods](#mods))
 
 - [MKDD Plus](https://github.com/digdat0/mkdd-nx/wiki/MKDD-Plus) 3.3, with its stereo music.
 - [Retro Track Grand Prix](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix) 2.1, Baby Mode and Classic.
 - [HD textures](https://github.com/digdat0/mkdd-nx/wiki/HD-Textures-App).
+- French, German, Italian or Spanish, with the [language files](https://github.com/digdat0/mkdd-nx/wiki/Languages) from your own PAL disc.
 - Up to 256 [custom characters](https://github.com/digdat0/mkdd-nx/wiki/Characters-App) and [extra karts](https://github.com/digdat0/mkdd-nx/wiki/Extra-Karts).
 - Mario Kart Wii [drivers](https://github.com/digdat0/mkdd-nx/wiki/Wii-Characters) and [karts](https://github.com/digdat0/mkdd-nx/wiki/Wii-Karts), converted with MKDD-NX Tools; characters can also be exported for a real GameCube.
 
@@ -91,6 +93,8 @@ sdmc:/switch/MKDD-NX/
     mods/Mario Kart Double Dash RTGP Classic OST 1_4.xdelta   (optional: RTGP Classic, the same way)
     mods/characters/         (optional: character packs)
     mods/audio/              (optional: MKDD Plus Expansion Pack, stereo music)
+    mods/lang/               (optional: French, German, Italian, Spanish from your PAL disc)
+    coins/                   (optional: your own coin layouts, from MKDD-NX Tools' Coins tab)
 ```
 
 The first start takes longer while shaders are compiled; later starts reuse them. Press **-** at
@@ -204,6 +208,7 @@ and your disc image is never changed. Step-by-step instructions are on the wiki.
 | [Retro Track Grand Prix](https://gamebanana.com/mods/594415) 2.1 (`mario_kart_double_dash_rtgp_2_1.zip`) | retro cups and courses | `mods/MKDD RTGP 2.1 Update.xdelta`, installed on the Switch at the next start | [wiki: Retro Track Grand Prix](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix) |
 | [RTGP Baby Mode](https://gamebanana.com/mods/download/594415) 1.4 (`rtgp_baby_mode_1_4.zip`) | RTGP made easier, for newcomers | `mods/Baby Mode 1_4.xdelta`, installed the same way | [wiki: Baby Mode and Classic](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix#baby-mode-and-classic) |
 | [RTGP Classic](https://gamebanana.com/mods/download/594415) 1.4 (`mario_kart_double_dash_rtgp_classic_ost.zip`) | RTGP with the classic soundtrack | `mods/Mario Kart Double Dash RTGP Classic OST 1_4.xdelta`, installed the same way | [wiki: Baby Mode and Classic](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix#baby-mode-and-classic) |
+| Your own European (PAL) disc, GM4P01 | the game in French, German, Italian or Spanish (standard game only; **Mods > Language**) | `mods/lang/`, copied from the disc by MKDD-NX Tools | [wiki: Languages](https://github.com/digdat0/mkdd-nx/wiki/Languages) |
 | [MKDD HD texture pack](https://sites.google.com/view/mkddhd/home-page) (English) | the game's textures in HD | `mods/hd/hd-textures.bin`, converted once on a computer | [wiki: HD Textures](https://github.com/digdat0/mkdd-nx/wiki/HD-Textures-App) |
 | Custom characters from [GameBanana](https://gamebanana.com/games/6555) and the [MKDD wiki](https://mkdd.org/wiki/List_of_Custom_Characters/) | up to 256 extra characters on more select screen pages | `mods/characters/` | [wiki: Characters App](https://github.com/digdat0/mkdd-nx/wiki/Characters-App) |
 | Mario Kart Wii drivers (`.szs`) | Wii characters, converted on a computer | `mods/characters/` | [wiki: Wii Characters](https://github.com/digdat0/mkdd-nx/wiki/Wii-Characters) |
@@ -217,8 +222,8 @@ and your disc image is never changed. Step-by-step instructions are on the wiki.
   (`MKDD-NX-Tools.exe`, or `MKDD-NX-Tools-arm64.dmg` / `-x86_64.dmg`), a tab for each tool:
   **HD Textures** (converts the texture pack), **Export MKDD Characters** (prepares character mods),
   **Convert WiiMK Characters** (beta: Mario Kart Wii drivers; drivers only, no karts, and Mii outfits
-  aren't supported), **Convert WiiMK Karts** (beta: Mario Kart Wii karts, no bikes) and **Battle Routes**
-  (edits the battle CPUs' routes).
+  aren't supported), **Convert WiiMK Karts** (beta: Mario Kart Wii karts, no bikes), **Battle Routes**
+  (edits the battle CPUs' routes), **Coins** (places the coins on the race courses) and **Languages** (copies a PAL disc's languages).
 
 ## Reporting bugs
 

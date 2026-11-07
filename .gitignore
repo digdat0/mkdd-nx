@@ -19,3 +19,7 @@ routes/net/
 routes/*.bak
 # loose run logs of the PC harness
 pc/*.log
+
+# menu localization, on hold
+translations/
+tools/ui_strings.py

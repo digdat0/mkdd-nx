@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
 
 #ifdef _WIN32
 #include "../win/nx_compat.h" /* the Windows build (win/) */
@@ -27,6 +29,7 @@
 #include "pause_art.h"
 #include "update.h"
 #include "../runtime/rt.h"
+#include "../runtime/coins.h"
 #include "../runtime/gx.h"
 #include "../runtime/table.h"
 
@@ -184,6 +187,7 @@ static void defaults(void) {
     g_set.audio = true;
     g_set.karts = true;
     snprintf(g_set.mod, sizeof g_set.mod, "auto");
+    g_set.language = 0;
     g_set.fov[0] = 0; /* 4:3: the game's view */
     g_set.fov[1] = 2; /* 16:9: wider */
     g_set.aniso = 0;
@@ -277,6 +281,7 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "cpu_draft")) g_set.draft_cpu = atoi(v) < 0 || atoi(v) > 2 ? 2 : atoi(v);
         else if (!strcmp(k, "draft_strength")) g_set.draft_power = atoi(v) < 0 || atoi(v) > 2 ? 1 : atoi(v);
         else if (!strcmp(k, "draft_distance")) g_set.draft_range = atoi(v) < 0 || atoi(v) > 2 ? 1 : atoi(v);
+        else if (!strcmp(k, "coins")) g_set.coins = atoi(v) != 0;
         else if (!strcmp(k, "single_battle")) g_set.battle_cpus = atoi(v) != 0;
         else if (!strcmp(k, "battle_karts")) g_set.battle_karts = atoi(v) < 4 ? 4 : atoi(v) > 8 ? 8 : atoi(v);
         else if (!strcmp(k, "bomb_hits")) g_set.bomb_hits = atoi(v) < 4 ? 4 : atoi(v) > 20 ? 20 : atoi(v) & ~1;
@@ -296,12 +301,17 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "audio")) g_set.audio = atoi(v) != 0;
         else if (!strcmp(k, "karts")) g_set.karts = atoi(v) != 0;
         else if (!strcmp(k, "mod")) snprintf(g_set.mod, sizeof g_set.mod, "%s", v);
+        else if (!strcmp(k, "language")) {
+            g_set.language = 0;
+            for (int i = 1; i < LANG_COUNT; i++)
+                if (!strcasecmp(v, LANG_NAMES[i])) g_set.language = i;
+        }
         else if (!strcmp(k, "plus")) snprintf(g_set.mod, sizeof g_set.mod, atoi(v) ? "auto" : "off"); /* before 1.4.0 */
         else if (!strcmp(k, "fov_4_3")) g_set.fov[0] = atoi(v) < 0 ? 0 : atoi(v) > 4 ? 4 : atoi(v);
         else if (!strcmp(k, "fov_16_9")) g_set.fov[1] = atoi(v) < 0 ? 0 : atoi(v) > 4 ? 4 : atoi(v);
         else if (!strcmp(k, "aniso")) g_set.aniso = atoi(v) < 0 ? 0 : atoi(v) > 4 ? 4 : atoi(v);
         else if (!strcmp(k, "border")) g_set.border = atoi(v) != 0;
-        else if (!strcmp(k, "hud_hide")) g_set.hud_hide = (unsigned)atoi(v) & (HUD_ALL | HUD_MIRROR);
+        else if (!strcmp(k, "hud_hide")) g_set.hud_hide = (unsigned)atoi(v) & (HUD_ALL | HUD_MIRROR | HUD_COINS);
         else if (!strcmp(k, "hud_style")) g_set.hud_style = atoi(v) == 3 ? 2 : atoi(v) >= 0 && atoi(v) <= 2 ? atoi(v) : 1; /* 3: PILLS + MIRROR before, the mirror now an asset */
         else if (!strcmp(k, "speed_kmh")) g_set.speed_kmh = atoi(v) != 0;
         else if (!strcmp(k, "split_side_by_side")) g_set.vsplit = atoi(v) != 0;
@@ -397,10 +407,12 @@ void settings_save(void) {
             g_set.logging, g_set.rumble, g_set.unlock_all, g_set.hd_textures, g_set.fov[0], g_set.fov[1], g_set.aniso, g_set.border, g_set.docked_res,
             g_set.profiler, g_set.mod, g_set.handheld_res, g_set.hud_hide, g_set.hud_style, g_set.speed_kmh, g_set.camera, g_set.drv_up, g_set.drv_forward, g_set.drv_tilt, g_set.kart_up, g_set.kart_forward, g_set.kart_tilt, g_set.any_kart);
     fprintf(f, "gpu_test=%d\n", g_set.gpu_test);
+    fprintf(f, "language=%s\n", LANG_NAMES[g_set.language > 0 && g_set.language < LANG_COUNT ? g_set.language : 0]);
     fprintf(f, "menu_hold=%d\n", g_set.menu_hold);
     fprintf(f, "map_version=2\n");
     fprintf(f, "drafting=%d\ncpu_draft=%d\ndraft_strength=%d\ndraft_distance=%d\n", g_set.draft, g_set.draft_cpu,
             g_set.draft_power, g_set.draft_range);
+    fprintf(f, "coins=%d\n", g_set.coins);
     fprintf(f, "mt_cpu=%d\nsingle_battle=%d\nbattle_karts=%d\nbomb_hits=%d\nperfect_start=%d\ntricks=%d\n", g_set.mt_cpu, g_set.battle_cpus, g_set.battle_karts, g_set.bomb_hits, g_set.perfect_start, g_set.tricks);
     fprintf(f, "mt_sweeps=%d\nmt_speed=%d\nmt_length=%d\njump=%d\nlaps=%d\nfree_camera=%d\ncamera_height=%d\ncamera_distance=%d\n", g_set.mt_sweeps, g_set.mt_speed,
             g_set.mt_length, g_set.jump, g_set.laps, g_set.free_cam, g_set.cam_height, g_set.cam_dist);
@@ -524,7 +536,7 @@ enum { PAGE_MAIN, PAGE_MAP, PAGE_EXIT, PAGE_COLOR, PAGE_DEBUG, PAGE_GFX, PAGE_UP
        PAGE_MULTI, PAGE_LAN, PAGE_BATTLE, PAGE_DRAFT, PAGE_PLAYER, PAGE_COUNT };
 /* the main page's rows; UPDATE and DEBUG sit on EXIT GAME's row, at its right (LEFT/RIGHT there) */
 enum { M_GAME, M_GFX, M_CAM, M_CTRL, M_MULTI, M_MODS, M_CHEATS, M_EXIT, M_UPDATE, M_DEBUG, M_COUNT };
-enum { MD_MOD, MD_AUDIO, MD_HD, MD_CHARS, MD_KARTS, MD_RESTART, MD_BACK, MD_COUNT };
+enum { MD_MOD, MD_LANG, MD_AUDIO, MD_HD, MD_CHARS, MD_KARTS, MD_RESTART, MD_BACK, MD_COUNT };
 enum { MP_SPLIT, MP_LAN, MP_BACK, MP_COUNT };
 /* LAN PLAY's page (A on MULTIPLAYER's LAN PLAY): RESTART NOW only while a change waits for one (lan_rows) */
 enum { LN_LAN, LN_PEER, LN_LINK, LN_RESTART, LN_BACK, LN_COUNT };
@@ -536,7 +548,36 @@ unsigned mods_pick(unsigned found) {
         if ((found >> (n - 1) & 1) && (!strcmp(g_set.mod, "auto") || !strcmp(g_set.mod, MODS[n - 1].key))) return n;
     return 0;
 }
-/* The MOD setting picks another mod than this session plays: a restart applies it. */
+/* mods/lang/<name>: the languages there at start-up (a PAL disc's files: its title screen and
+ * memory card texts at least), and the one played */
+const char *const LANG_NAMES[LANG_COUNT] = {"English", "French", "German", "Italian", "Spanish"};
+static unsigned s_langs_found;
+static int s_lang_running;
+unsigned langs_find(const char *mods_dir) {
+    unsigned found = 0;
+    for (int i = 1; i < LANG_COUNT; i++) {
+        char a[320], b[320];
+        struct stat st;
+        snprintf(a, sizeof a, "%s/lang/%s/SceneData/title.arc", mods_dir, LANG_NAMES[i]);
+        snprintf(b, sizeof b, "%s/lang/%s/MRAM_Locale/MRAMLoc.arc", mods_dir, LANG_NAMES[i]);
+        if (stat(a, &st) == 0 && stat(b, &st) == 0) found |= 1u << i;
+    }
+    return found;
+}
+int langs_pick(unsigned found) {
+    int l = g_set.language;
+    return l > 0 && l < LANG_COUNT && (found >> l & 1) ? l : 0;
+}
+void menu_set_langs(unsigned found, int running) { s_langs_found = found, s_lang_running = running; }
+/* the language the next start plays: English with a level pack */
+static bool lang_pending(void) { return (mods_pick(s_mods_found) ? 0 : langs_pick(s_langs_found)) != s_lang_running; }
+/* LEFT/RIGHT on LANGUAGE: English, then each one installed */
+static void lang_step(int dir) {
+    int l = langs_pick(s_langs_found);
+    do l = (l + LANG_COUNT + dir) % LANG_COUNT;
+    while (l && !(s_langs_found >> l & 1));
+    g_set.language = l;
+}
 /* mods/characters: there at start-up, and loaded then (EXTRA CHARACTERS was on) */
 static bool s_chars_found, s_chars_running;
 void menu_set_chars(bool found, bool running) { s_chars_found = found, s_chars_running = running; }
@@ -556,7 +597,7 @@ static bool lan_pending(void) { return g_set.lan != (g_lan_on != 0) || (g_set.la
 static int lan_rows(void) { return lan_pending() ? LN_COUNT : LN_COUNT - 1; }
 static int lan_item(int row) { return !lan_pending() && row >= LN_RESTART ? row + 1 : row; } /* row -> LN_ */
 /* MODS' own changes; mod_pending: anything RESTART NOW (on either page) applies */
-static bool mods_changed(void) { return mods_pick(s_mods_found) != s_mod_running || chars_pending() || karts_pending() || audio_pending(); }
+static bool mods_changed(void) { return mods_pick(s_mods_found) != s_mod_running || lang_pending() || chars_pending() || karts_pending() || audio_pending(); }
 static bool mod_pending(void) { return mods_changed() || lan_pending(); }
 static bool s_restart_manual; /* installed, but the loader can't relaunch: the player restarts */
 /* RESTART NOW (MODS and MULTIPLAYER): the loader starts this .nro again as soon as it exits */
@@ -617,7 +658,7 @@ static void upper(char *dst, size_t size, const char *s) {
     dst[i] = 0;
 }
 enum { C_MAP, C_JOYMAP, C_SYNC, C_HOLD, C_BACK, C_COUNT };
-enum { GM_STYLE, GM_UNITS, GM_HUD, GM_JUMP, GM_TRICKS, GM_DRAFT, GM_RUMBLE, GM_BATTLE, GM_BACK, GM_COUNT };
+enum { GM_STYLE, GM_UNITS, GM_HUD, GM_JUMP, GM_TRICKS, GM_DRAFT, GM_COINS, GM_RUMBLE, GM_BATTLE, GM_BACK, GM_COUNT };
 /* DRAFTING's page (A on GAME's row while it is on) */
 enum { DR_CPU, DR_POWER, DR_RANGE, DR_BACK, DR_COUNT };
 static const char *DRAFT_CPU_NAMES[3] = {"OFF", "WEAKER", "SAME AS YOU"};
@@ -675,6 +716,7 @@ void cheats_apply(void) {
         g_mt_sweeps = 3, g_mt_speed = 1.3f, g_mt_length = 1.0f, g_mt_cpu = 0;
         g_perfect_start = 0;
         g_draft = 0;
+        g_coins = 0;
         g_battle_cpus = g_set.battle_cpus; /* battle.c keeps Wi-Fi races the game's own */
         g_battle_karts = (uint32_t)g_set.battle_karts;
         g_bomb_hits = (uint32_t)g_set.bomb_hits;
@@ -691,6 +733,7 @@ void cheats_apply(void) {
     g_draft = g_set.draft ? (uint32_t)(g_set.draft_power % 3) + 1 : 0;
     g_draft_cpu = (uint32_t)(g_set.draft_cpu % 3);
     g_draft_range = (uint32_t)(g_set.draft_range % 3);
+    g_coins = (uint32_t)g_set.coins;
     g_battle_cpus = g_set.battle_cpus;
     g_battle_karts = (uint32_t)g_set.battle_karts;
     g_bomb_hits = (uint32_t)g_set.bomb_hits;
@@ -708,12 +751,12 @@ void special_apply(void) {
 static const char *CAMERA_NAMES[3] = {"NORMAL", "DRIVER FPV", "KART FPV"};
 enum { U_THIS, U_LATEST, U_ACTION, U_BACK, U_COUNT };
 enum { G_WIDE, G_FULL, G_BORDER, G_DOCKED, G_HANDHELD, G_ANISO, G_COLOR, G_BACK, G_COUNT }; /* G_FULL: PC only */
-/* HUD ASSETS page: one row per element (HUD_* bit 1 << row), single player races */
-enum { HU_PLACE, HU_ITEMS, HU_LAPS, HU_MAP, HU_SPEED, HU_ORDER, HU_TIME, HU_MIRROR, HU_BACK, HU_COUNT };
-static const char *HUD_LABELS[HU_COUNT] = {"POSITION", "ITEMS", "LAPS", "MAP", "SPEEDOMETER", "RACE ORDER", "RACE TIMER", "REAR-VIEW MIRROR", "BACK"};
+/* HUD ASSETS page: one row per element (HUD_* bit 1 << row); the mirror single player only, the coins 1 to 4 players */
+enum { HU_PLACE, HU_ITEMS, HU_LAPS, HU_MAP, HU_SPEED, HU_ORDER, HU_TIME, HU_MIRROR, HU_COINS, HU_BACK, HU_COUNT };
+static const char *HUD_LABELS[HU_COUNT] = {"POSITION", "ITEMS", "LAPS", "MAP", "SPEEDOMETER", "RACE ORDER", "RACE TIMER", "REAR-VIEW MIRROR", "COINS", "BACK"};
 static const char *HUD_STYLES[3] = {"CLASSIC", "MODERN", "DASHBOARD"};
 /* the mirror's row only under DASHBOARD (its setting kept under the others); a shown row's HU_ */
-static uint32_t hud_mask(void) { return HUD_ALL | (g_set.hud_style == 2 ? HUD_MIRROR : 0); }
+static uint32_t hud_mask(void) { return HUD_ALL | HUD_COINS | (g_set.hud_style == 2 ? HUD_MIRROR : 0); }
 static int hud_rows(void) { return g_set.hud_style == 2 ? HU_COUNT : HU_COUNT - 1; }
 static int hud_row(int i) { return g_set.hud_style != 2 && i >= HU_MIRROR ? i + 1 : i; }
 static const char *hud_value(void) {
@@ -1012,6 +1055,7 @@ bool menu_input(const uint64_t down_[4], const uint64_t held_[4], bool *quit) {
     if (s_page == PAGE_MODS && (ok || side)) {
         switch (*sel) {
         case MD_MOD: if (s_mods_found) { mod_step(left ? -1 : 1); settings_save(); } break;
+        case MD_LANG: if (s_langs_found) { lang_step(left ? -1 : 1); settings_save(); } break;
         case MD_HD: g_set.hd_textures = !g_set.hd_textures; settings_save(); break;
         case MD_AUDIO: if (s_audio_found && mod_is_plus(mods_pick(s_mods_found))) { g_set.audio = !g_set.audio; settings_save(); } break;
         case MD_CHARS: if (s_chars_found) { g_set.characters = !g_set.characters; settings_save(); } break;
@@ -1093,6 +1137,7 @@ bool menu_input(const uint64_t down_[4], const uint64_t held_[4], bool *quit) {
             if (ok && g_set.draft) { s_page = PAGE_DRAFT; s_sel[PAGE_DRAFT] = 0; break; }
             g_set.draft = !g_set.draft; cheats_apply(); settings_save();
             break;
+        case GM_COINS: g_set.coins = !g_set.coins; cheats_apply(); settings_save(); break;
         case GM_BACK: if (ok) s_page = PAGE_MAIN; break;
         }
         return true;
@@ -1631,7 +1676,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s_sel[PAGE_MAIN] == M_MODS   ? "GAME MODS, HD TEXTURES"
                    : s_sel[PAGE_MAIN] == M_MULTI  ? SW_PC("LAN PLAY OVER WI-FI WITH OTHER CONSOLES", "LAN PLAY WITH OTHER PCS AND SWITCHES")
                    : s_sel[PAGE_MAIN] == M_CTRL   ? SW_PC("BUTTON MAPPING, SYNC CONTROLLERS", "BUTTON MAPPING, OPEN MENU")
-                   : s_sel[PAGE_MAIN] == M_GAME   ? "RACE HUD, SPEED, HUD ASSETS, JUMP, RUMBLE, SINGLE PLAYER BATTLE"
+                   : s_sel[PAGE_MAIN] == M_GAME   ? "RACE HUD, SPEED, HUD ASSETS, JUMP, COINS, RUMBLE, SINGLE PLAYER BATTLE"
                    : s_sel[PAGE_MAIN] == M_CHEATS ? "UNLOCK ALL, NO WEIGHT CLASSES, SPECIAL ITEMS, MINI-TURBO, LAPS"
                    : s_sel[PAGE_MAIN] == M_DEBUG  ? "FPS AND FRAME TIMES, LOGS, PROFILER"
                    : s_sel[PAGE_MAIN] == M_UPDATE ? uhint
@@ -1674,13 +1719,15 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : cur == G_COLOR  ? "A: ADJUST   LEFT/RIGHT: ACCURATE, VIVID, CUSTOM"
                                                  : "B: BACK";
         } else if (s_page == PAGE_MODS) {
-            static const char *labels[MD_COUNT] = {"LEVEL PACK", "STEREO MUSIC", "HD TEXTURES", "EXTRA CHARACTERS", "EXTRA KARTS", "RESTART NOW", "BACK"};
+            static const char *labels[MD_COUNT] = {"LEVEL PACK", "LANGUAGE", "STEREO MUSIC", "HD TEXTURES", "EXTRA CHARACTERS", "EXTRA KARTS", "RESTART NOW", "BACK"};
             unsigned pick = mods_pick(s_mods_found);
             char mod_value[16], mod_hint[96];
             upper(mod_value, sizeof mod_value, pick ? MODS[pick - 1].key : s_mods_found ? "off" : "none found");
             upper(mod_hint, sizeof mod_hint, pick ? MODS[pick - 1].name : "the standard game");
             snprintf(mod_hint + strlen(mod_hint), sizeof mod_hint - strlen(mod_hint), pick ? ": ITS OWN SAVE" : "");
-            const char *values[MD_COUNT] = {mod_value,
+            char lang_value[16];
+            upper(lang_value, sizeof lang_value, LANG_NAMES[langs_pick(s_langs_found)]);
+            const char *values[MD_COUNT] = {mod_value, lang_value,
                                             !s_audio_found ? "NONE FOUND" : !mod_is_plus(pick) ? "PLUS ONLY" : g_set.audio ? "ON" : "OFF",
                                             !hdtex_available() ? "NO PACK" : g_set.hd_textures ? "ON" : "OFF",
                                             !s_chars_found ? "NONE FOUND" : g_set.characters ? "ON" : "OFF",
@@ -1695,6 +1742,10 @@ void menu_draw(int w, int h, float fps, const char *perf) {
             hint = s == MD_MOD && !s_mods_found     ? "PUT A MOD IN THE MODS FOLDER (SEE README)"
                    : s == MD_MOD && mods_changed()   ? "CHANGES AFTER A RESTART: SEE RESTART NOW"
                    : s == MD_MOD                     ? mod_hint
+                   : s == MD_LANG && !s_langs_found  ? "MORE: A PAL DISC'S, BY MKDD-NX TOOLS, IN MODS/LANG (SEE README)"
+                   : s == MD_LANG && pick && langs_pick(s_langs_found) ? "THE STANDARD GAME ONLY: LEVEL PACKS ARE IN ENGLISH"
+                   : s == MD_LANG && lang_pending()  ? "CHANGES AFTER A RESTART: SEE RESTART NOW"
+                   : s == MD_LANG                    ? "THE GAME'S MENUS AND TEXTS, FROM YOUR PAL DISC'S FILES"
                    : s == MD_AUDIO && !s_audio_found ? "PUT THE EXPANSION PACK'S FILES FOLDER IN MODS/AUDIO (SEE README)"
                    : s == MD_AUDIO && !mod_is_plus(pick) ? "THE MKDD PLUS EXPANSION PACK: PICK PLUS AS THE LEVEL PACK"
                    : s == MD_AUDIO && audio_pending() ? "CHANGES AFTER A RESTART: SEE RESTART NOW"
@@ -1739,11 +1790,11 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s == LN_RESTART               ? restart_hint()
                                                    : "B: BACK";
         } else if (s_page == PAGE_GAME) {
-            static const char *labels[GM_COUNT] = {"RACE HUD", "SPEED", "HUD ASSETS", "JUMP HEIGHT", "TRICKS", "DRAFTING", "RUMBLE STRENGTH", "SINGLE PLAYER BATTLE MODE", "BACK"};
+            static const char *labels[GM_COUNT] = {"RACE HUD", "SPEED", "HUD ASSETS", "JUMP HEIGHT", "TRICKS", "DRAFTING", "COINS", "RUMBLE STRENGTH", "SINGLE PLAYER BATTLE MODE", "BACK"};
             const char *values[GM_COUNT] = {HUD_STYLES[g_set.hud_style], g_set.speed_kmh ? "KMH" : "MPH", hud_value(),
-                                            JUMP_NAMES[g_set.jump & 3], g_set.tricks == 2 ? "ON + WIPEOUTS" : g_set.tricks ? "ON" : "OFF", g_set.draft ? "ON" : "OFF", RUMBLE_NAMES[g_set.rumble % 3],
+                                            JUMP_NAMES[g_set.jump & 3], g_set.tricks == 2 ? "ON + WIPEOUTS" : g_set.tricks ? "ON" : "OFF", g_set.draft ? "ON" : "OFF", g_set.coins ? "ON" : "OFF", RUMBLE_NAMES[g_set.rumble % 3],
                                             g_set.battle_cpus ? "ON" : "OFF", NULL};
-            const bool more[GM_COUNT] = {false, false, true, false, false, g_set.draft != 0, false, g_set.battle_cpus, false};
+            const bool more[GM_COUNT] = {false, false, true, false, false, g_set.draft != 0, false, false, g_set.battle_cpus, false};
             for (int i = 0; i < GM_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, GM_COUNT), pw, rh, k, s_sel[PAGE_GAME] == i, labels[i], values[i], more[i]);
             hint = s_sel[PAGE_GAME] == GM_STYLE ? (g_set.hud_style == 2 ? "ONE BAR ACROSS THE TOP, REAR-VIEW MIRROR, RACE ORDER BELOW. 1 PLAYER" : g_set.hud_style == 1 ? "MODERN: SMALLER, IN THE CORNERS. 1 TO 4 PLAYERS" : "THE GAME'S OWN")
                    : s_sel[PAGE_GAME] == GM_UNITS ? "SPEEDOMETER IN MILES OR KILOMETRES PER HOUR"
@@ -1755,6 +1806,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s_sel[PAGE_GAME] == GM_DRAFT ? (g_lan_play ? "OFF IN LAN PLAY"
                                                     : g_set.draft ? "A: CPU DRAFTING, STRENGTH, DISTANCE   LEFT/RIGHT: OFF"
                                                                   : "STAY BEHIND A KART AT SPEED TO FILL UP, THEN BOOST. GP AND VS")
+                   : s_sel[PAGE_GAME] == GM_COINS ? (g_lan_play ? "OFF IN LAN PLAY" : "COINS ON THE TRACK: EACH ONE HELD ADDS TOP SPEED, HITS DROP THEM. GP AND VS, FROM THE NEXT RACE")
                    : s_sel[PAGE_GAME] == GM_JUMP ? (ED(map)[MAP_JUMP] ? "ONE HOP PER PRESS OF THE JUMP BUTTON"
                                                                        : "GIVE JUMP A BUTTON: CONTROLS > BUTTON MAPPING")
                                                  : "B: BACK";
@@ -1891,6 +1943,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
             hint = at == HU_BACK      ? "B: BACK"
                    : at == HU_TIME    ? "HIDDEN WHILE YOU RACE, SHOWN AGAIN AT THE FINISH"
                    : at == HU_MIRROR  ? "A REAR VIEW AT THE TOP LEFT: LOWERS THE FRAME RATE"
+                   : at == HU_COINS   ? "THE COINS YOU HOLD, WHEN COINS ARE ON (GAME > COINS)"
                                       : "ON OR OFF";
         } else if (s_page == PAGE_DEBUG) {
             static const char *labels[D_COUNT] = {"SHOW FPS", "LOGGING", "PROFILER", "GPU TEST", "CLOCKS", "BACK"};

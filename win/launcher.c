@@ -78,6 +78,8 @@ static HWND c_winsize, c_full, c_res, c_aniso, c_hd, c_border, c_fov43, c_fov169
 static HWND c_dev, c_vol, c_vol_txt, c_lat, c_music;
 static HWND c_pads, c_rumble, c_map[MAP_COUNT][2], c_pad_sel, c_pad_player;
 static HWND c_key[KB_COUNT][KB_KEYS];
+static HWND c_lang;           /* Mods: the language (MODS > LANGUAGE), English + the ones in mods\lang */
+static int s_lang_sel[LANG_COUNT];
 static HWND c_mod, c_mods, c_chars, c_karts, c_progress, c_status;
 static HWND c_nav[P_COUNT];
 static int s_capture = -1;         /* the key button waiting for a key: row * KB_KEYS + column */
@@ -584,6 +586,20 @@ static void mods_fill(void) {
     }
     if (!MOD_COUNT) SendMessageA(c_mods, LB_ADDSTRING, 0, (LPARAM) "(this build has no mod support)");
     combo_set(c_mod, sel);
+    /* languages: a PAL disc's, extracted by MKDD-NX Tools into mods\lang */
+    unsigned langs = langs_find(MODS_DIR);
+    SendMessageA(c_lang, CB_RESETCONTENT, 0, 0);
+    k = sel = 0;
+    for (int i = 0; i < LANG_COUNT; i++) {
+        bool in = !i || (langs >> i & 1);
+        if (!in && g_set.language != i) continue;
+        char t[64];
+        snprintf(t, sizeof t, "%s%s", LANG_NAMES[i], in ? "" : " (not installed)");
+        combo_add(c_lang, t);
+        if (g_set.language == i) sel = k;
+        s_lang_sel[k++] = i;
+    }
+    combo_set(c_lang, sel);
 }
 static bool install_progress(void *ud, uint64_t done, uint64_t total) {
     (void)ud;
@@ -855,6 +871,8 @@ static void build(void) {
     /* Mods */
     y = T;
     heading(P_MODS, "Mod to play", L, y), y += 26;
+    heading(P_MODS, "Language (standard game)", L + 400, y - 26);
+    c_lang = combo(P_MODS, L + 400, y, W - 20 - 400, 0);
     c_mod = combo(P_MODS, L, y, 380, 0), y += 36;
     c_mods = add(P_MODS, "LISTBOX", "", WS_BORDER | WS_VSCROLL | LBS_NOSEL | LBS_NOINTEGRALHEIGHT, L, y, W - 20, 92, 0), y += 100;
     if (c_mods) SetWindowTheme(c_mods, L"DarkMode_Explorer", NULL);
@@ -869,8 +887,9 @@ static void build(void) {
     }
     c_status = add(P_MODS, "STATIC", "", SS_NOPREFIX, L, y + 14, W - 20, 20, 0), y += 40;
     note(P_MODS, "Pick a mod's .xdelta patch, or a disc image with the mod already patched in (MKDD Plus, Retro Track GP...). "
-                 "It is unpacked into mods\\; play the mod from there with your own clean disc image.",
-         L, y - 8, W - 20, 36), y += 42;
+                 "It is unpacked into mods\\; play the mod from there with your own clean disc image. Languages: "
+                 "MKDD-NX Tools copies them from a PAL disc into mods\\lang.",
+         L, y - 8, W - 20, 62), y += 64;
     heading(P_MODS, "Extras", L, y), y += 26;
     int nc = count_entries(MODS_DIR "/characters"), nk = count_entries(MODS_DIR "/karts");
     char t[128];
@@ -925,6 +944,8 @@ static void apply(void) {
     }
     int m = s_mod_sel[combo_get(c_mod)];
     snprintf(g_set.mod, sizeof g_set.mod, "%s", m == 0 ? "auto" : m == 1 ? "off" : MODS[m - 2].key);
+    int lg = combo_get(c_lang);
+    g_set.language = lg >= 0 && lg < LANG_COUNT ? s_lang_sel[lg] : 0;
     g_set.characters = checked(c_chars);
     g_set.karts = checked(c_karts);
     settings_save();

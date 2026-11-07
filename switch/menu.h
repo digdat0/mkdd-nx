@@ -25,6 +25,7 @@ typedef struct {
     int draft_cpu;     /* DRAFTING > CPU DRAFTING: 0 off, 1 weaker, 2 the same as players' (the default) */
     int draft_power;   /* DRAFTING > DRAFT STRENGTH: 0 weak, 1 medium (the default), 2 strong (runtime g_draft 1-3) */
     int draft_range;   /* DRAFTING > DRAFT DISTANCE: 0 close, 1 regular (the default), 2 far (runtime g_draft_range) */
+    int coins;         /* GAME > COINS (runtime/coins.c g_coins): Grand Prix and versus, from the next race */
     bool battle_cpus;  /* MODS > SINGLE PLAYER BATTLE MODE (default on): battles filled up to 4 karts with computer karts */
     int battle_karts;  /* MODS > BATTLE KARTS (default 4): the karts in a 1-player battle, 4 to 8 */
     int bomb_hits;     /* MODS > BOB-OMB HITS TO WIN (default 4, the game's): in a 1-player Bob-omb Blast, 4 to 20 */
@@ -40,6 +41,8 @@ typedef struct {
     bool characters;   /* EXTRA CHARACTERS: load mods/characters (character packs), from the next start */
     bool karts;        /* EXTRA KARTS: load mods/karts, from the next start */
     bool audio;        /* STEREO MUSIC: MKDD Plus plays the streams in mods/audio, from the next start */
+    int language;      /* MODS > LANGUAGE, from the next start: LANG_NAMES index (0 English, the USA game's); the
+                        * others need their files in mods/lang/<name> (from a PAL disc, by MKDD-NX Tools) */
     char mod[16];      /* the mod to play, from the next start: "auto" (the first found), "off" or a MODS key */
     int fov[2];        /* race camera field of view for 4:3 / 16:9: 0 normal (the game's), 1 wide, 2 wider, 3 widest, 4 wideee */
     int aniso;         /* texture filtering: 0 normal, 1-4 anisotropic 2x / 4x / 8x / 16x */
@@ -145,6 +148,14 @@ void menu_set_audio(bool found, bool running);
 bool mod_is_plus(unsigned n);
 /* The mod the MOD setting picks among the found ones (bit mask as above): 0 none, n = MODS[n - 1]. */
 unsigned mods_pick(unsigned found);
+/* MODS > LANGUAGE: the names (the PAL disc's folder names, and the game's language numbers), the ones
+ * installed in mods_dir/lang (bit n: LANG_NAMES[n]), the one to play (0 English when it isn't
+ * installed), and which one this session plays */
+#define LANG_COUNT 5
+extern const char *const LANG_NAMES[LANG_COUNT];
+unsigned langs_find(const char *mods_dir);
+int langs_pick(unsigned found);
+void menu_set_langs(unsigned found, int running);
 /* Open the menu (game paused) on its main page, with notice as the hint until the cursor moves. */
 void menu_open(const char *notice);
 void special_apply(void); /* SPECIAL ITEMS settings -> the runtime's g_special */
