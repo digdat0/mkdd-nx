@@ -20,6 +20,7 @@ Note: This is an AI assisted project.
 - **Tricks:** flips, spins, doubles, combos and rider tricks off ramps, with a landing boost. See [Tricks](https://github.com/digdat0/mkdd-nx/wiki/Tricks).
 - **Drafting:** a slipstream boost behind other karts.
 - **Single player battles** against three CPUs on the game's 6 arenas and MKDD Plus's 24. See [Battle mode](#battle-mode).
+- **Versus with CPUs:** 2 to 4 player Versus races filled with computer karts, up to 8. See [Versus with CPUs](#versus-with-cpus).
 - **LAN play over Wi-Fi** between Switches and PCs, no adapters. See [LAN play](#lan-play).
 - Jump button, 1 to 7 laps per race.
 - Cheats: no weight classes, any special item, stronger mini-turbos, perfect starts, unlock all (your save is never touched).
@@ -176,6 +177,15 @@ each lighting after its share of the hits, and being hit takes one hit off.
   `routes/<key>.txt` in the app folder is used instead of the built-in route for that arena. See the
   [Route Editor wiki page](https://github.com/digdat0/mkdd-nx/wiki/Route-Editor), and [docs/BATTLE_ROUTES.md](docs/BATTLE_ROUTES.md) for the
   automatic route maker and the file format. The built-in routes are in the [routes](routes) folder.
+
+## Versus with CPUs
+
+The GameCube game's Versus races have only the players' karts. **Game > Versus CPUs** in the − menu
+(OFF by default) fills a 2, 3 or 4 player Versus race with computer karts up to 4, 5, 6, 7 or 8
+karts, from the next race. The computer karts are picked as in a Grand Prix (two characters not
+taken by a player, the heavier one's kart), drive at the engine class chosen on the mode page, and
+start from the Grand Prix's grid when there are more than 4 karts. The race ends when every
+player has finished. Off in LAN play; Time Trial, Grand Prix and the battles are unchanged.
 
 ## LAN play
 

@@ -17,7 +17,7 @@
  * SceneMenu::setRaceData; the same code in Plus and RTGP). A battle (modes 4-7) gets one kart per
  * player. In single player battle mode (g_battle_cpus): 4 karts, and setRaceData's loop after the
  * players' karts (while fewer than gRaceInfo +0x1c) fills the rest with computer karts, as it does
- * for a Grand Prix. */
+ * for a Grand Prix. A Versus (mode 3) gets its karts from versus.c (VERSUS CPUS), the same way. */
 volatile uint32_t g_battle_cpus;
 volatile uint32_t g_battle_karts = 4;
 volatile uint32_t g_bomb_hits = 4;
@@ -33,6 +33,9 @@ uint64_t i_FUN_8018c878(Ctx *c, uint8_t *M, ARGS) {
     if (battle_on() && a1 >= 4 && a1 <= 7 && (int32_t)a2 < 4) {
         rt_log("battle cpus: mode %u, %d players, 4 karts", (unsigned)a1, (int)(int32_t)a3);
         ctx_set_gpr(c, 5, 4);
+    } else if (a1 == 3) {
+        int karts = versus_karts((int32_t)a2, (int32_t)a3, s_net);
+        if (karts) ctx_set_gpr(c, 5, (uint32_t)karts);
     }
     ctx_call_orig(c, g_native_addr[NAT_FUN_8018c878]);
     return 0;
