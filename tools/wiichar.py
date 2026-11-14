@@ -31,6 +31,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import charpack  # noqa: E402  (yaz0, BASES, Disc, bmd_info)
+import ui_theme  # noqa: E402
 
 
 FILE_LIMIT = 8 << 20   # runtime/charpack.c load_file: the largest file it takes
@@ -2220,7 +2221,7 @@ def gui(root):
         col.pack(side="left", padx=(0, 8))
         v = {"yaw": tk.IntVar(value=yaw), "seq": 0}
         v["label"] = tk.Label(col, text="The converted character shows here" if k == 0 else "", width=44, height=20,
-                              relief="groove", background="#46505f", foreground="#ddd")
+                              relief="groove", background=ui_theme.PREVIEW[0], foreground=ui_theme.PREVIEW[1])
         v["label"].pack(side="top")
         row = ttk.Frame(col)
         row.pack(side="top", fill="x")
@@ -2232,7 +2233,7 @@ def gui(root):
         views.append(v)
     notes = tk.Text(mid, height=8, wrap="word")
     notes.pack(side="top", fill="both", expand=True, pady=(8, 0))
-    for level, colour in (("ok", "#1a7f37"), ("info", "#555555"), ("warn", "#9a6700"), ("error", "#cf222e")):
+    for level, colour in ui_theme.NOTES.items():
         notes.tag_configure(level, foreground=colour)
 
     def show_notes(items):

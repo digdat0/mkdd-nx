@@ -1,4 +1,4 @@
-"""Draws the coin layouts runtime/coins.c writes with LOGGING on (logs/coins_<course ID>_<hash>.txt)
+"""Draws the coin layouts runtime/coins.c writes with LOGGING on (logs/coins_<course ID>_<hash>.txt, in a build with -DCOINS_DUMP)
 from above, as SVG: the computer karts' line (grey, its width shaded), the item boxes (blue), the
 start (green) and the coins (gold; cyan over water).
 

@@ -118,25 +118,44 @@ static void code_watch_start(const uint32_t *addr, const uint32_t *size) {
     s_code_n = 0;
     for (int i = 0; i < 7; i++) { /* the DOL's text sections */
         if (!size[i]) continue;
+        int64_t o = ram_off(addr[i]);
+        /* the copy is the raw (big-endian) MEM1 bytes, so the watch can memcmp against g_ram */
+        if (o < 0 || (addr[i] & 3) || (uint64_t)o + size[i] > RAM_SIZE) continue;
         uint8_t *copy = malloc(size[i]);
         if (!copy) continue;
-        for (uint32_t k = 0; k < size[i]; k += 4) put_be(copy + k, 4, m_read_be(addr[i] + k, 4));
-        s_code[s_code_n].addr = addr[i], s_code[s_code_n].size = size[i], s_code[s_code_n++].copy = copy;
+        memcpy(copy, g_ram + o, size[i]);
+        s_code[s_code_n].addr = addr[i], s_code[s_code_n].size = size[i] & ~3u, s_code[s_code_n++].copy = copy;
     }
 }
 
+/* Called once per frame (PAD read). Compares a slice of the code per frame (the whole text about
+ * once a second, as before) instead of all of it in one frame every 60: the full compare took
+ * several ms on the Switch in a single frame, a regular hitch. */
 void machine_watch_code(void) {
-    static unsigned frame, reported;
-    if (++frame % 60 || reported >= 256) return; /* about once a second; a flood is cut short */
-    for (unsigned i = 0; i < s_code_n; i++)
-        for (uint32_t k = 0; k < s_code[i].size; k += 4) {
-            uint32_t was = (uint32_t)get_be(s_code[i].copy + k, 4), now = (uint32_t)m_read_be(s_code[i].addr + k, 4);
-            if (was == now) continue;
-            put_be(s_code[i].copy + k, 4, now);
-            rt_log("code watch: %#010x rewritten %08x -> %08x (%s)", s_code[i].addr + k, was, now,
-                   core_function_name(s_code[i].addr + k));
-            if (++reported >= 256) { rt_log("code watch: 256 words rewritten, no more reported"); return; }
+    static unsigned reported, sec;
+    static uint32_t off;
+    if (reported >= 256 || !s_code_n) return; /* a flood is cut short */
+    uint32_t total = 0;
+    for (unsigned i = 0; i < s_code_n; i++) total += s_code[i].size;
+    uint32_t budget = (total / 60 + 4095) & ~4095u;
+    while (budget) {
+        if (sec >= s_code_n) sec = 0, off = 0;
+        uint32_t size = s_code[sec].size;
+        if (off >= size) { sec++, off = 0; continue; }
+        uint32_t n = size - off < budget ? size - off : budget;
+        const uint8_t *mem = g_ram + ram_off(s_code[sec].addr) + off;
+        uint8_t *copy = s_code[sec].copy + off;
+        if (memcmp(copy, mem, n)) {
+            for (uint32_t k = 0; k < n; k += 4) {
+                if (!memcmp(copy + k, mem + k, 4)) continue;
+                uint32_t a = s_code[sec].addr + off + k, was = (uint32_t)get_be(copy + k, 4), now = (uint32_t)get_be(mem + k, 4);
+                memcpy(copy + k, mem + k, 4);
+                rt_log("code watch: %#010x rewritten %08x -> %08x (%s)", a, was, now, core_function_name(a));
+                if (++reported >= 256) { rt_log("code watch: 256 words rewritten, no more reported"); return; }
+            }
         }
+        off += n, budget -= n;
+    }
 }
 
 /* Load the game's code and data from main.dol on the disc (it is not part of the build): find it

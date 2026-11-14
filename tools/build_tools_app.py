@@ -19,6 +19,7 @@ from pathlib import Path
 
 import hdtex_pack
 import pyi_app
+import tools_update
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "build-tools-app"
@@ -32,14 +33,16 @@ def main():
     lib = WORK / hdtex_pack.LIB.name
     hdtex_pack.build_encoder(lib, native=False)  # any CPU of this architecture, not just this one
     extra = ["--paths", a.zstd_from] if a.zstd_from else []
-    hidden = ["charpack", "wiichar", "wiikart", "route_editor", "coin_editor", "battle_routes", "build_from_iso", "langpack", "rvz", "zstandard", "hdtex_gui", "hdtex_pack"]
+    ver = WORK / "tools_version.txt"  # the updater's own version (tools/tools_update.py)
+    ver.write_text(tools_update.version())
+    hidden = ["charpack", "wiichar", "wiikart", "wiibatch", "route_editor", "coin_editor", "battle_routes", "build_from_iso", "runpy", "langpack", "rvz", "zstandard", "hdtex_gui", "hdtex_pack", "ui_theme", "tools_update"]
     # optional imports of Pillow and the standard library the tools never use (numpy alone was ~30 MB)
     unused = ["numpy", "clr", "clr_loader", "pythonnet", "pyreadline3", "pydoc", "pydoc_data", "unittest", "doctest"]
     pyi_app.build("MKDD-NX Tools", "MKDD-NX-Tools", ROOT / "tools" / "mkddnx_tools.py", WORK, "io.github.digdat0.mkddnx.tools",
                   ["--paths", str(ROOT / "tools"), "--paths", str(ROOT / "tools" / "hdtex_app"), *extra,
                    *[x for h in hidden for x in ("--hidden-import", h)],
                    *[x for m in unused for x in ("--exclude-module", m)],
-                   "--add-binary", f"{lib}{os.pathsep}.",
+                   "--add-binary", f"{lib}{os.pathsep}.", "--add-data", f"{ver}{os.pathsep}.",
                    "--add-data", f"{ROOT / 'routes' / '*.txt'}{os.pathsep}routes"])
 
 

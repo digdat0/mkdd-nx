@@ -91,6 +91,33 @@ The generated code and the decoder both got cheaper. None of these has an isolat
 - **Double-precision locals:** FPR locals are now C doubles. With the memory change, this shrank generated code from 51.1 MB to 44.8 MB.
 - **List jobs:** a core 0 helper copies kept vertex lists, taking that work off the decoder. List bytes are hashed 1 frame in 16.
 
+### 6. The GX decoder (after v1.9.1)
+
+A handheld log on AUTO resolution (7 Nov) showed 60 fps on screen but only 37–59 new game frames a second. In the slow windows the decoder was busy 26–44 ms of every 33, and the game thread spent 180–1200 ms per 5 s waiting for room in the decoder's queue. The GPU was not the limit.
+
+- **Vertex cache re-stores:** one list (a kart's, 568 vertices, eight karts) is drawn twice a frame over arrays the game rewrites every frame. It missed, was stored, hit on the second draw and missed again the next frame, and each store waited for the list-job helper. A store now waits only when the old copy was used this frame, and a same-size store reuses its buffers. On PC: helper waits 70 → 0 µs a frame, stores 70 → 54 µs. Skipping such lists instead would cost a second decode, about break-even.
+- **Profiling the decoder by phase:** samples now carry what the decoder was doing (`g_gx_phase`; `tools/prof_report.py` prints the table). On hardware, per-vertex texture-matrix lists took 38–42% of its busy time, because the vertex cache left them out. Copying and patching cached lists took only about 5%.
+- **Texture-matrix lists cached:** each list keeps up to 64 matrix combinations, resolved on reuse.
+
+| Hardware, same courses (0x28, 0x25), RTGP Classic | Before | After |
+|---|---|---|
+| Decoder busy | 60% (about 10 ms a frame) | 38% (about 6.4 ms) |
+| Vertex cache reuse | 72% | 92% |
+| Decoder time in hitch lines | 19 ms | 12 ms |
+| Worst game frames per 5 s | 188 | 283 |
+
+Hitches stayed at about 25 a minute, nearly all single dropped frames with the game thread busy throughout. From here the game thread is the limit.
+
+### 7. Hitches on the game thread (after v1.9.1)
+
+The game thread's profile is flat: the top 41 generated functions together are 12.6%, and every top function by self time is already native. Comparing the samples inside each hitch window with the rest found the cause the average hid: `disc_read` was 7.4% of hitch windows against 0.09% elsewhere. The music stream thread waited for the disc lock, which the read-ahead worker held during each 64 KB SD card read.
+
+- **Disc lock split:** the image file has its own lock. The worker reads holding only that, so reads the window already has never wait for the SD card, and a read that needs the file goes ahead of the worker's next piece.
+- **Blocking sections:** guest threads run one at a time, and a thread waiting in a host call used to keep the turn. Disc reads that miss the window and memory card writes now give it up while they wait (only with interrupts enabled, never inside a handler).
+- **Logging off the game thread:** `rt_log` writes into a 256 KB ring with a hash table for repeated lines. The watchdog thread drains it and flushes to the SD card at most once a second.
+
+These are verified on PC replays (no underruns, DVD reads unchanged, logs complete) but **not yet measured on hardware**. Memory card saves and the crash-time log flush are untested.
+
 ## What didn't help
 
 | Tried | Result |
@@ -103,6 +130,8 @@ The generated code and the decoder both got cheaper. None of these has an isolat
 | 2x cap on half-size copies | No measurable gain: 14.60 ms against 14.33 ms uncapped. May be removed. |
 | 2-tap output when shrinking | 14.60 ms against 14.74 ms for 4-tap, too close to call. |
 | Offloading draw-level vertex conversion | Only about 5k vertices a frame convert in small draws. Most are vertex-cache copies. |
+| Skipping vertex lists that change every frame | About break-even: the second draw would decode again. Re-stores were made cheaper instead (section 6). |
+| Fusing compares with branches in generated code | GCC already folds them into one compare and branch in the hot functions checked. The rest is where the condition stays live across a call: small, left alone. |
 | Final copy through the 2D engine | Never really tested. The game's copy uses a pixel format that `xfb_blit` refuses, so the shader kept running. Showing the picture directly made this moot. |
 
 ## What we learned
@@ -111,6 +140,8 @@ The generated code and the decoder both got cheaper. None of these has an isolat
 - **If a figure doesn't change when the workload does, it isn't measuring the workload.** GPU time stayed near 15 ms at 137 draws and at 825, because we were timing the GPU waiting for work. Real work was about 11.3 ms.
 - **Remove the work before speeding it up.** Skipping the final copy gained more at 4x than any change to how copies run.
 - **Find the real limit first.** Once the GPU had headroom, 2-player dips turned out to be CPU load, which a lower resolution can't fix. Screen fps hid this, reading 60 while the game produced 53 new frames a second.
+- **Profile the slow frames, not the average.** The game thread's profile was flat, and only comparing hitch windows with normal ones showed a lock held across SD card reads.
+- **Never hold a shared lock across slow I/O.** A lock that only guarded a few pointers dropped frames because one thread kept it during a card read.
 - **Make every change switchable.** An empty file in `config/` or the GPU TEST setting turns a change off without a rebuild. That's how we found the crash below: a GPU queue error about 11.8 s into 2-player Turnpike, every time. Reading the diff hadn't found it, but turning features off found it in two runs. The cause was normal draws growing the frame's index buffer while a list job could still write through the old pointer.
 
 ## Where it stands
@@ -125,4 +156,9 @@ Measured at stock clocks:
 
 - **4x is slower around the award scene:** 50–57 fps in the minute before it and 41–48 in the scene itself.
 - **4 players:** one earlier run used about 7 ms of GPU with the decoder 94% busy and 5–32 game fps. That run predates the v1.8.2 black course fix, so it needs measuring again.
-- **Next CPU candidate:** per-vertex texture matrix draws (4–18k vertices a frame) aren't vertex-cached and still run on the decoder. Adding them to the vertex cache could help.
+- **The game thread is the limit now:** 87–95% busy in races after section 6, with the decoder at about 38%.
+- **Next candidates, unmeasured:**
+  - **Register arguments for generated calls.** About 28.7k guest function calls a frame move about 874k register loads and stores through the context. A register-argument entry for direct calls might save 0.3–0.6 ms a frame (an estimate from PC call counts).
+  - **Regenerate `switch/hot_order.ld`** from newer profiles (it dates from v1.8.1).
+  - **A native `J3DDifferedTexMtx::loadExecute`.**
+  - **4 players:** the decoder matters again there. Batching `xf_write` per word is the first thing to try.

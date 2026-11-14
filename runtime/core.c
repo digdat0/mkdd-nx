@@ -45,21 +45,16 @@ bool ctx_enter_hooked(Ctx *c, uint32_t addr, uint32_t entry) {
 }
 
 /* Recently dispatched targets (virtual calls hit a few hundred addresses per frame): one cache
- * line instead of the 1.5 MB slot table plus FUNCS. Only the token holder dispatches, so the
- * guest threads sharing it never race. ctx_call checks it before going through rt_dispatch. */
-#define DCACHE 2048
-static struct { uint32_t addr; GuestFn fn; } s_dcache[DCACHE];
+ * line instead of the 1.5 MB slot table plus FUNCS. ctx_call (gc_core.h) checks it inline;
+ * misses come here. */
+#define DCACHE CORE_DCACHE
+CoreDcache g_dcache[DCACHE];
+#define s_dcache g_dcache
 
-void ctx_call(Ctx *c, uint64_t target) {
+/* g_calls and g_last_fn count/record only cache misses now (the hit path is inlined). */
+void ctx_call_slow(Ctx *c, uint64_t target) {
     g_calls++;
-    g_last_fn = (uint32_t)target; /* for crash reports: only calls through here and hooked functions set it */
-    unsigned h = ((uint32_t)target >> 2) & (DCACHE - 1);
-    if (LIKELY(s_dcache[h].addr == (uint32_t)target && s_dcache[h].fn && c->depth <= 20000)) {
-        c->depth++;
-        s_dcache[h].fn(c, (uint32_t)target);
-        c->depth--;
-        return;
-    }
+    g_last_fn = (uint32_t)target; /* for crash reports: misses through here and hooked functions set it */
     if (c->depth > 20000) {
         rt_log("call depth limit hit at %#010x", (uint32_t)target);
         return;

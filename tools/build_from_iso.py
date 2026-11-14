@@ -244,7 +244,8 @@ def main():
         dst = sheets / f
         if force or not dst.exists() or dst.stat().st_mtime < (export / f).stat().st_mtime:
             shutil.copy2(export / f, dst)
-    run([sys.executable, REPO / "tools" / "gen_c.py", sheets, gen])
+    py = [sys.executable, "--run-py"] if getattr(sys, "frozen", False) else [sys.executable]  # (the frozen MKDD-NX Tools)
+    run([*py, REPO / "tools" / "gen_c.py", sheets, gen])
 
     if "--no-build" in opts:
         print(f"\ngenerated C in {gen}; build with: switch/build.sh {gen}")

@@ -16,11 +16,5 @@ void win_pump(void);                  /* window messages, during loops that don'
 #define MODS_DIR "mods"
 #define APP_TITLE "MKDD-NX"
 
-/* main_win.c: what start-up looks for (the launcher shows the same) */
-#include <stddef.h>
-bool find_disc(char *out, size_t n); /* the disc image next to the .exe (the fastest to read of several) */
-unsigned find_mods(void);            /* bit n - 1: MODS[n - 1] is installed in mods/<key> */
-const char *find_audio(void);        /* the folder with mods/audio's .ast streams, NULL none */
-
 /* launcher.c: the settings window shown before the game; false: the player closed it (quit) */
 bool launcher_run(void);

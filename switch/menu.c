@@ -46,12 +46,13 @@ const uint64_t g_map_default[MAP_COUNT] = {
     [MAP_CAM_RESET] = HidNpadButton_StickL,
 };
 /* BUTTON MAPPING's default (driving): as g_map_default, but L is rear view (GameCube Y, with Y),
- * only R switches (GameCube Z) and ZL is GameCube L (drift too; in co-op the rider's slide left,
- * as ZR / GameCube R is the slide right). JUMP has no button until the player gives it one. */
+ * only R switches (GameCube Z), ZL is JUMP (the tricks' button; map_version 3) and GameCube L has
+ * no button (ZR / GameCube R drifts; a player can give ZL back to DRIFT / SLIDE LEFT). */
 const uint64_t MAP_DRIVE_DEFAULT[MAP_COUNT] = {
     [GC_A] = HidNpadButton_A, [GC_B] = HidNpadButton_B, [GC_X] = HidNpadButton_X, [GC_Y] = HidNpadButton_Y | HidNpadButton_L,
-    [GC_Z] = HidNpadButton_R, [GC_L] = HidNpadButton_ZL, [GC_R] = HidNpadButton_ZR,
-    [GC_START] = HidNpadButton_Plus, [MAP_KFP] = HidNpadButton_StickR, [MAP_CAM_RESET] = HidNpadButton_StickL,
+    [GC_Z] = HidNpadButton_R, [GC_R] = HidNpadButton_ZR,
+    [GC_START] = HidNpadButton_Plus, [MAP_KFP] = HidNpadButton_StickR, [MAP_JUMP] = HidNpadButton_ZL,
+    [MAP_CAM_RESET] = HidNpadButton_StickL,
 };
 static const char *GC_KEYS[MAP_COUNT] = {"map_a", "map_b", "map_x", "map_y", "map_z", "map_l", "map_r", "map_start", "map_fp", "map_jump", "map_cam_reset", "map_kfp"};
 static const char *JOY_KEYS[MAP_COUNT] = {"joycon_a", "joycon_b", "joycon_x", "joycon_y", "joycon_z", "joycon_l", "joycon_r", "joycon_start",
@@ -362,6 +363,9 @@ void settings_load(const char *path) {
         if (!g_set.jmap[GC_L] && (g_set.jmap[GC_R] & HidNpadButton_LeftSL) && (g_set.jmap[GC_R] & ~HidNpadButton_LeftSL))
             g_set.jmap[GC_L] = HidNpadButton_LeftSL, g_set.jmap[GC_R] &= ~HidNpadButton_LeftSL;
     }
+    /* settings from before 3: ZL back to JUMP (the tricks), when it is still the default L and JUMP has none */
+    if (map_version < 3 && g_set.map[GC_L] == HidNpadButton_ZL && !g_set.map[MAP_JUMP])
+        g_set.map[MAP_JUMP] = HidNpadButton_ZL, g_set.map[GC_L] = 0, rt_log("settings: ZL moved from DRIFT / SLIDE LEFT to JUMP");
     if (!kfp_seen && g_set.map[MAP_FP]) g_set.map[MAP_KFP] = g_set.map[MAP_FP], g_set.map[MAP_FP] = 0;
     /* a player with keys of their own has their own settings; what their keys leave out is player 1's */
     for (int i = 0; i < 3; i++) {
@@ -396,7 +400,7 @@ void settings_load(const char *path) {
     }
     s_mset = 0, s_mpl = 0;
     apply_logging();
-    if (map_version < 2) settings_save(); /* the moved buttons, once (settings_save logs them) */
+    if (map_version < 3) settings_save(); /* the moved buttons, once (settings_save logs them) */
     else settings_log();
 }
 
@@ -411,7 +415,7 @@ void settings_save(void) {
     fprintf(f, "gpu_test=%d\n", g_set.gpu_test);
     fprintf(f, "language=%s\n", LANG_NAMES[g_set.language > 0 && g_set.language < LANG_COUNT ? g_set.language : 0]);
     fprintf(f, "menu_hold=%d\n", g_set.menu_hold);
-    fprintf(f, "map_version=2\n");
+    fprintf(f, "map_version=3\n");
     fprintf(f, "drafting=%d\ncpu_draft=%d\ndraft_strength=%d\ndraft_distance=%d\n", g_set.draft, g_set.draft_cpu,
             g_set.draft_power, g_set.draft_range);
     fprintf(f, "coins=%d\n", g_set.coins);
@@ -551,9 +555,9 @@ unsigned mods_pick(unsigned found) {
         if ((found >> (n - 1) & 1) && (!strcmp(g_set.mod, "auto") || !strcmp(g_set.mod, MODS[n - 1].key))) return n;
     return 0;
 }
-/* mods/lang/<name>: the languages there at start-up (a PAL disc's files: its title screen and
+/* mods/lang/<name>: the languages there at start-up (a PAL or Japanese disc's files: its title screen and
  * memory card texts at least), and the one played */
-const char *const LANG_NAMES[LANG_COUNT] = {"English", "French", "German", "Italian", "Spanish"};
+const char *const LANG_NAMES[LANG_COUNT] = {"English", "French", "German", "Italian", "Spanish", "Japanese"};
 static unsigned s_langs_found;
 static int s_lang_running;
 unsigned langs_find(const char *mods_dir) {
@@ -661,7 +665,7 @@ static void upper(char *dst, size_t size, const char *s) {
     dst[i] = 0;
 }
 enum { C_MAP, C_JOYMAP, C_SYNC, C_HOLD, C_BACK, C_COUNT };
-enum { GM_STYLE, GM_UNITS, GM_HUD, GM_JUMP, GM_TRICKS, GM_DRAFT, GM_COINS, GM_RUMBLE, GM_BATTLE, GM_VERSUS, GM_BACK, GM_COUNT };
+enum { GM_UNITS, GM_JUMP, GM_TRICKS, GM_DRAFT, GM_COINS, GM_RUMBLE, GM_BATTLE, GM_VERSUS, GM_BACK, GM_COUNT };
 /* VERSUS CPUS: OFF, then the karts a 2-4 player Versus is filled to (g_set.vs_karts 0, 4-8) */
 static const char *VS_KARTS_NAMES[6] = {"OFF", "4 KARTS", "5 KARTS", "6 KARTS", "7 KARTS", "8 KARTS"};
 /* DRAFTING's page (A on GAME's row while it is on) */
@@ -671,7 +675,7 @@ static const char *DRAFT_POWER_NAMES[3] = {"WEAK", "MEDIUM", "STRONG"};
 static const char *DRAFT_RANGE_NAMES[3] = {"CLOSE", "REGULAR", "FAR"};
 /* SINGLE PLAYER BATTLE MODE's page (A on GAME's row while it is on) */
 enum { BT_KARTS, BT_HITS, BT_BACK, BT_COUNT };
-enum { CA_VIEW, CA_HEIGHT, CA_DIST, CA_FOV, CA_FREE, CA_BACK, CA_COUNT };
+enum { CA_VIEW, CA_HEIGHT, CA_DIST, CA_FOV, CA_FREE, CA_STYLE, CA_HUD, CA_BACK, CA_COUNT }; /* RACE HUD, HUD ASSETS: everyone's (player 1's page only) */
 /* players 2-4's menu (PAGE_PLAYER): their camera and buttons only; the game's settings stay player 1's */
 enum { PL_CAM, PL_MAP, PL_JOYMAP, PL_CLOSE, PL_COUNT };
 /* the FPV page (A on CAMERA VIEW): its eye (KA_UP, KA_FWD: steps of 5; KA_TILT: degrees down). KART FPV keeps
@@ -847,10 +851,10 @@ static bool map_leave(bool force) {
 }
 
 static bool item_hidden(int page, int item) {
-    if (page == PAGE_CAM) return item == CA_FOV && s_mpl; /* the field of view is the whole picture's: player 1's */
+    if (page == PAGE_CAM) return (item == CA_FOV || item == CA_STYLE || item == CA_HUD) && s_mpl; /* the field of view and the HUD are the whole picture's: player 1's */
 #ifdef _WIN32
     return (page == PAGE_GFX && item == G_HANDHELD) || (page == PAGE_CTRL && (item == C_JOYMAP || item == C_SYNC)) ||
-           (page == PAGE_DEBUG && (item == D_GPUTEST || item == D_CLOCKS)) || (page == PAGE_MAIN && item == M_UPDATE) ||
+           (page == PAGE_DEBUG && (item == D_GPUTEST || item == D_CLOCKS)) ||
            (page == PAGE_PLAYER && item == PL_JOYMAP);
 #else
     return page == PAGE_GFX && item == G_FULL;
@@ -889,7 +893,7 @@ static int page_rows(int page) {
  * everything else to the main page. */
 static int page_parent(int page) {
     if (s_mpl && (page == PAGE_MAP || page == PAGE_CAM)) return PAGE_PLAYER;
-    return page == PAGE_COLOR ? PAGE_GFX : page == PAGE_MAP ? PAGE_CTRL : page == PAGE_HUD || page == PAGE_BATTLE || page == PAGE_DRAFT ? PAGE_GAME
+    return page == PAGE_COLOR ? PAGE_GFX : page == PAGE_MAP ? PAGE_CTRL : page == PAGE_HUD ? PAGE_CAM : page == PAGE_BATTLE || page == PAGE_DRAFT ? PAGE_GAME
            : page == PAGE_SPECIAL ? PAGE_CHEATS : page == PAGE_KART ? PAGE_CAM : page == PAGE_LAN ? PAGE_MULTI : PAGE_MAIN;
 }
 
@@ -1127,12 +1131,7 @@ bool menu_input(const uint64_t down_[4], const uint64_t held_[4], bool *quit) {
     }
     if (s_page == PAGE_GAME && (ok || side)) {
         switch (*sel) {
-        case GM_STYLE: g_set.hud_style = (g_set.hud_style + (left ? 2 : 1)) % 3; settings_save(); break;
         case GM_UNITS: g_set.speed_kmh = !g_set.speed_kmh; settings_save(); break;
-        case GM_HUD:
-            if (ok) { s_page = PAGE_HUD; s_sel[PAGE_HUD] = 0; }
-            else { g_set.hud_hide = g_set.hud_hide & hud_mask() ? g_set.hud_hide & ~hud_mask() : g_set.hud_hide | hud_mask(); settings_save(); } /* LEFT/RIGHT: all on / all off */
-            break;
         case GM_RUMBLE: g_set.rumble = (g_set.rumble + (left ? 2 : 1)) % 3; settings_save(); break;
         case GM_JUMP: g_set.jump = (g_set.jump + (left ? 3 : 1)) & 3; cheats_apply(); settings_save(); break;
         case GM_TRICKS: g_set.tricks = (g_set.tricks + (left ? 2 : 1)) % 3; cheats_apply(); settings_save(); break;
@@ -1191,6 +1190,11 @@ bool menu_input(const uint64_t down_[4], const uint64_t held_[4], bool *quit) {
         case CA_DIST: ED(cam_dist) = (ED(cam_dist) + (left ? 4 : 1)) % 5; settings_save(); break;
         case CA_FOV: g_set.fov[g_set.wide] = (g_set.fov[g_set.wide] + (left ? 4 : 1)) % 5; settings_save(); break;
         case CA_FREE: ED(free_cam) = (ED(free_cam) + (left ? 3 : 1)) & 3; settings_save(); break;
+        case CA_STYLE: g_set.hud_style = (g_set.hud_style + (left ? 2 : 1)) % 3; settings_save(); break;
+        case CA_HUD:
+            if (ok) { s_page = PAGE_HUD; s_sel[PAGE_HUD] = 0; }
+            else { g_set.hud_hide = g_set.hud_hide & hud_mask() ? g_set.hud_hide & ~hud_mask() : g_set.hud_hide | hud_mask(); settings_save(); } /* LEFT/RIGHT: all on / all off */
+            break;
         case CA_BACK: if (ok) s_page = page_parent(PAGE_CAM); break;
         }
         return true;
@@ -1302,10 +1306,10 @@ static GfxTex s_tex; /* the batch's texture: the font atlas or a picture */
 
 static bool s_font;   /* MarioFont glyphs loaded from the disc */
 
-void menu_font_load(void) {
-    static bool tried;
-    if (tried) return;
-    tried = true;
+void menu_font_load(void) { /* again later if the disc wasn't up yet (a few tries) */
+    static int tries;
+    if (s_font || tries >= 4) return;
+    tries++;
     s_font = uifont_load();
 }
 
@@ -1336,6 +1340,7 @@ static void round_box(float x, float y, float w, float h, float r, uint32_t c) {
     quad(x, y, w, h, c, c, SH_ROUND, 0, 0, par);
 }
 static void star(float cx, float cy, float r, uint32_t c) { quad(cx - r, cy - r, 2 * r, 2 * r, c, c, SH_STAR, 0, 0, NULL); }
+static void star_sharp(float cx, float cy, float r, uint32_t c) { quad(cx - r, cy - r, 2 * r, 2 * r, c, c, SH_STAR, 0, 0, (const float[4]){1, 0, 0, 0}); }
 /* PC: a hint's buttons with player 1's keys beside them: "A: SELECT" -> "A (X): SELECT" (a button
  * is a word of its own followed by ":", " OR " or " TO "); the Switch's as they are */
 static const char *key_hint(const char *h) {
@@ -1667,7 +1672,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                 float bs = 28 * k;
                 if (bs > rh * 0.6f) bs = rh * 0.6f;
                 float bx = x + pw - 30 * k, bxs[2], bws[2];
-                const int b0 = item_hidden(PAGE_MAIN, M_UPDATE) ? 1 : 0; /* PC: DEBUG only */
+                const int b0 = item_hidden(PAGE_MAIN, M_UPDATE) ? 1 : 0; /* hidden: DEBUG only */
                 for (int i = 1; i >= b0; i--) {
                     bws[i] = mtext_w(blabel[i], bs) + 40 * k;
                     bx -= bws[i];
@@ -1694,7 +1699,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s_sel[PAGE_MAIN] == M_CHEATS ? "UNLOCK ALL, NO WEIGHT CLASSES, SPECIAL ITEMS, MINI-TURBO, LAPS"
                    : s_sel[PAGE_MAIN] == M_DEBUG  ? "FPS AND FRAME TIMES, LOGS, PROFILER"
                    : s_sel[PAGE_MAIN] == M_UPDATE ? uhint
-                   : s_sel[PAGE_MAIN] == M_EXIT   ? SW_PC("A: EXIT THE GAME   RIGHT: UPDATE, DEBUG", "A: EXIT THE GAME   RIGHT: DEBUG")
+                   : s_sel[PAGE_MAIN] == M_EXIT   ? "A: EXIT THE GAME   RIGHT: UPDATE, DEBUG"
                                                   : "GAME PAUSED   A: SELECT   B OR -: CLOSE";
         } else if (s_page == PAGE_CTRL) {
             static const char *labels[C_COUNT] = {"BUTTON MAPPING", "JOY-CON SIDEWAYS", "SYNC CONTROLLERS", "OPEN MENU", "BACK"};
@@ -1756,10 +1761,10 @@ void menu_draw(int w, int h, float fps, const char *perf) {
             hint = s == MD_MOD && !s_mods_found     ? "PUT A MOD IN THE MODS FOLDER (SEE README)"
                    : s == MD_MOD && mods_changed()   ? "CHANGES AFTER A RESTART: SEE RESTART NOW"
                    : s == MD_MOD                     ? mod_hint
-                   : s == MD_LANG && !s_langs_found  ? "MORE: A PAL DISC'S, BY MKDD-NX TOOLS, IN MODS/LANG (SEE README)"
+                   : s == MD_LANG && !s_langs_found  ? "MORE: A PAL OR JAPANESE DISC'S, BY MKDD-NX TOOLS, IN MODS/LANG"
                    : s == MD_LANG && pick && langs_pick(s_langs_found) ? "THE STANDARD GAME ONLY: LEVEL PACKS ARE IN ENGLISH"
                    : s == MD_LANG && lang_pending()  ? "CHANGES AFTER A RESTART: SEE RESTART NOW"
-                   : s == MD_LANG                    ? "THE GAME'S MENUS AND TEXTS, FROM YOUR PAL DISC'S FILES"
+                   : s == MD_LANG                    ? "THE GAME'S MENUS AND TEXTS, FROM YOUR OWN DISC'S FILES"
                    : s == MD_AUDIO && !s_audio_found ? "PUT THE EXPANSION PACK'S FILES FOLDER IN MODS/AUDIO (SEE README)"
                    : s == MD_AUDIO && !mod_is_plus(pick) ? "THE MKDD PLUS EXPANSION PACK: PICK PLUS AS THE LEVEL PACK"
                    : s == MD_AUDIO && audio_pending() ? "CHANGES AFTER A RESTART: SEE RESTART NOW"
@@ -1804,19 +1809,17 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s == LN_RESTART               ? restart_hint()
                                                    : "B: BACK";
         } else if (s_page == PAGE_GAME) {
-            static const char *labels[GM_COUNT] = {"RACE HUD", "SPEED", "HUD ASSETS", "JUMP HEIGHT", "TRICKS", "DRAFTING", "COINS", "RUMBLE STRENGTH", "SINGLE PLAYER BATTLE MODE", "VERSUS CPUS", "BACK"};
-            const char *values[GM_COUNT] = {HUD_STYLES[g_set.hud_style], g_set.speed_kmh ? "KMH" : "MPH", hud_value(),
+            static const char *labels[GM_COUNT] = {"SPEED", "JUMP HEIGHT", "TRICKS", "DRAFTING", "COINS", "RUMBLE STRENGTH", "SINGLE PLAYER BATTLE MODE", "VERSUS CPUS", "BACK"};
+            const char *values[GM_COUNT] = {g_set.speed_kmh ? "KMH" : "MPH",
                                             JUMP_NAMES[g_set.jump & 3], g_set.tricks == 2 ? "ON + WIPEOUTS" : g_set.tricks ? "ON" : "OFF", g_set.draft ? "ON" : "OFF", g_set.coins ? "ON" : "OFF", RUMBLE_NAMES[g_set.rumble % 3],
                                             g_set.battle_cpus ? "ON" : "OFF", VS_KARTS_NAMES[g_set.vs_karts >= 4 && g_set.vs_karts <= 8 ? g_set.vs_karts - 3 : 0], NULL};
-            const bool more[GM_COUNT] = {false, false, true, false, false, g_set.draft != 0, false, false, g_set.battle_cpus, false, false};
+            const bool more[GM_COUNT] = {false, false, false, g_set.draft != 0, false, false, g_set.battle_cpus, false, false};
             for (int i = 0; i < GM_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, GM_COUNT), pw, rh, k, s_sel[PAGE_GAME] == i, labels[i], values[i], more[i]);
-            hint = s_sel[PAGE_GAME] == GM_STYLE ? (g_set.hud_style == 2 ? "ONE BAR ACROSS THE TOP, REAR-VIEW MIRROR, RACE ORDER BELOW. 1 PLAYER" : g_set.hud_style == 1 ? "MODERN: SMALLER, IN THE CORNERS. 1 TO 4 PLAYERS" : "THE GAME'S OWN")
-                   : s_sel[PAGE_GAME] == GM_UNITS ? "SPEEDOMETER IN MILES OR KILOMETRES PER HOUR"
-                   : s_sel[PAGE_GAME] == GM_HUD  ? "A: CHOOSE   LEFT/RIGHT: ALL ON, ALL OFF"
+            hint = s_sel[PAGE_GAME] == GM_UNITS ? "SPEEDOMETER IN MILES OR KILOMETRES PER HOUR"
                    : s_sel[PAGE_GAME] == GM_BATTLE ? (g_set.battle_cpus ? "A: BATTLE KARTS, BOB-OMB HITS   LEFT/RIGHT: OFF"
                                                                         : "CPUS FILL BATTLES TO 4 KARTS. 1 PLAYER: BATTLE ON THE MODE PAGE")
                    : s_sel[PAGE_GAME] == GM_VERSUS ? (g_lan_play ? "OFF IN LAN PLAY" : "2-4 PLAYER VERSUS: CPUS FILL THE RACE TO THIS MANY KARTS. FROM THE NEXT RACE")
-                   : s_sel[PAGE_GAME] == GM_TRICKS ? (g_lan_play ? "OFF IN LAN PLAY" : g_set.tricks == 2 ? "AS ON, BUT LANDING MID-TRICK SPINS YOU OUT" : "IN THE AIR: D-PAD OR STICK FLICK, JUMP: RIDER TRICKS. LAND CLEAN: BOOST")
+                   : s_sel[PAGE_GAME] == GM_TRICKS ? (g_lan_play ? "OFF IN LAN PLAY" : g_set.tricks == 2 ? "AS ON, BUT A BAD LANDING SPINS YOU OUT" : "IN THE AIR: HOLD D-PAD TO TURN, JUMP: RIDER TRICKS. LAND STRAIGHT: BOOST")
                    : s_sel[PAGE_GAME] == GM_RUMBLE ? "VIBRATION STRENGTH. THE GAME'S OWN RUMBLE OPTION MUST BE ON TOO"
                    : s_sel[PAGE_GAME] == GM_DRAFT ? (g_lan_play ? "OFF IN LAN PLAY"
                                                     : g_set.draft ? "A: CPU DRAFTING, STRENGTH, DISTANCE   LEFT/RIGHT: OFF"
@@ -1845,20 +1848,22 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s_sel[PAGE_BATTLE] == BT_HITS ? "1 PLAYER BOB-OMB BLAST: HITS TO FILL THE 4 STARS. 4 IS THE GAME'S OWN"
                                                    : "B: BACK";
         } else if (s_page == PAGE_CAM) {
-            static const char *labels[CA_COUNT] = {"CAMERA VIEW", "CAMERA HEIGHT", "CAMERA DISTANCE", "FIELD OF VIEW", "FREE CAMERA", "BACK"};
+            static const char *labels[CA_COUNT] = {"CAMERA VIEW", "CAMERA HEIGHT", "CAMERA DISTANCE", "FIELD OF VIEW", "FREE CAMERA", "RACE HUD", "HUD ASSETS", "BACK"};
             static const char *HEIGHT_NAMES[4] = {"LOW", "MEDIUM", "REGULAR", "HIGH"};
             static const char *DIST_NAMES[5] = {"VERY CLOSE", "CLOSE", "REGULAR", "FAR", "VERY FAR"};
             static const char *FREECAM_NAMES[4] = {"OFF", "SNAP BACK", "EASE BACK", "STAY"};
             const char *values[CA_COUNT] = {CAMERA_NAMES[ED(camera) % 3], HEIGHT_NAMES[ED(cam_height) & 3], DIST_NAMES[ED(cam_dist) % 5],
-                                            FOV_NAMES[g_set.fov[g_set.wide] % 5], FREECAM_NAMES[ED(free_cam) & 3], NULL};
+                                            FOV_NAMES[g_set.fov[g_set.wide] % 5], FREECAM_NAMES[ED(free_cam) & 3], HUD_STYLES[g_set.hud_style], hud_value(), NULL};
             const int n = shown_rows(PAGE_CAM), cur = row_item(PAGE_CAM, s_sel[PAGE_CAM]);
             for (int r = 0; r < n; r++, ry += rh) {
                 int i = row_item(PAGE_CAM, r);
-                mrow(x, ROW_Y(r, n), pw, rh, k, s_sel[PAGE_CAM] == r, labels[i], values[i], i == CA_VIEW && ED(camera) && !s_mpl);
+                mrow(x, ROW_Y(r, n), pw, rh, k, s_sel[PAGE_CAM] == r, labels[i], values[i], (i == CA_VIEW && ED(camera) && !s_mpl) || i == CA_HUD);
             }
             hint = cur == CA_VIEW     ? (s_mpl ? "FIRST PERSON: DRIVER FPV OR KART FPV" : ED(camera) == 2 ? "A: ADJUST KART FPV" : ED(camera) ? "A: ADJUST DRIVER FPV" : "FIRST PERSON: DRIVER FPV OR KART FPV")
                    : cur == CA_HEIGHT ? "THE CAMERA BEHIND THE KART. REGULAR: THE GAME'S"
                    : cur == CA_DIST   ? "HOW FAR BEHIND THE KART. REGULAR: THE GAME'S"
+                   : cur == CA_STYLE  ? (g_set.hud_style == 2 ? "ONE BAR ACROSS THE TOP, REAR-VIEW MIRROR, RACE ORDER BELOW. 1 PLAYER" : g_set.hud_style == 1 ? "MODERN: SMALLER, IN THE CORNERS. 1 TO 4 PLAYERS" : "THE GAME'S OWN")
+                   : cur == CA_HUD    ? "A: CHOOSE   LEFT/RIGHT: ALL ON, ALL OFF"
                    : cur == CA_FOV    ? (g_set.wide ? "RACE CAMERA IN 16:9, DEFAULT WIDER" : "RACE CAMERA IN 4:3, DEFAULT NORMAL")
                    : cur == CA_FREE   ? (ED(free_cam) == 0 ? "RIGHT STICK LEFT/RIGHT: TURN THE CAMERA ROUND THE KART"
                                                      : ED(free_cam) == 1 ? "RIGHT STICK TURNS THE CAMERA. LET GO: STRAIGHT BACK"
@@ -1944,7 +1949,7 @@ void menu_draw(int w, int h, float fps, const char *perf) {
             for (int i = 0; i < U_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, U_COUNT), pw, rh, k, s_sel[PAGE_UPDATE] == i, labels[i], values[i], false);
             hint = us.state == UPD_ERROR         ? us.msg
                    : us.state == UPD_CURRENT     ? "YOU HAVE THE LATEST RELEASE"
-                   : us.state == UPD_AVAILABLE   ? "A: DOWNLOAD AND INSTALL (THE OLD ONE IS KEPT AS .NRO.OLD)"
+                   : us.state == UPD_AVAILABLE   ? SW_PC("A: DOWNLOAD AND INSTALL (THE OLD ONE IS KEPT AS .NRO.OLD)", "A: DOWNLOAD AND INSTALL")
                    : us.state == UPD_DOWNLOADING ? "YOU CAN KEEP PLAYING: CLOSE THE MENU WITH B"
                    : us.state == UPD_READY       ? (s_restart_manual ? "INSTALLED: CLOSE THE GAME AND START IT AGAIN"
                                                                      : "INSTALLED: A RESTARTS THE GAME (SAVE YOUR PROGRESS FIRST)")
@@ -2050,6 +2055,624 @@ void menu_char_hint(int w, int h) {
         flush();
     }
     s_tex = s_font ? uifont_texture() : 0;
+    end();
+}
+
+/* ---- the trick guide (runtime/trick.c g_trick_guide) ----
+ * A page of its own over a trick battle's pause screen: how a trick jump goes (take off, trick,
+ * land, combo; the signature and the scoring) and every trick with its input and points, the
+ * numbers native.c's TRICKS uses. Buttons by player 1's BUTTON MAPPING. While it is closed the
+ * pause screen shows "Y TRICK GUIDE" at its foot. */
+#define G_CARD 0x0C1A52F0u
+#define G_EDGE 0x3C78E6FFu
+#define G_TEXT 0xFFFFFFFFu
+#define G_SOFT 0xC8D8FFFFu
+#define G_ON 0xFFD640FFu
+#define G_OFF 0x2C3C78FFu
+/* MarioFont text wrapped into wmax, lines lh apart ('\n' breaks); returns the height used */
+static float mwrap(float x, float y, float wmax, float size, float lh, uint32_t t, uint32_t b, const char *s) {
+    char line[192] = "", trial[192];
+    float y0 = y;
+    while (*s) {
+        const char *e = s;
+        while (*e && *e != ' ' && *e != '\n') e++;
+        snprintf(trial, sizeof trial, "%s%s%.*s", line, line[0] ? " " : "", (int)(e - s), s);
+        if (line[0] && mtext_w(trial, size) > wmax) {
+            mtext(x, y, size, t, b, line), y += lh, line[0] = 0;
+            continue;
+        }
+        memcpy(line, trial, sizeof line);
+        s = e;
+        if (*s == '\n') mtext(x, y, size, t, b, line), y += lh, line[0] = 0;
+        if (*s) s++;
+    }
+    if (line[0]) mtext(x, y, size, t, b, line), y += lh;
+    return y - y0;
+}
+/* the first Switch button (its short name) of player 1's mapping for action a (the sideways Joy-Con
+ * map when player 1 holds one; a GameCube pad's own L and R), else dflt */
+static const char *guide_button(int a, const char *dflt) {
+    static char out[4][16];
+    static int n;
+    if (g_p1_gamecube && (a == GC_L || a == GC_R || a == GC_Z)) return a == GC_L ? "L" : a == GC_R ? "R" : "Z";
+    bool side = g_p1_sideways;
+    const uint64_t *map = side ? g_set.jmap : g_set.map;
+    const SwButton *tb = side ? JOY_BUTTONS : FULL_BUTTONS;
+    size_t nb = side ? sizeof JOY_BUTTONS / sizeof JOY_BUTTONS[0] : sizeof FULL_BUTTONS / sizeof FULL_BUTTONS[0];
+    for (size_t i = 0; i < nb; i++)
+        if (map[a] & tb[i].bit) {
+            char *o = out[n = (n + 1) & 3];
+            snprintf(o, sizeof out[0], "%s", tb[i].name);
+            char *cut = strstr(o, " /");
+            if (cut) *cut = 0;
+            return o;
+        }
+    return dflt;
+}
+/* the signature's two buttons as player 1's controller has them (main_switch.c / main_win.c sig2):
+ * a GameCube pad's L + R, a sideways Joy-Con's SL + SR, else ZL + ZR */
+static const char *const *sig_buttons(void) {
+    static const char *const GC[2] = {"L", "R"}, *const SIDE[2] = {"SL", "SR"}, *const FULL[2] = {"ZL", "ZR"};
+    return g_p1_gamecube ? GC : g_p1_sideways ? SIDE : FULL;
+}
+/* a button: a rounded chip with its name; returns its width */
+static float chip(float x, float cy, float k, const char *name, uint32_t bg) {
+    float ts = 22 * k, w = mtext_w(name, ts) + 22 * k, h = 32 * k;
+    round_box(x, cy - h / 2, w, h, h / 2, 0x0A0A20FFu);
+    round_box(x + 2 * k, cy - h / 2 + 2 * k, w - 4 * k, h - 4 * k, h / 2 - 2 * k, bg);
+    mtext(x + 11 * k, cy - ts * 0.55f, ts, G_TEXT, G_TEXT, name);
+    return w;
+}
+/* a D-pad, s across, its pressed arms lit: bits 1 up, 2 down, 4 left, 8 right */
+static float dpad(float x, float cy, float s, unsigned arms) {
+    float a = s / 3, y = cy - s / 2;
+    round_box(x + a - 2, y - 2, a + 4, s + 4, a * 0.35f, 0x0A0A20FFu);
+    round_box(x - 2, y + a - 2, s + 4, a + 4, a * 0.35f, 0x0A0A20FFu);
+    round_box(x + a, y, a, s, a * 0.3f, G_OFF);
+    round_box(x, y + a, s, a, a * 0.3f, G_OFF);
+    if (arms & 1) round_box(x + a, y, a, a, a * 0.3f, G_ON);
+    if (arms & 2) round_box(x + a, y + 2 * a, a, a, a * 0.3f, G_ON);
+    if (arms & 4) round_box(x, y + a, a, a, a * 0.3f, G_ON);
+    if (arms & 8) round_box(x + 2 * a, y + a, a, a, a * 0.3f, G_ON);
+    return s;
+}
+static void card(float x, float y, float w, float h, float k) {
+    round_box(x - 2 * k, y - 2 * k, w + 4 * k, h + 4 * k, 14 * k, G_EDGE);
+    round_box(x, y, w, h, 12 * k, G_CARD);
+}
+/* a card's heading, with a tag on the right (how the inputs go) */
+static void card_head(float x, float y, float w, float k, const char *title, const char *tag) {
+    mtext(x + 16 * k, y + 10 * k, 30 * k, C_TITLE_T, C_TITLE_B, title);
+    if (tag) {
+        float ts = 20 * k, tw = mtext_w(tag, ts) + 20 * k;
+        round_box(x + w - tw - 14 * k, y + 13 * k, tw, 28 * k, 14 * k, 0x3C78E6FFu);
+        mtext(x + w - tw - 4 * k, y + 16 * k, ts, G_TEXT, G_TEXT, tag);
+    }
+    rect(x + 14 * k, y + 50 * k, w - 28 * k, 2 * k, 0x3C78E680u);
+}
+/* a trick's row: its input (drawn by the caller at x), name, points on the right */
+static void trick_row(float x, float y, float w, float k, float name_x, const char *name, int pts) {
+    char p[16];
+    snprintf(p, sizeof p, "%d", pts);
+    float ts = 23 * k;
+    mtext(name_x, y - ts * 0.55f, ts, G_TEXT, G_SOFT, name);
+    float pw = mtext_w(p, ts) + 18 * k;
+    round_box(x + w - pw - 16 * k, y - 14 * k, pw, 28 * k, 14 * k, 0xFFD64033u);
+    mtext(x + w - pw - 7 * k, y - ts * 0.55f, ts, C_TITLE_T, C_TITLE_B, p);
+}
+/* the inputs of a row, "TAP TAP" twice the D-pad */
+static float in_dpad(float x, float y, float k, unsigned arms, int times) {
+    float s = 30 * k, at = x;
+    for (int i = 0; i < times; i++) at += dpad(at, y, s, arms) + 6 * k;
+    return at - x;
+}
+
+static void guide_steps(float x, float y, float w, float h, float k) {
+    const char *jump = guide_button(MAP_JUMP, "JUMP");
+    char t2[192], t3[192];
+    snprintf(t2, sizeof t2, "HOLD THE D-PAD TO FLIP AND SPIN. TAP A DIRECTION TWICE FOR A SPECIAL. %s FOR RIDER TRICKS", jump);
+    const char *cl = guide_button(GC_L, NULL), *cr = guide_button(GC_R, NULL); /* the default layout has no L */
+    char catch_b[40];
+    snprintf(catch_b, sizeof catch_b, "%s%s%s", cl ? cl : "", cl && cr ? " OR " : "", cr ? cr : "");
+    snprintf(t3, sizeof t3, "LEVEL WITHIN 25 DEGREES IS PERFECT. HOLD %s JUST BEFORE TOUCHDOWN TO CATCH A SKETCHY ONE",
+             catch_b[0] ? catch_b : "L OR R");
+    static const char *const title[4] = {"TAKE OFF", "TRICK", "LAND IT", "COMBO"};
+    const char *body[4] = {"HIT A RAMP OR A BIG DROP. TRICKS START ONCE YOU ARE UP IN THE AIR", t2, t3,
+                           "LAND CLEAN, THEN TAKE OFF AGAIN WITHIN 15 SECONDS. MORE DIFFERENT TRICKS: A BIGGER MULTIPLIER"};
+    float gap = 12 * k, cw = (w - 3 * gap) / 4, ch = h * 0.6f;
+    for (int i = 0; i < 4; i++) {
+        float cx = x + i * (cw + gap);
+        card(cx, y, cw, ch, k);
+        round_box(cx + 14 * k, y + 12 * k, 40 * k, 40 * k, 20 * k, G_ON);
+        char n[2] = {(char)('1' + i), 0};
+        mtext(cx + 34 * k - mtext_w(n, 30 * k) / 2, y + 16 * k, 30 * k, 0x102268FFu, 0x102268FFu, n);
+        mtext(cx + 64 * k, y + 16 * k, 28 * k, C_TITLE_T, C_TITLE_B, title[i]);
+        float by = y + 66 * k;
+        if (i == 1) { /* the D-pad's turns */
+            static const char *const nm[3] = {"FRONT FLIP", "BACKFLIP", "SPIN"};
+            static const unsigned arms[3] = {1, 2, 4 | 8};
+            for (int d = 0; d < 3; d++) {
+                float rx = cx + 16 * k, ry = by + 14 * k + d * 32 * k;
+                dpad(rx, ry, 28 * k, arms[d]);
+                mtext(rx + 38 * k, ry - 10 * k, 20 * k, G_SOFT, G_SOFT, nm[d]);
+            }
+            by += 104 * k;
+        } else if (i == 2) { /* the grades */
+            static const char *const g[3] = {"PERFECT", "SKETCHY", "BAIL"};
+            static const char *const what[3] = {"BOOST", "SLOWER", "SPIN OUT"};
+            static const uint32_t col[3] = {0x2EB85CFFu, 0xE8A317FFu, 0xD8342CFFu};
+            for (int d = 0; d < 3; d++) {
+                float ry = by + 4 * k + d * 32 * k;
+                round_box(cx + 16 * k, ry, 112 * k, 26 * k, 13 * k, col[d]);
+                mtext(cx + 72 * k - mtext_w(g[d], 18 * k) / 2, ry + 3 * k, 18 * k, G_TEXT, G_TEXT, g[d]);
+                mtext(cx + 140 * k, ry + 3 * k, 18 * k, G_SOFT, G_SOFT, what[d]);
+            }
+            by += 104 * k;
+        } else if (i == 3) { /* x1 .. x10 */
+            for (int d = 0; d < 5; d++) {
+                char m[8];
+                snprintf(m, sizeof m, "X%d", d < 4 ? d + 1 : 10);
+                float bw = (cw - 32 * k - 4 * 6 * k) / 5, bx = cx + 16 * k + d * (bw + 6 * k), bh = (22 + 10 * d) * k;
+                grad(bx, by + 70 * k - bh, bw, bh, 0xFFEC40FFu, 0xFF8800FFu);
+                mtext(bx + bw / 2 - mtext_w(m, 18 * k) / 2, by + 74 * k, 18 * k, G_TEXT, G_TEXT, m);
+            }
+            by += 104 * k;
+        } else { /* a ramp and the arc off it */
+            float rx = cx + 20 * k, ry = by + 70 * k;
+            line(rx, ry, rx + 70 * k, ry - 34 * k, 8 * k, 0x6A86D0FFu, 0x9AB6FFFFu);
+            for (int d = 0; d < 9; d++) {
+                float t0 = d / 9.0f, t1 = (d + 0.6f) / 9.0f, ax = rx + 70 * k, aw = cw - 120 * k;
+                line(ax + t0 * aw, ry - 34 * k - 120 * k * t0 * (1 - t0), ax + t1 * aw, ry - 34 * k - 120 * k * t1 * (1 - t1), 3 * k, G_ON, G_ON);
+            }
+            star(rx + 70 * k + (cw - 120 * k) * 0.5f, ry - 34 * k - 30 * k - 16 * k, 14 * k, G_ON);
+            by += 90 * k;
+        }
+        mwrap(cx + 16 * k, by, cw - 32 * k, 18 * k, 23 * k, G_TEXT, G_SOFT, body[i]);
+    }
+    /* the signature and the scoring, below */
+    float y2 = y + ch + 12 * k, h2 = h - ch - 12 * k, w2 = (w - gap) / 2;
+    const char *const *sb = sig_buttons();
+    char sig[224];
+    snprintf(sig, sizeof sig, "LANDED JUMPS FILL THE METER UNDER YOUR SCORE. AT READY PRESS %s + %s IN THE AIR "
+             "(HOLD A DIRECTION FOR ANOTHER): A STAR, A CLEAN LANDING AND A LONG BOOST", sb[0], sb[1]);
+    card(x, y2, w2, h2, k);
+    card_head(x, y2, w2, k, "SIGNATURE TRICK", "METER FULL");
+    float mx = x + 16 * k, my = y2 + 64 * k, mw = 150 * k;
+    round_box(mx, my, mw, 24 * k, 12 * k, 0x0A0A20FFu);
+    round_box(mx + 3 * k, my + 3 * k, mw - 6 * k, 18 * k, 9 * k, G_ON);
+    mtext(mx + mw / 2 - mtext_w("READY", 18 * k) / 2, my + 3 * k, 18 * k, 0x102268FFu, 0x102268FFu, "READY");
+    mwrap(mx, my + 36 * k, w2 - 32 * k, 19 * k, 25 * k, G_TEXT, G_SOFT, sig); /* under the pill, the card's width */
+    card(x + w2 + gap, y2, w2, h2, k);
+    card_head(x + w2 + gap, y2, w2, k, "SCORING", NULL);
+    mwrap(x + w2 + gap + 16 * k, y2 + 64 * k, w2 - 32 * k, 19 * k, 25 * k, G_TEXT, G_SOFT,
+          "A LANDING SCORES ITS TRICKS AT ONCE: MORE TURNS AND A HIGHER JUMP SCORE MORE. A TRICK AMONG YOUR LAST 5 IS WORTH LESS. "
+          "THE COMBO BONUS COMES WHEN IT ENDS. A BAIL LOSES IT");
+}
+
+/* one line of text in width w: smaller letters rather than a second line */
+static void fit_line(float x, float y, float w, float size, uint32_t col, const char *t) {
+    float s = size;
+    while (s > size * 0.6f && mtext_w(t, s) > w) s -= size * 0.05f;
+    mtext(x, y + (size - s) / 2, s, col, col, t);
+}
+
+static void guide_tricks(float x, float y, float w, float h, float k) {
+    float gap = 12 * k, cw = (w - gap) / 2, rh = 46 * k;
+    float h1 = 52 * k + 4 * rh + 40 * k, h2 = h - h1 - 12 * k;
+    /* kart turns (held) */
+    card(x, y, cw, h1, k);
+    card_head(x, y, cw, k, "FLIPS AND SPINS", "HOLD");
+    static const struct { unsigned arms; const char *name; int pts; } TURN[4] = {
+        {1, "FRONT FLIP", 100}, {2, "BACKFLIP", 100}, {4 | 8, "SPIN", 100}, {1 | 8, "FLIP AND SPIN AT ONCE", 200}};
+    for (int i = 0; i < 4; i++) {
+        float ry = y + 52 * k + rh * (i + 0.5f) + 4 * k;
+        if (i == 2) dpad(x + 18 * k, ry, 30 * k, 4), dpad(x + 54 * k, ry, 30 * k, 8);
+        else in_dpad(x + 18 * k, ry, k, TURN[i].arms, 1);
+        if (i < 3) trick_row(x, ry, cw, k, x + 100 * k, TURN[i].name, TURN[i].pts);
+        else mtext(x + 100 * k, ry - 12 * k, 22 * k, G_TEXT, G_SOFT, "A DIAGONAL: BOTH AT ONCE");
+    }
+    fit_line(x + 18 * k, y + h1 - 34 * k, cw - 36 * k, 18 * k, G_SOFT, "MORE TURNS IN ONE JUMP SCORE MORE");
+    /* specials (tap, tap) */
+    float sx = x + cw + gap;
+    card(sx, y, cw, h1, k);
+    card_head(sx, y, cw, k, "SPECIALS", "TAP TWICE");
+    static const struct { unsigned arms; const char *name; int pts; } SPEC[4] = {
+        {8, "BARREL ROLL", 150}, {4, "WHIP", 120}, {1, "TWISTER", 220}, {2, "BACK TWISTER", 220}};
+    for (int i = 0; i < 4; i++) {
+        float ry = y + 52 * k + rh * (i + 0.5f) + 4 * k;
+        in_dpad(sx + 18 * k, ry, k, SPEC[i].arms, 2);
+        trick_row(sx, ry, cw, k, sx + 100 * k, SPEC[i].name, SPEC[i].pts);
+    }
+    fit_line(sx + 18 * k, y + h1 - 34 * k, cw - 36 * k, 18 * k, G_SOFT, "TAP, THEN THE SAME WAY AGAIN");
+    /* the signature, the card's width in two columns: the two signature buttons together (native.c TRICK_SIG),
+     * a direction held picks one of the other four */
+    float y2 = y + h1 + 12 * k;
+    card(x, y2, w, h2, k);
+    card_head(x, y2, w, k, "SIGNATURE", "METER FULL");
+    static const struct { unsigned arms; const char *name; } SIG[5] = {
+        {0, "HURRICANE"}, {1, "METEOR"}, {2, "TEMPEST"}, {4, "CYCLONE"}, {8, "TYPHOON"}};
+    const char *const *sb = sig_buttons();
+    float rr = (h2 - 60 * k) / 3;
+    for (int i = 0; i < 6; i++) {
+        float colx = i < 3 ? x : sx, ry = y2 + 56 * k + rr * (i % 3 + 0.5f), at = colx + 18 * k;
+        if (i == 5) { mtext(at, ry - 10 * k, 19 * k, G_TEXT, G_SOFT, "A STAR, A CLEAN LANDING, A LONG BOOST"); break; }
+        at += chip(at, ry, k, sb[0], 0xD61C1CFFu) + 4 * k;
+        at += chip(at, ry, k, sb[1], 0xD61C1CFFu) + 4 * k;
+        if (SIG[i].arms) dpad(at, ry, 26 * k, SIG[i].arms);
+        trick_row(colx, ry, cw, k, colx + 186 * k, SIG[i].name, 600);
+    }
+}
+
+/* the rider's tricks, two columns: the jump button then a direction (trick.c POSE), ZR in the air then a direction
+ * (ZRK); below each, the same direction again with the button held (ZLBIG, BIG), lined up across */
+static void guide_more(float x, float y, float w, float h, float k) {
+    const char *jump = guide_button(MAP_JUMP, "JUMP"), *zr = guide_button(GC_R, "R");
+    float gap = 12 * k, cw = (w - gap) / 2, rr = (h - 60 * k) / 11;
+    typedef struct { unsigned arms; int times, again; const char *name; int pts; } Row;
+    static const Row JR[10] = {
+        {0, 0, 0, "SUPERMAN", 120}, {0, 0, 1, "CLIFFHANGER", 120}, {1, 1, 0, "HANDSTAND", 150}, {2, 1, 0, "LAZY BOY", 150},
+        {4, 1, 0, "REVERSE SIDEWINDER", 150}, {8, 1, 0, "SIDEWINDER", 150},
+        {1, 2, 0, "HELICOPTER", 280}, {2, 2, 0, "SOMERSAULT", 230}, {4, 2, 0, "CARTWHEEL", 240}, {8, 2, 0, "SURFER", 210}};
+    static const Row ZRR[10] = {
+        {0, 0, 0, "RODEO", 170}, {0, 0, 1, "CORKSCREW", 270},
+        {1, 1, 0, "KISS OF DEATH", 180}, {2, 1, 0, "CORDOVA", 170}, {4, 1, 0, "NAC-NAC", 160}, {8, 1, 0, "CAN-CAN", 160},
+        {1, 2, 0, "FLAIR", 260}, {2, 2, 0, "SWITCHEROO", 200}, {4, 2, 0, "BODY VARIAL", 250}, {8, 2, 0, "ROCK SOLID", 220}};
+    for (int col = 0; col < 2; col++) {
+        float cx = x + col * (cw + gap);
+        const char *btn = col ? zr : jump;
+        uint32_t bc = col ? 0x1C8C4AFFu : 0x7A3CD6FFu;
+        card(cx, y, cw, h, k);
+        card_head(cx, y, cw, k, col ? "MORE TRICKS" : "RIDER TRICKS", "PRESS IN THE AIR");
+        const Row *rows = col ? ZRR : JR;
+        for (int i = 0; i < 10; i++) {
+            int slot = i < 6 ? i : i + 1; /* the doubles from slot 7, under a heading in slot 6 */
+            float ry = y + 56 * k + rr * (slot + 0.5f), at = cx + 18 * k;
+            at += chip(at, ry, k, btn, bc) + 6 * k;
+            if (rows[i].again) mtext(at, ry - 10 * k, 18 * k, G_SOFT, G_SOFT, "AGAIN");
+            if (rows[i].times) in_dpad(at, ry, k, rows[i].arms, rows[i].times);
+            trick_row(cx, ry, cw, k, cx + 176 * k, rows[i].name, rows[i].pts);
+        }
+        /* the bigger ones' heading */
+        float hy = y + 56 * k + rr * 6.5f;
+        rect(cx + 14 * k, hy - rr * 0.5f + 2 * k, cw - 28 * k, 2 * k, 0x3C78E680u);
+        mtext(cx + 18 * k, hy - 13 * k, 26 * k, C_TITLE_T, C_TITLE_B, "BIGGER ONES");
+    }
+}
+
+void menu_trick_guide(int w, int h) {
+    unsigned page = g_trick_guide;
+    if ((!page && (!g_trick_guide_hint || g_tp_confirm)) || menu_is_open() || !begin(w, h, false)) return;
+    float k = (float)h / 720.0f;
+    if ((float)w / 1280.0f < k) k = (float)w / 1280.0f;
+    if (!page) { /* the pause screen's foot: Y TRICK GUIDE */
+        const char *hint = "TRICK GUIDE";
+        float ts = 26 * k, bw = 42 * k + mtext_w(hint, ts) + 30 * k, bx = ((float)w - bw) / 2, by = (float)h - 66 * k;
+        if (g_trick_cup) bx = (float)w - bw - 40 * k; /* the Grand Prix's pause screen: QUIT at the foot */
+        round_box(bx, by, bw, 44 * k, 22 * k, 0x000000A0u);
+        round_box(bx + 6 * k, by + 6 * k, 32 * k, 32 * k, 16 * k, 0xE8E8E8FFu);
+        mtext(bx + 22 * k - mtext_w("Y", 22 * k) / 2, by + 9 * k, 22 * k, 0x202020FFu, 0x202020FFu, "Y");
+        mtext(bx + 46 * k, by + 9 * k, ts, C_TITLE_T, C_TITLE_B, hint);
+        end();
+        return;
+    }
+    rect(0, 0, (float)w, (float)h, 0x000010C8u);
+    float pw = 1200 * k, ph = 680 * k, px = ((float)w - pw) / 2, py = ((float)h - ph) / 2;
+    panel(px, py, pw, ph, k, ""); /* the title beside the tabs, below */
+    /* the pages' tabs on the title band */
+    static const char *const TABS[3] = {"HOW IT WORKS", "KART TRICKS", "RIDER TRICKS"};
+    float tx = px + 24 * k;
+    for (int i = 0; i < 3; i++) {
+        float ts = 22 * k, tw = mtext_w(TABS[i], ts) + 28 * k;
+        bool on = page == (unsigned)i + 1;
+        round_box(tx, py + 20 * k, tw, 34 * k, 17 * k, on ? 0xFFD640FFu : 0x1A3A90FFu);
+        mtext(tx + 14 * k, py + 25 * k, ts, on ? 0x102268FFu : G_SOFT, on ? 0x102268FFu : G_SOFT, TABS[i]);
+        tx += tw + 10 * k;
+    }
+    /* left / right arrows: PAGE, B: BACK on the right; the title centred between the tabs and those */
+    const char *nav = "PAGE   B: BACK";
+    float nw = mtext_w(nav, 20 * k), nx = px + pw - 24 * k - nw, ay = py + 37 * k, al = 22 * k;
+    mtext(nx, py + 27 * k, 20 * k, G_SOFT, G_SOFT, nav);
+    for (int d = 0; d < 2; d++) { /* <- then -> */
+        float x0 = nx - 12 * k - (2 - d) * (al + 10 * k), tip = d ? x0 + al : x0, back = d ? -8 * k : 8 * k;
+        line(x0, ay, x0 + al, ay, 3 * k, G_SOFT, G_SOFT);
+        line(tip, ay, tip + back, ay - 7 * k, 3 * k, G_SOFT, G_SOFT);
+        line(tip, ay, tip + back, ay + 7 * k, 3 * k, G_SOFT, G_SOFT);
+    }
+    float left = tx, right = nx - 12 * k - 2 * (al + 10 * k), ts = 40 * k, tw = mtext_w("TRICK GUIDE", ts);
+    if (tw > right - left - 16 * k) ts *= (right - left - 16 * k) / tw, tw = mtext_w("TRICK GUIDE", ts);
+    mtext(left + (right - left - tw) / 2, py + 35 * k - ts * 0.5f, ts, C_TITLE_T, C_TITLE_B, "TRICK GUIDE");
+    float cx = px + 24 * k, cy = py + 100 * k, cw = pw - 48 * k, chh = ph - 120 * k;
+    if (page == 1) guide_steps(cx, cy, cw, chh, k);
+    else if (page == 2) guide_tricks(cx, cy, cw, chh, k);
+    else guide_more(cx, cy, cw, chh, k);
+    end();
+}
+
+/* ---- the trick track picker (runtime/trick.c trick_pick_pad: g_tp_page) ----
+ * Over a trick battle's stage page: SINGLE TRACK or TRICK CUP; the four cups (their icons, the tracks in the one
+ * picked); a cup's four tracks (their pictures); between a cup's rounds the next one. The pictures are
+ * <trick dir>/Art/ui_cupN.rgba and ui_Tnn.rgba (tools/art8.py: width and height as two little-endian u16, then
+ * RGBA8 rows), loaded the first time the picker shows. */
+#define TP_TROPHY (TRICK_CUPS + TRICK_TRACKS) /* + 0..2: gold, silver, bronze (ui_trophyN.rgba) */
+static GfxTex s_tp_tex[TP_TROPHY + 3];
+static bool s_tp_tried;
+static GfxTex tp_load(const char *dir, const char *name) {
+    char path[512];
+    snprintf(path, sizeof path, "%s/Art/%s", dir, name);
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    uint8_t h[4];
+    GfxTex t = 0;
+    if (fread(h, 1, 4, f) == 4) {
+        int w = h[0] | h[1] << 8, hh = h[2] | h[3] << 8;
+        size_t n = (size_t)w * (size_t)hh * 4;
+        uint8_t *px = w > 0 && hh > 0 && w <= 1024 && hh <= 1024 ? malloc(n) : NULL;
+        if (px && fread(px, 1, n, f) == n) t = gfx_tex_upload(0, GFX_RGBA8, w, hh, px);
+        free(px);
+    }
+    fclose(f);
+    return t;
+}
+static void tp_pics(void) {
+    const char *dir = disc_overlay_trick_dir();
+    if (s_tp_tried || !dir) return;
+    s_tp_tried = true;
+    int got = 0;
+    for (int i = 0; i < TP_TROPHY + 3; i++) {
+        char nm[32];
+        if (i >= TP_TROPHY) snprintf(nm, sizeof nm, "ui_trophy%d.rgba", i - TP_TROPHY + 1);
+        else if (i < TRICK_CUPS) snprintf(nm, sizeof nm, "ui_cup%d.rgba", i + 1);
+        else snprintf(nm, sizeof nm, "ui_T%02d.rgba", i - TRICK_CUPS + 1);
+        got += (s_tp_tex[i] = tp_load(dir, nm)) != 0;
+    }
+    printf("trick picker: %d of %d pictures\n", got, TP_TROPHY + 3);
+}
+/* a picture (none: a plain box), tint multiplies it */
+static void tp_pic(GfxTex t, float x, float y, float w, float h, float k, uint32_t tint) {
+    if (!t) { round_box(x, y, w, h, 10 * k, 0x1A3A90FFu & (0xFFFFFF00u | (tint & 0xFF))); return; }
+    flush();
+    s_tex = t;
+    const float par[4] = {0, 0, 1, 1};
+    quad(x, y, w, h, tint, tint, SH_IMAGE, 0, 0, par);
+    flush();
+    s_tex = s_font ? uifont_texture() : 0;
+}
+static void tp_text_c(float cx, float y, float size, float maxw, uint32_t t, uint32_t b, const char *s) {
+    float w = mtext_w(s, size);
+    if (w > maxw) size *= maxw / w, w = mtext_w(s, size);
+    mtext(cx - w / 2, y, size, t, b, s);
+}
+/* the game's menu look: the dark blue star field, the checkered band with the title in yellow letters */
+#define TP_TITLE_T 0xFFFFC8FFu
+#define TP_TITLE_B 0xFFD820FFu
+#define TP_NAME_T 0xFFFFFFFFu  /* a list's lines: white to pale blue; the picked one yellow to orange */
+#define TP_NAME_B 0xB4CCFFFFu
+static void tp_screen(int w, int h, float k, const char *title) {
+    float W = (float)w, H = (float)h;
+    grad(0, 0, W, H, 0x0C2470FFu, 0x061650FFu);
+    float sx = 132 * k, sy = 118 * k, off = fmodf((float)g_tp_t * 0.25f * k, sx);
+    for (int r = 0; (float)r * sy < H + sy; r++)
+        for (int i = -1; (float)i * sx < W + sx; i++)
+            star_sharp((float)i * sx + (r & 1 ? sx / 2 : 0) + off, 150 * k + (float)r * sy, 50 * k, 0x16348AFFu);
+    float by = 26 * k, bh = 84 * k, cs = 12 * k;
+    rect(0, by, W, bh, 0x2A48D0FFu);
+    for (int r = 0; (float)r * cs < bh; r++)
+        for (int i = 0; (float)i * cs < W; i++)
+            if ((r + i) & 1) rect((float)i * cs, by + (float)r * cs, cs, fminf(cs, bh - (float)r * cs), 0x5C84F4FFu);
+    rect(0, by + bh, W, 4 * k, 0x0A1440FFu);
+    float ts = 66 * k;
+    tp_text_c(W / 2, by + (bh - ts) / 2 + 2 * k, ts, W - 80 * k, TP_TITLE_T, TP_TITLE_B, title);
+}
+/* a panel: dark glass with a light rim (picked: the rim yellow, pulsing) */
+static void tp_glass(float x, float y, float w, float h, float k, bool sel) {
+    if (sel) {
+        float p = 0.5f + 0.5f * sinf((float)g_tp_t * 0.12f);
+        round_box(x - 7 * k, y - 7 * k, w + 14 * k, h + 14 * k, 20 * k, p > 0.5f ? 0xFFF080FFu : 0xFFC020FFu);
+    }
+    round_box(x - 3 * k, y - 3 * k, w + 6 * k, h + 6 * k, 16 * k, sel ? 0xFFFFFFFFu : 0x7C9CE8FFu);
+    round_box(x, y, w, h, 14 * k, 0x0A1A58E8u);
+}
+static void tp_hint(int w, int h, float k, const char *s) {
+    tp_text_c((float)w / 2, (float)h - 56 * k, 30 * k, (float)w - 80 * k, TP_NAME_T, TP_NAME_B, s);
+}
+/* the Grand Prix's cup page (2026-11-13: laid out as the game's own): the cups in a row, the picked one bigger in a
+ * gold ring with sparkles round it; under them one framed panel in the cup's colour: the
+ * cup's name top left, its four tracks listed under it, the right a picture of each track in turn (pick: a line of
+ * the list picked, single track, and its picture) */
+static const uint32_t TP_PANEL[TRICK_CUPS][2] = {{0x2A50D8FFu, 0x10287CFFu}, {0x2E96C4FFu, 0x1C78A8FFu},
+                                                 {0x8A5CC4FFu, 0x6A40A4FFu}, {0xD27424FFu, 0xB05614FFu}};
+#define TP_LIST_T 0xFFFFFFFFu /* the list's names: white (2026-11-13: yellow on the panels was hard on the eyes) */
+#define TP_LIST_B 0xE6F0FFFFu
+#define TP_CUPN_T 0xFFFFFFFFu /* the cup's name: white */
+#define TP_CUPN_B 0xE6F0FFFFu
+static void tp_sparkle(float cx, float cy, float r, uint32_t c) {
+    uint32_t c0 = c & 0xFFFFFF00u;
+    line(cx - r, cy, cx, cy, r * 0.12f, c0, c), line(cx, cy, cx + r, cy, r * 0.12f, c, c0);
+    line(cx, cy - r * 1.4f, cx, cy, r * 0.12f, c0, c), line(cx, cy, cx, cy + r * 1.4f, r * 0.12f, c, c0);
+    round_box(cx - r * 0.22f, cy - r * 0.22f, r * 0.44f, r * 0.44f, r * 0.22f, 0xFFFFFFFFu);
+}
+static void tp_cups(int w, float k, unsigned cup, int pick) {
+    float W = (float)w, mid = W / 2, t = (float)g_tp_t;
+    /* the cups */
+    float sp = 228 * k, cy = 230 * k, iz = 96 * k, sz = 112 * k;
+    for (int i = 0; i < TRICK_CUPS; i++) {
+        bool sel = i == (int)cup;
+        float cx = mid + ((float)i - (TRICK_CUPS - 1) / 2.0f) * sp;
+        if (sel) {
+            float R = 76 * k;
+            round_box(cx - R - 3 * k, cy - R - 3 * k, 2 * R + 6 * k, 2 * R + 6 * k, R + 3 * k, 0x5A3A08FFu);
+            quad(cx - R, cy - R, 2 * R, 2 * R, 0xFFE68CFFu, 0xC88A1CFFu, SH_ROUND, 0, 0, (const float[4]){R, 0, 0, 0});
+            float r2 = R - 9 * k;
+            quad(cx - r2, cy - r2, 2 * r2, 2 * r2, 0xB07A18FFu, 0xFFE68CFFu, SH_ROUND, 0, 0, (const float[4]){r2, 0, 0, 0});
+            float r3 = R - 13 * k;
+            quad(cx - r3, cy - r3, 2 * r3, 2 * r3, 0x2A0806FFu, 0x5A1A0EFFu, SH_ROUND, 0, 0, (const float[4]){r3, 0, 0, 0});
+            tp_pic(s_tp_tex[i], cx - sz / 2, cy - sz / 2, sz, sz, k, 0xFFFFFFFFu);
+            for (int s = 0; s < 4; s++) { /* sparkles round the ring, each twinkling in turn */
+                float a = 2.4f + (float)s * 1.57f + t * 0.004f, tw = 0.35f + 0.65f * fabsf(sinf(t * 0.06f + (float)s * 1.7f));
+                float rr = (s & 1 ? 40 : 28) * k * tw;
+                tp_sparkle(cx + cosf(a) * (R + 4 * k), cy + sinf(a) * (R + 4 * k), rr, 0xFFF4C8FFu);
+            }
+        } else
+            tp_pic(s_tp_tex[i], cx - iz / 2, cy - iz / 2, iz, iz, k, 0xFFFFFFFFu);
+    }
+    /* the panel: a dark rim, a gold line, the cup's colour */
+    float px0 = 185 * k, py0 = 332 * k, pw0 = 912 * k, ph0 = 348 * k;
+    round_box(px0 - 5 * k, py0 - 5 * k, pw0 + 10 * k, ph0 + 10 * k, 12 * k, 0x2A1C08FFu);
+    round_box(px0 - 3 * k, py0 - 3 * k, pw0 + 6 * k, ph0 + 6 * k, 10 * k, 0xE0BC64FFu);
+    round_box(px0 - 1 * k, py0 - 1 * k, pw0 + 2 * k, ph0 + 2 * k, 9 * k, 0x3A2A10FFu);
+    quad(px0, py0, pw0, ph0, TP_PANEL[cup][0], TP_PANEL[cup][1], SH_ROUND, 0, 0, (const float[4]){8 * k, 0, 0, 0});
+    /* the cup's name, a light line under it */
+    float lx = px0 + 30 * k, lw = 410 * k, lmid = lx + lw / 2;
+    tp_text_c(lmid, py0 + 16 * k, 54 * k, lw - 20 * k, TP_CUPN_T, TP_CUPN_B, TRICK_CUP_NAME[cup]);
+    line(lx - 10 * k, py0 + 76 * k, lmid, py0 + 76 * k, 3 * k, 0xFFFFFF00u, 0xFFFFFFE0u);
+    line(lmid, py0 + 76 * k, lx + lw + 10 * k, py0 + 76 * k, 3 * k, 0xFFFFFFE0u, 0xFFFFFF00u);
+    /* the list */
+    unsigned shown = pick >= 0 ? (unsigned)pick : (g_tp_t / 180) % 4;
+    float ly = py0 + 96 * k, row = 60 * k;
+    float fs = 42 * k; /* one size for the four (the longest fits) */
+    for (int j = 0; j < 4; j++) { float nw = mtext_w(TRICK_TRACK_NAME[cup * 4 + j], 42 * k); if (nw > lw - 10 * k) fs = fminf(fs, 42 * k * (lw - 10 * k) / nw); }
+    for (int j = 0; j < 4; j++) {
+        float y = ly + (float)j * row;
+        if (j == pick) { /* the picked line: a light bar with an arrow at its left */
+            float p = 0.75f + 0.25f * sinf(t * 0.12f);
+            round_box(lx - 6 * k, y + 2 * k, lw + 12 * k, row - 4 * k, 12 * k, 0xFFFFFF00u | (uint32_t)(p * 90));
+            arrow(lx - 26 * k, y + 12 * k, 24 * k, row - 24 * k, 0xFFF070FFu);
+        }
+        tp_text_c(lmid, y + 10 * k + (42 * k - fs) / 2, fs, lw - 10 * k, TP_LIST_T, TP_LIST_B, TRICK_TRACK_NAME[cup * 4 + j]);
+    }
+    /* the picture: each in turn, faded across, in a cream frame */
+    float pw = 406 * k, ph = pw * 204 / 288, px = px0 + pw0 - pw - 30 * k, py = py0 + (ph0 - ph) / 2;
+    round_box(px - 6 * k, py - 6 * k, pw + 12 * k, ph + 12 * k, 10 * k, 0x3A2A10FFu);
+    round_box(px - 4 * k, py - 4 * k, pw + 8 * k, ph + 8 * k, 8 * k, 0xF4E4AEFFu);
+    tp_pic(s_tp_tex[TRICK_CUPS + cup * 4 + shown], px, py, pw, ph, k, 0xFFFFFFFFu);
+    if (pick < 0) {
+        unsigned ph_t = g_tp_t % 180;
+        if (ph_t >= 160) { /* the next one fades in */
+            uint32_t a = (uint32_t)((float)(ph_t - 160) / 20.0f * 255.0f);
+            tp_pic(s_tp_tex[TRICK_CUPS + cup * 4 + (shown + 1) % 4], px, py, pw, ph, k, 0xFFFFFF00u | a);
+        }
+    }
+}
+/* a cup's QUIT? over the pause menu (trick.c cup_pause_pad) */
+static void tp_confirm(int w, int h) {
+    if (!begin(w, h, false)) return;
+    float k = (float)h / 720.0f;
+    if ((float)w / 1280.0f < k) k = (float)w / 1280.0f;
+    rect(0, 0, (float)w, (float)h, 0x00000090u);
+    float bw = 560 * k, bh = 300 * k, bx = ((float)w - bw) / 2, by = ((float)h - bh) / 2;
+    round_box(bx - 8 * k, by - 8 * k, bw + 16 * k, bh + 16 * k, 24 * k, 0xFFFFFFFFu);
+    round_box(bx - 3 * k, by - 3 * k, bw + 6 * k, bh + 6 * k, 20 * k, 0x0A1440FFu);
+    grad(bx, by, bw, bh, 0x2A50D8F8u, 0x10287CF8u);
+    tp_text_c(bx + bw / 2, by + 30 * k, 60 * k, bw - 40 * k, TP_TITLE_T, TP_TITLE_B, "QUIT?");
+    tp_text_c(bx + bw / 2, by + 104 * k, 34 * k, bw - 40 * k, TP_NAME_T, TP_NAME_B, "ARE YOU SURE?");
+    static const char *const OPT[2] = {"YES", "NO"};
+    for (int i = 0; i < 2; i++) {
+        bool sel = (unsigned)i == g_tp_csel;
+        float ox = bx + bw / 2 + (i ? 40 : -200) * k, oy = by + 184 * k, ow = 160 * k, oh = 70 * k;
+        if (sel) {
+            float p = 0.5f + 0.5f * sinf((float)g_tp_t * 0.15f);
+            round_box(ox - 5 * k, oy - 5 * k, ow + 10 * k, oh + 10 * k, 16 * k, p > 0.5f ? 0xFFF080FFu : 0xFFC020FFu);
+        }
+        round_box(ox, oy, ow, oh, 12 * k, sel ? 0x3C7CF0FFu : 0x0A1A58FFu);
+        tp_text_c(ox + ow / 2, oy + 14 * k, 44 * k, ow - 20 * k, sel ? C_TITLE_T : TP_NAME_T, sel ? C_TITLE_B : TP_NAME_B, OPT[i]);
+    }
+    end();
+}
+void menu_trick_pick(int w, int h) {
+    unsigned page = g_tp_page;
+    if (g_tp_confirm && !menu_is_open()) { menu_font_load(); tp_confirm(w, h); return; }
+    if (!page || menu_is_open()) return;
+    menu_font_load();
+    if (!begin(w, h, false)) return;
+    tp_pics();
+    float k = (float)h / 720.0f;
+    if ((float)w / 1280.0f < k) k = (float)w / 1280.0f;
+    float W = (float)w, H = (float)h;
+    unsigned cup = g_tp_cup % TRICK_CUPS, tc = g_trick_cup ? (g_trick_cup - 1) % TRICK_CUPS : cup;
+    if (page == 1) {
+        tp_screen(w, h, k, "TRICK STYLE");
+        static const char *const NAME[2] = {"SINGLE TRACK", "TRICK CUP"};
+        static const char *const SUB[2] = {"ANY OF THE 16 TRACKS", "4 TRACKS IN A ROW, MOST POINTS WINS"};
+        float cw = 520 * k, chh = 450 * k, gap = 60 * k, x0 = W / 2 - cw - gap / 2, y0 = 150 * k;
+        for (int i = 0; i < 2; i++) {
+            float bx = x0 + (float)i * (cw + gap);
+            bool sel = g_tp_mode == (unsigned)i;
+            tp_glass(bx, y0, cw, chh, k, sel);
+            uint32_t tint = sel ? 0xFFFFFFFFu : 0x9098B0FFu;
+            if (i == 0) { /* four tracks, two by two */
+                float tw = 190 * k, th = tw * 204 / 288, tx = bx + (cw - 2 * tw - 20 * k) / 2;
+                for (int j = 0; j < 4; j++)
+                    tp_pic(s_tp_tex[TRICK_CUPS + j * 4 + 1], tx + (float)(j & 1) * (tw + 20 * k), y0 + 24 * k + (float)(j >> 1) * (th + 16 * k), tw, th, k, tint);
+            } else { /* the four cups, two by two */
+                float iz = 120 * k;
+                for (int j = 0; j < 4; j++)
+                    tp_pic(s_tp_tex[j], bx + cw / 2 - iz - 20 * k + (float)(j & 1) * (iz + 40 * k), y0 + 20 * k + (float)(j >> 1) * (iz + 8 * k), iz, iz, k, tint);
+            }
+            tp_text_c(bx + cw / 2, y0 + chh - 112 * k, 50 * k, cw - 40 * k, sel ? C_TITLE_T : TP_NAME_T, sel ? C_TITLE_B : TP_NAME_B, NAME[i]);
+            tp_text_c(bx + cw / 2, y0 + chh - 52 * k, 24 * k, cw - 40 * k, TP_NAME_T, TP_NAME_B, SUB[i]);
+        }
+        tp_hint(w, h, k, "A: OK   B: BACK");
+    } else if (page == 2 || page == 3) {
+        tp_screen(w, h, k, page == 3 ? "SELECT TRACK" : "SELECT CUP");
+        tp_cups(w, k, cup, page == 3 ? (int)(g_tp_track % 4) : -1);
+        /* (no hint line: the Grand Prix's page has none) */
+    } else if (page == 5) { /* the podium: first to third */
+        unsigned pl = g_tp_place < 3 ? g_tp_place : 2;
+        tp_screen(w, h, k, "CONGRATULATIONS!");
+        /* confetti */
+        static const uint32_t CONF[5] = {0xFFD820FFu, 0xFF5A46FFu, 0x5AE06EFFu, 0x5AA0FFFFu, 0xFFFFFFFFu};
+        for (int i = 0; i < 60; i++) {
+            uint32_t sd = (uint32_t)i * 2654435761u;
+            float sp = (1.2f + (float)(sd >> 8 & 255) / 255.0f) * k, fx = (float)(sd >> 16 & 1023) / 1023.0f * W;
+            float fy = fmodf((float)g_tp_t * sp + (float)(sd & 1023) / 1023.0f * H, H + 40 * k) - 20 * k;
+            fx += sinf((float)g_tp_t * 0.05f + (float)i) * 14 * k;
+            float cz = (6 + (float)(sd >> 4 & 7)) * k, sq = fabsf(sinf((float)g_tp_t * 0.08f + (float)i));
+            rect(fx, fy, cz, cz * (0.3f + 0.7f * sq), CONF[i % 5]);
+        }
+        /* the trophy, glowing, popping in */
+        float pop = g_tp_t < 30 ? (float)g_tp_t / 30.0f : 1;
+        pop = 1 - (1 - pop) * (1 - pop) * (1 - pop);
+        float tz = 300 * k * (0.4f + 0.6f * pop) * (1 + 0.03f * sinf((float)g_tp_t * 0.08f)), tx = W * 0.3f, ty = 150 * k + 150 * k + 54 * k; /* the glow's top level with the place's line */
+        static const uint32_t GLOW[3] = {0xFFE06040u, 0xE0ECFF40u, 0xFFA06040u};
+        for (int r = 3; r >= 1; r--) round_box(tx - tz / 2 - (float)r * 18 * k, ty - tz / 2 - (float)r * 18 * k, tz + (float)r * 36 * k, tz + (float)r * 36 * k, tz / 2 + (float)r * 18 * k, GLOW[pl]);
+        tp_pic(s_tp_tex[TP_TROPHY + pl], tx - tz / 2, ty - tz / 2, tz, tz, k, 0xFFFFFFFFu);
+        static const char *const PLACE[3] = {"1ST PLACE", "2ND PLACE", "3RD PLACE"};
+        static const uint32_t PT[3] = {0xFFF4A0FFu, 0xF4F8FFFFu, 0xFFD0A0FFu}, PB[3] = {0xF0A000FFu, 0x9AA4B8FFu, 0xB0602CFFu};
+        float rx = W * 0.64f;
+        tp_text_c(rx, 150 * k, 72 * k, W * 0.5f, PT[pl], PB[pl], PLACE[pl]);
+        tp_text_c(rx, 236 * k, 40 * k, W * 0.5f, TP_NAME_T, TP_NAME_B, TRICK_CUP_NAME[tc]);
+        char s[48];
+        snprintf(s, sizeof s, "POINTS %u", (unsigned)g_trick_total[0]);
+        tp_text_c(rx, 288 * k, 36 * k, W * 0.5f, C_TITLE_T, C_TITLE_B, s);
+        static const char *const OPT[3] = {"RACE AGAIN", "SELECT CUP", "QUIT"};
+        for (int i = 0; i < 3; i++) {
+            bool sel = (unsigned)i == g_tp_csel;
+            float ow = 380 * k, oh = 62 * k, ox = rx - ow / 2, oy = 360 * k + (float)i * (oh + 18 * k);
+            tp_glass(ox, oy, ow, oh, k, sel);
+            if (sel) grad(ox + 6 * k, oy + 6 * k, ow - 12 * k, oh - 12 * k, 0x5AA0FFE8u, 0x3C7CF0E8u);
+            tp_text_c(rx, oy + 12 * k, 38 * k, ow - 30 * k, sel ? C_TITLE_T : TP_NAME_T, sel ? C_TITLE_B : TP_NAME_B, OPT[i]);
+        }
+        tp_hint(w, h, k, "A: OK");
+    } else { /* a cup's next round, a moment before it loads */
+        unsigned r = g_trick_round < 4 ? g_trick_round : 3;
+        tp_screen(w, h, k, TRICK_CUP_NAME[tc]);
+        char s[48];
+        snprintf(s, sizeof s, "ROUND %u", r + 1);
+        tp_text_c(W / 2, 128 * k, 50 * k, W, C_TITLE_T, C_TITLE_B, s);
+        float pw = 380 * k, ph = pw * 204 / 288, px = W / 2 - pw / 2, py = 190 * k; /* the name and points clear of the small pictures */
+        round_box(px - 8 * k, py - 8 * k, pw + 16 * k, ph + 16 * k, 14 * k, 0xFFFFFFFFu);
+        tp_pic(s_tp_tex[TRICK_CUPS + tc * 4 + r], px, py, pw, ph, k, 0xFFFFFFFFu);
+        tp_text_c(W / 2, py + ph + 22 * k, 48 * k, W - 80 * k, TP_NAME_T, TP_NAME_B, TRICK_TRACK_NAME[tc * 4 + r]);
+        /* the four rounds as small pictures */
+        float tw = 120 * k, th = tw * 204 / 288, gx = W / 2 - (4 * tw + 3 * 16 * k) / 2, ty = H - 100 * k;
+        for (int j = 0; j < 4; j++) {
+            float bx = gx + (float)j * (tw + 16 * k);
+            if (j == (int)r) round_box(bx - 5 * k, ty - 5 * k, tw + 10 * k, th + 10 * k, 8 * k, 0xFFD820FFu);
+            tp_pic(s_tp_tex[TRICK_CUPS + tc * 4 + j], bx, ty, tw, th, k, j < (int)r ? 0x606070FFu : j == (int)r ? 0xFFFFFFFFu : 0xA0A0B0FFu);
+        }
+        snprintf(s, sizeof s, "YOUR POINTS %u", (unsigned)g_trick_total[0]);
+        tp_text_c(W / 2, py + ph + 76 * k, 32 * k, W, C_TITLE_T, C_TITLE_B, s);
+    }
     end();
 }
 

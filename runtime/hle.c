@@ -13,6 +13,7 @@
 #include "rt.h"
 #include "native.h"
 #include "table.h"
+#include "charpack.h"
 
 uint64_t g_dvd_reads;
 uint32_t g_language;
@@ -23,12 +24,63 @@ uint32_t g_language;
  * one of them). Only when getLanguage still reads that address: a mod's code may move it. */
 #define LANG_ADDR 0x803CAB40u
 #define LANG_GET 0x80139410u /* KartLocale::getLanguage: lwz r3,-0x68e0(r13); blr */
+/* The Japanese language's kartfont.bfn (the font of the game's own texts in layouts: the pause
+ * boxes' names...). The USA game keeps a one-byte font in the archive in its DOL's data (GM4E01
+ * 0x802d8b20, mounted by ResMgr::create); the Japanese texts need the Japanese DOL's Shift-JIS one,
+ * which MKDD-Tools copies to mods/lang/Japanese/kartfont.bfn. It goes into MEM1 above the game's
+ * 24 MiB, and the archive's entry for kartfont.bfn is pointed at it (offset from the archive's
+ * file data, a 32-bit field). Only when the archive is the one expected. */
+#define DOL_ARC 0x802d8b20u
+static void language_font(void) {
+    const char *dir = disc_overlay_language_dir();
+    if (!dir) return;
+    char path[512];
+    snprintf(path, sizeof path, "%s/kartfont.bfn", dir);
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    uint8_t *b = NULL;
+    long n = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
+    if (n >= 0x20 && n < (4 << 20) && fseek(f, 0, SEEK_SET) == 0 && (b = malloc((size_t)n)) && fread(b, 1, (size_t)n, f) != (size_t)n)
+        free(b), b = NULL;
+    fclose(f);
+    if (!b) { rt_log("lang: %s unreadable", path); return; }
+    if (memcmp(b, "FONTbfn1", 8) || get_be(b + 8, 4) != (uint32_t)n) { rt_log("lang: %s is not a font", path); free(b); return; }
+    uint32_t a = DOL_ARC, info = a + 0x20;
+    uint32_t data = info + (uint32_t)m_read_be(a + 0x0C, 4), asize = (uint32_t)m_read_be(a + 4, 4);
+    uint32_t nent = (uint32_t)m_read_be(info + 0x08, 4), ent = info + (uint32_t)m_read_be(info + 0x0C, 4);
+    uint32_t strs = info + (uint32_t)m_read_be(info + 0x14, 4), strsz = (uint32_t)m_read_be(info + 0x10, 4);
+    uint32_t hit = 0;
+    if (m_read_be(a, 4) == 0x52415243u && asize > 0x40 && asize < (1u << 20) && nent < 4096 && strsz < 0x10000)
+        for (uint32_t i = 0; i < nent && !hit; i++) {
+            uint32_t e = ent + i * 0x14, no = (uint32_t)m_read_be(e + 6, 2);
+            if (m_read_be(e + 4, 2) >> 8 & 2 || no + 13 > strsz) continue; /* directories */
+            char nm[13];
+            for (int k = 0; k < 13; k++) nm[k] = (char)m_read_be(strs + no + k, 1);
+            if (!memcmp(nm, "kartfont.bfn", 13) && m_read_be(data + (uint32_t)m_read_be(e + 8, 4), 8) == 0x464F4E5462666E31ull) hit = e;
+        }
+    uint32_t dst = hit ? charpack_reserve((uint32_t)n) : 0;
+    if (dst) {
+        m_load(dst, b, (size_t)n);
+        m_write_be(hit + 8, 4, dst - data);
+        m_write_be(hit + 12, 4, (uint32_t)n);
+    }
+    rt_log(dst ? "lang: the language's kartfont.bfn (%ld bytes) replaces the game's" : "lang: kartfont.bfn (%ld bytes) not used: %s",
+           n, hit ? "no memory left" : "this game's DOL has no known font archive");
+    free(b);
+}
+
 static void language_apply(void) {
     static bool said;
-    if (!g_language || g_language > 4) return;
+    /* the game's numbering (its name table at GM4E01 0x8033cde0): 0 English, 1 French, 2 German,
+     * 3 Italian, 4 Japanese, 5 Spanish. g_language is the menu's (LANG_NAMES: 4 Spanish, 5 Japanese);
+     * each needs its files in the table (the USA disc has none: white menus). */
+    static const uint32_t GAME_LANG[6] = {0, 1, 2, 3, 5, 4};
+    if (!g_language || g_language >= sizeof GAME_LANG / sizeof GAME_LANG[0]) return;
+    uint32_t v = GAME_LANG[g_language];
     bool known = m_read_be(LANG_GET, 4) == 0x806D9720u && m_read_be(LANG_GET + 4, 4) == 0x4E800020u;
-    if (known) m_write_be(LANG_ADDR, 4, g_language);
-    if (!said) rt_log(known ? "lang: the game's language set to %u" : "lang: this game's code has no known language setting: %u not set", g_language);
+    if (known) m_write_be(LANG_ADDR, 4, v);
+    if (known && !said) language_font();
+    if (!said) rt_log(known ? "lang: the game's language set to %u" : "lang: this game's code has no known language setting: %u not set", v);
     said = true;
 }
 
@@ -245,13 +297,13 @@ static const Hook *find_hook(uint32_t addr) {
 /* 64-bit argument in a register pair (PPC EABI: rN = high word, rN+1 = low word). */
 static uint64_t arg64(Ctx *c, unsigned n) { return (uint64_t)ctx_gpr(c, n) << 32 | ctx_gpr(c, n + 1); }
 
-static void dvd_read(uint64_t off, uint32_t dst, uint32_t len) {
+static void dvd_read(Ctx *c, uint64_t off, uint32_t dst, uint32_t len) {
     int64_t o = ram_off(dst);
     if (o < 0) return;
     if (len > RAM_SIZE - (uint64_t)o) len = (uint32_t)(RAM_SIZE - (uint64_t)o);
     hw_gx_flush();
     gx_drain_dma(len);
-    disc_read(off, g_ram + o, len);
+    disc_read_guest(c, off, g_ram + o, len); /* may let other guest threads run while it waits */
     gx_mem_dirty((uint32_t)o, len);
     if (len >= (256u << 10)) gx_mem_dirty_all(); /* a scene load: see gx_mem_dirty_all */
 }
@@ -543,7 +595,9 @@ bool rt_hle(Ctx *c, uint32_t addr) {
     case H_DVD_READ_ABS: {
         uint32_t block = ctx_gpr(c, 3), dst = ctx_gpr(c, 4), len = ctx_gpr(c, 5), off = ctx_gpr(c, 6), cb = ctx_gpr(c, 7);
         g_dvd_reads++;
-        dvd_read(off, dst, len);
+        /* busy, as the SDK leaves a queued block: the read may give the other threads the CPU */
+        m_write_be(block + 0x0C, 4, 1);
+        dvd_read(c, off, dst, len);
         const uint32_t fields[8][2] = {{0x08, 1}, {0x0C, 0}, {0x10, off}, {0x14, len}, {0x18, dst}, {0x1C, len}, {0x20, len}, {0x28, cb}};
         for (int i = 0; i < 8; i++) m_write_be(block + fields[i][0], 4, fields[i][1]);
         if (cb) call_cb(c, cb, len, block);
@@ -552,7 +606,7 @@ bool rt_hle(Ctx *c, uint32_t addr) {
     }
     case H_DVD_READ_DISK_ID: {
         uint32_t block = ctx_gpr(c, 3), dst = ctx_gpr(c, 4), cb = ctx_gpr(c, 5);
-        dvd_read(0, dst, 0x20);
+        dvd_read(c, 0, dst, 0x20);
         m_write_be(block + 0x0C, 4, 0);
         if (cb) call_cb(c, cb, 0x20, block);
         ctx_set_gpr(c, 3, 1);
@@ -587,6 +641,10 @@ bool rt_hle(Ctx *c, uint32_t addr) {
         uint32_t dst = ctx_gpr(c, 3);
         PadStatus p[4];
         pad_get_all(p);
+        padrec_frame(&p[0], (uint32_t)m_read_be(W_SCENE, 4), g_race_phase != 0, (uint32_t)ctx_gpr(c, 13)); /* tests: MKDD_PADREC / MKDD_PADPLAY */
+        trick_guide_pad(c, c->ram, p);
+        trick_pick_pad(c, c->ram, p); /* the trick track picker over the stage page, a cup on to its next round (trick.c) */
+        trick_battle_pad(c, c->ram, &p[0].button); /* a trick battle: its type page and the pause's CHANGE BATTLE passed by, no balloons, the TRICK STYLE banner, the results' buttons (battle.c) */
         for (uint32_t i = 0; i < 4; i++) {
             uint32_t o = dst + 12 * i;
             g_pad_buttons[i] = p[i].button;
@@ -606,6 +664,9 @@ bool rt_hle(Ctx *c, uint32_t addr) {
         laps_tick();
         watch_scene_load(c);
         read_race_phase();
+        /* the trick competition is the Mushroom Cup's four slots (the trick tracks): SequenceInfo's
+         * cup (gSequenceInfo +0x90) kept 0, any other cup's courses have code of their own */
+        if (g_trick_comp && m_read_be(0x803B0F34u + 0x90, 4) != 0) m_write_be(0x803B0F34u + 0x90, 4, 0);
         if (g_log_mask & LOG_GAME) watch_flow(p[0].button), machine_watch_code();
         ctx_set_gpr(c, 3, 0);
         break;

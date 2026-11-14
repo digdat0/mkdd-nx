@@ -33,7 +33,8 @@
 #define GUEST_CORE -1
 #endif
 
-enum { TS_READY, TS_RUNNING, TS_WAITING, TS_SUSPENDED, TS_DEAD };
+/* TS_BLOCKED: in a blocking section (sched_block_begin), waiting in host I/O without the token. */
+enum { TS_READY, TS_RUNNING, TS_WAITING, TS_SUSPENDED, TS_DEAD, TS_BLOCKED };
 
 typedef struct {
     bool used;
@@ -416,6 +417,59 @@ void sched_reschedule(Ctx *c) {
     pmutex_unlock(&s_lock);
 }
 
+/* ---- blocking sections ----
+ * A guest thread about to wait in host I/O (an SD card read the disc read-ahead window misses, a
+ * memory card file write) gives the token away for the wait and takes it back afterwards, as the
+ * hardware's DVD and memory card transfers let other threads run meanwhile. Only with interrupts
+ * enabled and outside interrupt handlers (code there expects to run to its end undisturbed).
+ * Between begin and end the thread must not touch guest state other threads could use (only its
+ * own transfer buffer), and at sched_block_end it must hold no host lock that a guest thread
+ * holding the token could be waiting for. */
+uint64_t g_sched_blocks;
+
+bool sched_block_begin(Ctx *c) {
+    if (!c || c->in_irq || c->thread < 0x80000000u || !(RD(c, REG_MSR, 4) & MSR_EE)) return false;
+    uint32_t me = c->thread;
+    pmutex_lock(&s_lock);
+    Th *th = find(me);
+    if (!th || s_running != me || th->state != TS_RUNNING || stale(me)) {
+        pmutex_unlock(&s_lock);
+        return false;
+    }
+    g_sched_blocks++;
+    th->state = TS_BLOCKED;
+    th->wait_lr = (uint32_t)RD(c, REG_LR, 4);
+    th->wait_sp = ctx_gpr(c, 1);
+    set_gstate(me, GS_WAITING);
+    give_token();
+    kick_token();
+    pmutex_unlock(&s_lock);
+    return true;
+}
+
+void sched_block_end(Ctx *c, bool blocked) {
+    if (!blocked) return;
+    uint32_t me = c->thread;
+    pmutex_lock(&s_lock);
+    Th *th = find(me);
+    if (th && th->state == TS_BLOCKED) {
+        if (th->suspend > 0) th->state = TS_SUSPENDED; /* OSSuspendThread during the wait: OSResumeThread readies it */
+        else make_ready(me);
+    }
+    if (s_running == SCHED_NONE) {
+        give_token();
+        kick_token();
+    } else if (s_running != me) {
+        g_attention = true; /* the holder checks for preemption at its next function entry (rt_deliver) */
+    }
+    while (s_running != me || stale(me)) {
+        if (stale(me)) { pmutex_unlock(&s_lock); plat_park_forever(); }
+        wait_mine(me);
+    }
+    sched_note_host();
+    pmutex_unlock(&s_lock);
+}
+
 /* OSExitThread / thread function returned: wake joiners and hand the token on. */
 /* SetEffectivePriority (OSSetThreadPriority and mutex priority inheritance). The SDK's version
  * moves a ready thread between the run queues, which this scheduler doesn't keep: the thread's
@@ -691,7 +745,7 @@ bool sched_waiting_on(uint32_t t, uint32_t queue) {
 void sched_describe(char *out, size_t n) {
     pmutex_lock(&s_lock);
     size_t k = (size_t)snprintf(out, n, "running=%#x ", s_running);
-    static const char *names[] = {"Ready", "Running", "Waiting", "Suspended", "Dead"};
+    static const char *names[] = {"Ready", "Running", "Waiting", "Suspended", "Dead", "Blocked"};
     for (int i = 0; i < MAX_THREADS && k < n; i++) {
         Th *t = &s_threads[i];
         if (!t->used) continue;

@@ -1,0 +1,3 @@
+# track builder only (not part of the Tools app): py -3.10 -m pip install -r tools/tricktracks/requirements.txt
+numpy
+Pillow

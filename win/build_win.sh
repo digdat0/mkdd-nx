@@ -42,7 +42,7 @@ GENF="$CF -w -fomit-frame-pointer"
 jobs=()
 newer_h() { [ -n "$(find ../runtime ../switch . -maxdepth 1 -name '*.h' -newer "$1" 2>/dev/null | head -1)" ]; }
 for f in ../runtime/*.c ../switch/tev_gen.c ../switch/menu.c ../switch/ui_font.c ../switch/pause_art.c ../switch/charpack_art.c \
-         ../switch/hdtex.c main_win.c render_gl.c gl_load.c stubs_win.c launcher.c pad_sdl.c wincfg.c; do
+         ../switch/hdtex.c ../switch/mods_setup.c main_win.c render_gl.c gl_load.c update_win.c launcher.c pad_sdl.c wincfg.c; do
     o=$OUT/obj/rt_$(basename "${f%.c}").o
     if [ ! -f "$o" ] || [ "$f" -nt "$o" ] || newer_h "$o"; then jobs+=("gcc $RTF -c $f -o $o"); fi
 done
@@ -51,8 +51,8 @@ for f in "$GEN"/part_*.c "$GEN"/table.c; do
     if [ ! -f "$o" ] || [ "$f" -nt "$o" ] || [ ../runtime/gc_core.h -nt "$o" ] || [ ../runtime/native.h -nt "$o" ]; then jobs+=("gcc $GENF -c $f -o $o"); fi
 done
 [ mkdd.rc -nt "$OUT/obj/mkdd_rc.o" ] || [ mkdd.manifest -nt "$OUT/obj/mkdd_rc.o" ] || [ mkdd.ico -nt "$OUT/obj/mkdd_rc.o" ] && jobs+=("windres mkdd.rc -O coff -o $OUT/obj/mkdd_rc.o")
-jobs+=("gcc -c data_win.S -I../switch -o $OUT/obj/data_win.o" "gcc -c $RS -I../routes -o $OUT/obj/routes_data.o")
+jobs+=("gcc -c data_win.S -I../switch -I../assets -o $OUT/obj/data_win.o" "gcc -c $RS -I../routes -o $OUT/obj/routes_data.o")
 echo "${#jobs[@]} files to compile"
 printf '%s\n' "${jobs[@]}" | xargs -P "$JOBS" -I{} sh -c '{} || exit 255'
-gcc -o "$OUT/MKDD-NX.exe" "$OUT"/obj/*.o -static -mwindows -l:libzstd.a -l:libSDL2.a -l:liblzma.a -lm -lpthread -lwinmm -lpsapi -lws2_32 -lgdi32 -lopengl32     -lcomctl32 -lcomdlg32 -lshell32 -limm32 -lole32 -loleaut32 -lversion -luuid -ladvapi32 -lsetupapi -lcfgmgr32 -ldinput8 -luxtheme -ldwmapi
+gcc -o "$OUT/MKDD-NX.exe" "$OUT"/obj/*.o -static -mwindows -l:libzstd.a -l:libSDL2.a -l:liblzma.a -lm -lpthread -lwinmm -lpsapi -lws2_32 -lgdi32 -lopengl32     -lcomctl32 -lcomdlg32 -lshell32 -limm32 -lole32 -loleaut32 -lversion -luuid -ladvapi32 -lsetupapi -lcfgmgr32 -ldinput8 -luxtheme -ldwmapi -lwinhttp -lbcrypt
 echo "built $OUT/MKDD-NX.exe ($VER)"

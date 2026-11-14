@@ -43,7 +43,7 @@ typedef struct {
     bool karts;        /* EXTRA KARTS: load mods/karts, from the next start */
     bool audio;        /* STEREO MUSIC: MKDD Plus plays the streams in mods/audio, from the next start */
     int language;      /* MODS > LANGUAGE, from the next start: LANG_NAMES index (0 English, the USA game's); the
-                        * others need their files in mods/lang/<name> (from a PAL disc, by MKDD-NX Tools) */
+                        * others need their files in mods/lang/<name> (from a PAL or Japanese disc, by MKDD-NX Tools) */
     char mod[16];      /* the mod to play, from the next start: "auto" (the first found), "off" or a MODS key */
     int fov[2];        /* race camera field of view for 4:3 / 16:9: 0 normal (the game's), 1 wide, 2 wider, 3 widest, 4 wideee */
     int aniso;         /* texture filtering: 0 normal, 1-4 anisotropic 2x / 4x / 8x / 16x */
@@ -135,6 +135,10 @@ void menu_loading(int w, int h, const char *line1, const char *line2, float prog
 void menu_border(int w, int h);
 /* Character select with character packs: the page above the grid, each player's variant bottom right. */
 void menu_char_hint(int w, int h);
+/* the trick guide over a trick battle's pause screen (runtime/trick.c g_trick_guide), or its "Y TRICK GUIDE" hint there */
+void menu_trick_guide(int w, int h);
+/* the trick track picker over a trick battle's stage page (runtime/trick.c g_tp_page) */
+void menu_trick_pick(int w, int h);
 /* What the start-up found: the mods usable in mods/ (bit n - 1 for MODS[n - 1]) and the one this
  * session plays (0: none). */
 void menu_set_mods(unsigned found, unsigned running);
@@ -149,10 +153,11 @@ void menu_set_audio(bool found, bool running);
 bool mod_is_plus(unsigned n);
 /* The mod the MOD setting picks among the found ones (bit mask as above): 0 none, n = MODS[n - 1]. */
 unsigned mods_pick(unsigned found);
-/* MODS > LANGUAGE: the names (the PAL disc's folder names, and the game's language numbers), the ones
+/* MODS > LANGUAGE: the names (the PAL and Japanese discs' folder names; hle.c turns the index into the
+ * game's language number), the ones
  * installed in mods_dir/lang (bit n: LANG_NAMES[n]), the one to play (0 English when it isn't
  * installed), and which one this session plays */
-#define LANG_COUNT 5
+#define LANG_COUNT 6
 extern const char *const LANG_NAMES[LANG_COUNT];
 unsigned langs_find(const char *mods_dir);
 int langs_pick(unsigned found);

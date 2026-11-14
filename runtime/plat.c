@@ -35,7 +35,7 @@ static struct { void *mirror, *mem; size_t size; } s_stacks[128];
 int g_plat_stacks, g_plat_unmap_ok, g_plat_unmap_fail, g_plat_unmap_gone;
 unsigned g_plat_unmap_rc;
 uint64_t g_plat_unmap_addr[3];
-int g_plat_quit_count; /* threads that ended themselves at the last plat_pause_threads */
+int g_plat_quit_count, g_plat_paused; /* threads that ended themselves / were paused at the last plat_pause_threads */
 void plat_pause_threads(void) {
     /* threads waiting on a condition end themselves (pcond_wait_ns); then the rest are paused */
     int before = 0, after = 0, n = __atomic_load_n(&s_nthreads, __ATOMIC_ACQUIRE);
@@ -51,7 +51,7 @@ void plat_pause_threads(void) {
     if (n > 128) n = 128;
     for (int i = 0; i < n; i++) {
         Thread *t = __atomic_load_n(&s_threads[i], __ATOMIC_ACQUIRE);
-        if (t) svcSetThreadActivity(t->handle, ThreadActivity_Paused);
+        if (t) svcSetThreadActivity(t->handle, ThreadActivity_Paused), g_plat_paused++;
     }
     svcSleepThread(20000000); /* a thread in the middle of a system call stops when it returns */
     /* every stack still mapped (a mapping already gone just fails: harmless) */
@@ -189,9 +189,28 @@ uint64_t plat_now_ns(void) {
 
 uint64_t plat_unix_seconds(void) { return (uint64_t)time(NULL); }
 
+#ifdef __SWITCH__
+/* plat_pause_threads' window: a thread started here that sleeps or yields ends itself too (as in
+ * pcond_wait_ns), or it stays paused and keeps a thread of the process's limit. Under hbl the next
+ * .nro runs in this same process: a few launches from hbmenu of leftover threads (parked guest
+ * threads, the timer, the profiler) and the game thread couldn't start (hung on BOOTING). */
+static void quit_check(void) {
+    if (__builtin_expect(s_quitting == 1, 0) && t_slot >= 0) {
+        if (t_slot < 128) __atomic_store_n(&s_threads[t_slot], NULL, __ATOMIC_RELEASE);
+        pthread_exit(NULL);
+    }
+}
+#endif
+
 void plat_sleep_ns(uint64_t ns) {
 #ifdef __SWITCH__
-    svcSleepThread((s64)ns);
+    for (;;) { /* in slices of at most 100 ms, so a long sleep sees the quit */
+        quit_check();
+        uint64_t step = ns < 100000000ull ? ns : 100000000ull;
+        svcSleepThread((s64)step);
+        if ((ns -= step) == 0) break;
+    }
+    quit_check();
 #else
     struct timespec ts = {(time_t)(ns / 1000000000ull), (long)(ns % 1000000000ull)};
     while (nanosleep(&ts, &ts) == -1 && errno == EINTR) {}
@@ -208,6 +227,7 @@ uint32_t plat_thread_handle(void) {
 
 void plat_yield(void) {
 #ifdef __SWITCH__
+    quit_check();
     svcSleepThread(0);
 #else
     sched_yield();

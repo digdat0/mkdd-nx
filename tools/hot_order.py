@@ -1,6 +1,8 @@
 """Linker section order from profiles (switch/prof_switch.c), so the code that runs sits together.
 
-usage: py -3 tools/hot_order.py out.ld MKDD-NX.elf mkdd_prof.bin[:from:to] ...
+usage: py -3 tools/hot_order.py out.ld MKDD-NX.elf mkdd_prof.bin[:from:to][@other.elf] ...
+
+@other.elf: the build that recorded that profile, when it is not MKDD-NX.elf.
 
 The game's text is about 50 MB with the running code scattered through it. Each thread's functions go
 in order of how often they were sampled, the game thread's first; on the stacks count too, so a
@@ -16,14 +18,22 @@ K_GAME, K_GPU, K_RENDER = 1, 3, 5
 
 def main():
     out, elf, profiles = sys.argv[1], sys.argv[2], sys.argv[3:]
-    addrs, names = [], []
-    for line in subprocess.run([NM, "-n", "--defined-only", elf], capture_output=True, text=True, check=True).stdout.splitlines():
-        p = line.split()
-        if len(p) == 3 and p[1] in "tTwW" and not (addrs and addrs[-1] == int(p[0], 16)):
-            addrs.append(int(p[0], 16))
-            names.append(p[2])
+    syms = {}
+
+    def load(path):  # sorted text symbols of one elf (each profile must be read against its own build)
+        if path not in syms:
+            addrs, names = [], []
+            for line in subprocess.run([NM, "-n", "--defined-only", path], capture_output=True, text=True, check=True).stdout.splitlines():
+                p = line.split()
+                if len(p) == 3 and p[1] in "tTwW" and not (addrs and addrs[-1] == int(p[0], 16)):
+                    addrs.append(int(p[0], 16))
+                    names.append(p[2])
+            syms[path] = (addrs, names)
+        return syms[path]
     counts = {K_GAME: Counter(), K_GPU: Counter(), K_RENDER: Counter()}
     for spec in profiles:
+        spec, _, pelf = spec.partition("@")
+        addrs, names = load(pelf or elf)
         m = re.fullmatch(r"(.+):([\d.]+):([\d.]+)", spec)
         path, t0, t1 = (m[1], float(m[2]), float(m[3])) if m else (spec, 0, 1e12)
         data = open(path, "rb").read()

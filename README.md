@@ -13,11 +13,12 @@ Note: This is an AI assisted project.
 
 - Nintendo Switch (`.nro`) and Windows x64 (`.exe` with a launcher: see [Windows](https://github.com/digdat0/mkdd-nx/wiki/Windows)).
 - Plays the USA release (GM4E01) from `.iso`, `.gcm`, `.ciso` or `.rvz`.
-- In-game updater on Switch.
+- In-game updater (Switch: the menu's UPDATE; Windows: the launcher's Updates page or the menu's UPDATE; MKDD-NX Tools: its Updates page).
 
 **Gameplay**
 
-- **Tricks:** flips, spins, doubles, combos and rider tricks off ramps, with a landing boost. See [Tricks](https://github.com/digdat0/mkdd-nx/wiki/Tricks).
+- **Trick Style:** a new mode on the mode page (1 or 2 players): 2-minute trick battles against CPUs on 16 original tracks in 4 cups, one track or a whole cup, scored on tricks, combos and signature tricks. Built on your machine from your own disc, nothing from the game in the download. See [Tricks](https://github.com/digdat0/mkdd-nx/wiki/Tricks#trick-style-tracks-and-cups).
+- **Tricks:** hold the D-pad in the air to flip and spin, double-tap for specials, rider tricks and poses on JUMP; landings are graded and a straight one boosts. See [Tricks](https://github.com/digdat0/mkdd-nx/wiki/Tricks).
 - **Drafting:** a slipstream boost behind other karts.
 - **Single player battles** against three CPUs on the game's 6 arenas and MKDD Plus's 24. See [Battle mode](#battle-mode).
 - **Versus with CPUs:** 2 to 4 player Versus races filled with computer karts, up to 8. See [Versus with CPUs](#versus-with-cpus).
@@ -44,14 +45,14 @@ Note: This is an AI assisted project.
 - Up to 4x resolution docked and 3x handheld, with an Auto mode that keeps the frame rate.
 - Anisotropic filtering and colour options.
 - Race HUD styles: Classic, Modern and Dashboard (speed dial and rear-view mirror), MPH or KMH, every piece can be hidden.
-- [Coins](https://github.com/digdat0/mkdd-nx/wiki/Coins) on every race course in Grand Prix and Versus, mods' courses too; place your own with MKDD-NX Tools (`coins/`).
+- [Coins](https://github.com/digdat0/mkdd-nx/wiki/Coins) on every race course in Grand Prix and Versus, mods' courses too; place your own with MKDD-NX Tools (`mods/coins/`).
 
 **Mods** (see [Mods](#mods))
 
 - [MKDD Plus](https://github.com/digdat0/mkdd-nx/wiki/MKDD-Plus) 3.3, with its stereo music.
 - [Retro Track Grand Prix](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix) 2.1, Baby Mode and Classic.
 - [HD textures](https://github.com/digdat0/mkdd-nx/wiki/HD-Textures-App).
-- French, German, Italian or Spanish, with the [language files](https://github.com/digdat0/mkdd-nx/wiki/Languages) from your own PAL disc.
+- French, German, Italian or Spanish, with the [language files](https://github.com/digdat0/mkdd-nx/wiki/Languages) from your own PAL disc, or Japanese from your own Japanese disc.
 - Up to 256 [custom characters](https://github.com/digdat0/mkdd-nx/wiki/Characters-App) and [extra karts](https://github.com/digdat0/mkdd-nx/wiki/Extra-Karts).
 - Mario Kart Wii [drivers](https://github.com/digdat0/mkdd-nx/wiki/Wii-Characters) and [karts](https://github.com/digdat0/mkdd-nx/wiki/Wii-Karts), converted with MKDD-NX Tools; characters can also be exported for a real GameCube.
 
@@ -94,8 +95,9 @@ sdmc:/switch/MKDD-NX/
     mods/Mario Kart Double Dash RTGP Classic OST 1_4.xdelta   (optional: RTGP Classic, the same way)
     mods/characters/         (optional: character packs)
     mods/audio/              (optional: MKDD Plus Expansion Pack, stereo music)
-    mods/lang/               (optional: French, German, Italian, Spanish from your PAL disc)
-    coins/                   (optional: your own coin layouts, from MKDD-NX Tools' Coins tab)
+    mods/lang/               (optional: French, German, Italian, Spanish from your PAL disc; Japanese from your Japanese disc)
+    mods/coins/              (optional: your own coin layouts, from MKDD-NX Tools' Coins tab)
+    mods/routes/             (optional: your own battle routes, from MKDD-NX Tools' Battle Routes tab)
 ```
 
 The first start takes longer while shaders are compiled; later starts reuse them. Press **-** at
@@ -174,7 +176,7 @@ each lighting after its share of the hits, and being hit takes one hit off.
   and run when they're down to their last balloon. One stuck on a wall or an object backs out and
   rejoins its route. Smaller arenas are fiercer, bigger ones calmer.
 - **Your own routes:** MKDD-NX Tools' Battle Routes (Windows and Mac, from the releases) edits them; a
-  `routes/<key>.txt` in the app folder is used instead of the built-in route for that arena. See the
+  `mods/routes/<key>.txt` in the app folder (or the older `routes/`) is used instead of the built-in route for that arena. See the
   [Route Editor wiki page](https://github.com/digdat0/mkdd-nx/wiki/Route-Editor), and [docs/BATTLE_ROUTES.md](docs/BATTLE_ROUTES.md) for the
   automatic route maker and the file format. The built-in routes are in the [routes](routes) folder.
 
@@ -219,6 +221,7 @@ and your disc image is never changed. Step-by-step instructions are on the wiki.
 | [RTGP Baby Mode](https://gamebanana.com/mods/download/594415) 1.4 (`rtgp_baby_mode_1_4.zip`) | RTGP made easier, for newcomers | `mods/Baby Mode 1_4.xdelta`, installed the same way | [wiki: Baby Mode and Classic](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix#baby-mode-and-classic) |
 | [RTGP Classic](https://gamebanana.com/mods/download/594415) 1.4 (`mario_kart_double_dash_rtgp_classic_ost.zip`) | RTGP with the classic soundtrack | `mods/Mario Kart Double Dash RTGP Classic OST 1_4.xdelta`, installed the same way | [wiki: Baby Mode and Classic](https://github.com/digdat0/mkdd-nx/wiki/Retro-Track-Grand-Prix#baby-mode-and-classic) |
 | Your own European (PAL) disc, GM4P01 | the game in French, German, Italian or Spanish (standard game only; **Mods > Language**) | `mods/lang/`, copied from the disc by MKDD-NX Tools | [wiki: Languages](https://github.com/digdat0/mkdd-nx/wiki/Languages) |
+| Your own Japanese disc, GM4J01 | the game in Japanese (standard game only; **Mods > Language**; MKDD-NX's own JUMP and REAR VIEW labels stay in English) | `mods/lang/Japanese`, copied from the disc by MKDD-NX Tools | [wiki: Languages](https://github.com/digdat0/mkdd-nx/wiki/Languages) |
 | [MKDD HD texture pack](https://sites.google.com/view/mkddhd/home-page) (English) | the game's textures in HD | `mods/hd/hd-textures.bin`, converted once on a computer | [wiki: HD Textures](https://github.com/digdat0/mkdd-nx/wiki/HD-Textures-App) |
 | Custom characters from [GameBanana](https://gamebanana.com/games/6555) and the [MKDD wiki](https://mkdd.org/wiki/List_of_Custom_Characters/) | up to 256 extra characters on more select screen pages | `mods/characters/` | [wiki: Characters App](https://github.com/digdat0/mkdd-nx/wiki/Characters-App) |
 | Mario Kart Wii drivers (`.szs`) | Wii characters, converted on a computer | `mods/characters/` | [wiki: Wii Characters](https://github.com/digdat0/mkdd-nx/wiki/Wii-Characters) |

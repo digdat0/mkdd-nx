@@ -225,7 +225,7 @@ static VarVoice *load_locked(int v) {
             for (unsigned k = 0; *end == '.' && k < s_arc[a].n && !w; k++)
                 if (s_arc[a].w[k].id == id) w = &s_arc[a].w[k];
             char path[288];
-            snprintf(path, sizeof path, "%s/%s", sub, names[i]);
+            snprintf(path, sizeof path, "%.255s/%.15s", sub, names[i]);
             if (!w || w->bytes < 2 * MATCH || (uint64_t)w->off + w->bytes > s_arc[a].aw_size || w->rate <= 0) {
                 rt_log("charvoice: %s: no wave %s in %s", path, names[i], ARC_FILES[a]);
                 continue;
@@ -283,8 +283,8 @@ static void preload(void *arg) {
     pmutex_lock(&s_load_lock);
     size_t used = s_used;
     pmutex_unlock(&s_load_lock);
-    rt_log("charvoice: %u voices read ahead in %llu ms (%zu KiB)", n,
-           (unsigned long long)((plat_now_ns() - t0) / 1000000), used >> 10);
+    rt_log("charvoice: %u voices read ahead in %llu ms (%lu KiB)", n,
+           (unsigned long long)((plat_now_ns() - t0) / 1000000), (unsigned long)(used >> 10));
 }
 
 /* The disc must be open: tables() read before it would turn the voices off for the session. */

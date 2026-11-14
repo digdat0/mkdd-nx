@@ -26,6 +26,7 @@
 #include "charpack_art.h"
 #include "hdtex.h"
 #include "update.h"
+#include "mods_setup.h"
 const char g_build_stamp[] = __DATE__ " " __TIME__;
 #include "../runtime/native.h"
 #include "../runtime/table.h"
@@ -148,66 +149,6 @@ static void fatal(const char *line1, const char *line2) {
     exit(0);
 }
 
-/* The disc image in the app folder. With several, the fastest to read wins: .iso / .gcm, then
- * .ciso, then .rvz (the same game either way: each is checked against the supported main.dol). */
-static bool find_disc(char *out, size_t n) {
-    static const char *EXT[] = {".iso", ".gcm", ".ciso", ".rvz"};
-    static const int RANK[] = {0, 0, 1, 2};
-    DIR *d = opendir(APP_DIR);
-    if (!d) return false;
-    struct dirent *e;
-    int best = 99;
-    while ((e = readdir(d))) {
-        const char *dot = strrchr(e->d_name, '.');
-        for (int i = 0; dot && i < 4; i++)
-            if (!strcasecmp(dot, EXT[i]) && RANK[i] < best) {
-                snprintf(out, n, APP_DIR "/%s", e->d_name);
-                best = RANK[i];
-            }
-    }
-    closedir(d);
-    if (best < 99) rt_log("disc: using %s", out);
-    return best < 99;
-}
-
-/* The mods this build carries code for, extracted to mods/<key> (sys/main.dol, sys/fst.bin,
- * files/): bit n - 1 for MODS[n - 1]. */
-static unsigned find_mods(void) {
-    unsigned found = 0;
-    for (unsigned i = 0; i < MOD_COUNT && i < 32; i++) {
-        char dir[256], p[300];
-        struct stat st;
-        snprintf(dir, sizeof dir, MODS_DIR "/%s", MODS[i].key);
-        if (stat(dir, &st) != 0) continue;
-        bool ok = true;
-        snprintf(p, sizeof p, "%s/sys/main.dol", dir), ok = ok && stat(p, &st) == 0;
-        snprintf(p, sizeof p, "%s/sys/fst.bin", dir), ok = ok && stat(p, &st) == 0;
-        snprintf(p, sizeof p, "%s/files", dir), ok = ok && stat(p, &st) == 0 && S_ISDIR(st.st_mode);
-        if (ok) found |= 1u << i, rt_log("mod: found %s (%s)", dir, MODS[i].name);
-        else rt_log("mod: %s needs sys/main.dol, sys/fst.bin and files/", dir);
-    }
-    return found;
-}
-
-/* The folder of mods/audio with .ast files, in the layouts a copy can land in: its download's files/ folder
- * as it comes, the folder's contents or the streams alone. NULL: none. */
-static const char *find_audio(void) {
-    static const char *const DIRS[] = {MODS_DIR "/audio/files/AudioRes/Stream", MODS_DIR "/audio/AudioRes/Stream", MODS_DIR "/audio"};
-    for (unsigned i = 0; i < sizeof DIRS / sizeof *DIRS; i++) {
-        DIR *d = opendir(DIRS[i]);
-        if (!d) continue;
-        unsigned n = 0;
-        struct dirent *e;
-        while ((e = readdir(d))) {
-            const char *dot = strrchr(e->d_name, '.');
-            if (dot && !strcasecmp(dot, ".ast")) n++;
-        }
-        closedir(d);
-        if (n) { rt_log("mod: stereo music: %u streams in %s", n, DIRS[i]); return DIRS[i]; }
-    }
-    return NULL;
-}
-
 /* A choice of two on the loading screen: up/down, then A. */
 static int choose(const char *title, const char *a, const char *b, int sel, const char *hint) {
     const char *opts[2] = {a, b};
@@ -315,8 +256,8 @@ static bool file_listed(const char *list, const char *name, long long size, bool
         hit = fgets(a, sizeof a, f) && fgets(b, sizeof b, f) && (a[strcspn(a, "\r\n")] = 0, b[strcspn(b, "\r\n")] = 0, 1) &&
               !strcmp(a, name) && !strcmp(b, want);
     } else {
-        char line[400], key[400];
-        snprintf(key, sizeof key, "%s %s %s", name, want, mods_sig());
+        char line[640], key[640];
+        snprintf(key, sizeof key, "%.255s %.100s %.256s", name, want, mods_sig());
         while (!hit && fgets(line, sizeof line, f)) line[strcspn(line, "\r\n")] = 0, hit = !strcmp(line, key);
     }
     fclose(f);
@@ -339,6 +280,12 @@ static bool install_progress(void *ud, uint64_t done, uint64_t total) {
 
 /* Each mod file in mods/ (.xdelta / .xd3 / .vcdiff patch of the clean disc, or a patched .iso /
  * .gcm) not installed yet: say which mod it is, offer to install it, then to delete the file. */
+/* a picked mod that didn't load: said on screen for 3 s before the standard game starts */
+static void mod_failed(void) {
+    for (int i = 0; i < 180 && appletMainLoop(); i++)
+        screen("THE MOD COULD NOT BE LOADED: A FILE IS MISSING", "STARTING THE STANDARD GAME (SEE LOGS/MKDD.LOG)", 0.1f);
+}
+
 static void install_mods(void) {
     DIR *d = opendir(MODS_DIR);
     if (!d) return;
@@ -355,7 +302,7 @@ static void install_mods(void) {
     for (int i = 0; i < count; i++) {
         char path[512], err[256], line1[96], line2[96];
         struct stat st;
-        snprintf(path, sizeof path, MODS_DIR "/%s", names[i]);
+        snprintf(path, sizeof path, MODS_DIR "/%.255s", names[i]);
         if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
         bool done = file_listed(MODS_SEEN, names[i], (long long)st.st_size, true);
         for (unsigned m = 0; m < MOD_COUNT && !done; m++) {
@@ -791,6 +738,7 @@ static void update_pads(void) {
         }
     }
     g_p1_gamecube = s_player_style[0] & HidNpadStyleTag_NpadGc;
+    g_p1_sideways = s_player_src[0] >= 0 && single_joycon(s_player_style[0]);
 
     if (s_pad_quiet) s_pad_quiet--;
     /* The - menu: each player's - opens it for them (player 1: everything, players 2-4: their camera
@@ -851,6 +799,11 @@ static void update_pads(void) {
             if (drive == 1)
                 trick |= (uint32_t)((b & HidNpadButton_Up ? TRICK_UP : 0) | (b & HidNpadButton_Down ? TRICK_DOWN : 0) |
                                     (b & HidNpadButton_Left ? TRICK_LEFT : 0) | (b & HidNpadButton_Right ? TRICK_RIGHT : 0)) << 4 * p;
+            /* the signature: ZL + ZR held (a GameCube pad's L + R, a sideways Joy-Con's SL + SR) */
+            u64 sig2 = st & HidNpadStyleTag_NpadGc ? HidNpadButton_L | HidNpadButton_R
+                       : single                    ? HidNpadButton_LeftSL | HidNpadButton_LeftSR
+                                                   : HidNpadButton_ZL | HidNpadButton_ZR;
+            if (drive == 1 && (b & sig2) == sig2) trick |= 1u << (TRICK_SIG_BIT + p);
             HidAnalogStickState l = padGetStickPos(pad, single && (st & HidNpadStyleTag_NpadJoyRight) ? 1 : 0);
             if (single) { /* the system reports it as held upright: turn it a quarter, rail (SL / SR) on top */
                 s32 x = l.x;
@@ -983,7 +936,7 @@ static void game_thread(void *arg) {
  * heap / code / unmapped, logged. The loader (hbl) takes the heap back after we exit and aborts
  * with 2001-0106 when any of it is still mapped elsewhere, borrowed or attributed (thread stack
  * mirrors, transfer memory, GPU-mapped buffers): this names what is left. */
-extern int g_plat_quit_count; /* plat.c */
+extern int g_plat_quit_count, g_plat_paused; /* plat.c */
 static void exit_memory_report(void) {
     u64 addr = 0;
     unsigned n = 0, odd = 0;
@@ -1192,73 +1145,13 @@ int main(int argc, char **argv) {
 
     char disc[512], err[512];
     screen("LOOKING FOR THE DISC IMAGE", NULL, 0.05f);
-    if (!find_disc(disc, sizeof disc)) fatal("NO DISC IMAGE FOUND", "PUT YOUR GM4E01 .ISO OR .RVZ IN /SWITCH/MKDD-NX/");
+    if (!find_disc(APP_DIR, disc, sizeof disc)) fatal("NO DISC IMAGE FOUND", "PUT YOUR GM4E01 .ISO OR .RVZ IN /SWITCH/MKDD-NX/");
     if (disc_open(disc, err, sizeof err)) {
         menu_font_load();  /* the loading screen's letters */
-        /* A mod in mods/<key>: played when it loads and the menu's MODS page picks it (from here on
-         * the disc is the mod's); otherwise, or if it can't be used, the standard game (the disc is
-         * left as it was) */
+        trickpak_install(); /* the Trick Style files, on the first start of a new pack (runtime/trickpak.c) */
         if (MOD_COUNT) install_mods();
-        unsigned found = find_mods(), pick = mods_pick(found);
-        const char *audio = find_audio();
-        if (found && !pick) rt_log("mod: none picked in the menu (MODS: %s); playing the standard game", g_set.mod);
-        if (pick) {
-            const ModInfo *mi = &MODS[pick - 1];
-            char dir[256], line[96];
-            snprintf(dir, sizeof dir, MODS_DIR "/%s", mi->key);
-            snprintf(line, sizeof line, "LOADING %s", mi->name);
-            for (char *t = line; *t; t++) *t = (char)toupper((unsigned char)*t);
-            screen(line, NULL, 0.1f);
-            if (audio && g_set.audio && mod_is_plus(pick)) disc_overlay_set_streams(audio);
-            if (disc_overlay(dir, err, sizeof err)) {
-                rt_log("mod: playing %s", mi->name);
-                s_mod_key = mi->key;
-                snprintf(dir, sizeof dir, SAVE_DIR "/%s", mi->key);
-                mkdir(dir, 0777);
-                offer_save_copy(dir, mi->key);
-                snprintf(line, sizeof line, "%s/slotA.bin", dir);
-                memcard_set_path(line);
-            } else {
-                rt_log("mod: %s; playing the standard game", err);
-                found &= ~(1u << (pick - 1)); /* failed to load: not offered */
-                pick = 0;
-                for (int i = 0; i < 180 && appletMainLoop(); i++) { /* 3 s */
-                    screen("THE MOD COULD NOT BE LOADED: A FILE IS MISSING", "STARTING THE STANDARD GAME (SEE LOGS/MKDD.LOG)", 0.1f);
-                }
-            }
-        }
-        /* MODS > LANGUAGE: a PAL disc's language files from mods/lang, for the standard game only (a level
-         * pack's menus and course names are its own, in English) */
-        static char lang_dir[256];
-        unsigned langs = langs_find(MODS_DIR);
-        int lang = pick ? 0 : langs_pick(langs);
-        if (pick && langs_pick(langs)) rt_log("lang: %s with a level pack: the game stays in English", LANG_NAMES[langs_pick(langs)]);
-        if (lang) {
-            snprintf(lang_dir, sizeof lang_dir, MODS_DIR "/lang/%s", LANG_NAMES[lang]);
-            disc_overlay_set_language(lang_dir, LANG_NAMES[lang]);
-            if (!disc_overlay(NULL, err, sizeof err)) rt_log("lang: %s; the game stays in English", err);
-        }
-        if (lang && !disc_overlay_language()) lang = 0;
-        g_language = (uint32_t)lang;
-        menu_set_langs(langs, lang);
-        menu_set_mods(found, pick);
-        {
-            struct stat st;
-            bool kf = stat(MODS_DIR "/karts", &st) == 0 && S_ISDIR(st.st_mode);
-            if (kf && g_set.karts) kartpack_scan(MODS_DIR "/karts");
-            menu_set_karts(kf, kf && g_set.karts);
-        }
-        menu_set_audio(audio != NULL, disc_overlay_stream_count() != 0);
-        pause_art_init();  /* the pause screen's controller picture, drawn as a Pro Controller */
-        /* driver variants, unless EXTRA CHARACTERS is off (then nothing of them is read) */
-        {
-            struct stat st;
-            bool found = stat(MODS_DIR "/characters", &st) == 0 && S_ISDIR(st.st_mode);
-            if (found && g_set.characters) charpack_scan(MODS_DIR "/characters");
-            menu_set_chars(found, found && g_set.characters);
-        }
-        charpack_art_init();
-        charvoice_preload();
+        static const ModsHost host = {MODS_DIR, SAVE_DIR, screen, offer_save_copy, mod_failed};
+        s_mod_key = mods_setup(&host); /* mods_setup.c */
         render_set_subst(subst_texture);
         render_set_below(pause_art_below);
         render_set_shift(pause_art_shift);
@@ -1510,6 +1403,8 @@ int main(int argc, char **argv) {
             if (!menu_is_open()) racing = race_tick && armTicksToNs(armGetSystemTick() - race_tick) < 500000000ull;
             if (g_set.border && !wide && !title && racing) menu_border(w, h);
             if (!menu_is_open() && charpack_select_active()) menu_char_hint(w, h);
+            menu_trick_pick(w, h);
+            menu_trick_guide(w, h);
             menu_draw(w, h, s_fps, perf);
         } else menu_loading(w, h, "BOOTING", NULL, 0.8f); /* (not screen(): gfx_swap below would then show a black frame after each) */
         render_gpu_timer_end();
@@ -1555,7 +1450,7 @@ int main(int argc, char **argv) {
             t_render = t_swap = t_present = 0;
             stat_tick = now;
             rendered = 0;
-            diag_flush();
+            /* (the watchdog thread writes and flushes the log: no SD card write on this thread) */
         }
     }
 out:
@@ -1571,7 +1466,7 @@ out:
     SDL_Quit();
     /* The game, guest and decoder threads would keep running on memory the loader takes back. */
     plat_pause_threads(); /* waiting threads end themselves, the rest pause (hbmenu needs threads) */
-    rt_log("exit: %d threads ended, the rest paused", g_plat_quit_count);
+    rt_log("exit: %d threads ended, %d paused (each paused one keeps a thread of the next launch's limit)", g_plat_quit_count, g_plat_paused);
     eth_exit();
     plat_net_exit();
     exit_memory_report();

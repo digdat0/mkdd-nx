@@ -143,18 +143,26 @@ bool psmtx_call(Ctx *c, int which) {
 #define SECRET_KARTS_ALL 0x1FFF
 #define SECRET_GAME 0x803BC1C6u
 #define SECRET_GAME_ALL 0x01FF
-static bool s_unlock;
+#define SECRET_GAME_MAPS 0x0180 /* GameFlag 7 Luigi's Mansion, 8 Tilt-A-Kart: the stage page's last two */
+static bool s_unlock, s_maps;     /* unlock all (the cheat); the two battle stages (a trick battle's six tracks) */
+static bool s_held[2];            /* bits raised: s_earned holds the player's own */
 static uint16_t s_earned[2];
-
+static const uint32_t SECRET_AT[2] = {SECRET_KARTS, SECRET_GAME};
+static uint16_t secret_want(int k) {
+    uint16_t m = s_unlock ? (k ? SECRET_GAME_ALL : SECRET_KARTS_ALL) : 0;
+    if (k && s_maps) m |= SECRET_GAME_MAPS;
+    return m;
+}
 static void apply_unlock(void) {
-    const uint32_t addr[2] = {SECRET_KARTS, SECRET_GAME};
-    const uint16_t all[2] = {SECRET_KARTS_ALL, SECRET_GAME_ALL};
     for (int k = 0; k < 2; k++) {
-        uint16_t v = (uint16_t)m_read_be(addr[k], 2);
-        if ((v & all[k]) != all[k]) {
-            s_earned[k] = v;
-            m_write_be(addr[k], 2, v | all[k]);
+        uint16_t m = secret_want(k), v = (uint16_t)m_read_be(SECRET_AT[k], 2);
+        if (!m) {
+            if (s_held[k]) m_write_be(SECRET_AT[k], 2, s_earned[k]), s_held[k] = false; /* the earned bits back */
+            continue;
         }
+        if (!s_held[k]) s_earned[k] = v, s_held[k] = true;
+        else s_earned[k] |= (uint16_t)(v & ~m); /* bits the game set meanwhile, outside ours: earned */
+        if ((v & m) != m) m_write_be(SECRET_AT[k], 2, v | m);
     }
 }
 void cheats_unlock_all(void) { s_unlock = true; apply_unlock(); }
@@ -162,17 +170,21 @@ void cheats_set(bool on) {
     if (on) { cheats_unlock_all(); return; }
     if (!s_unlock) return;
     s_unlock = false;
-    m_write_be(SECRET_KARTS, 2, s_earned[0]);
-    m_write_be(SECRET_GAME, 2, s_earned[1]);
+    apply_unlock();
+}
+/* the trick battles' six stages, session only like the cheat (battle.c, while the competition is on) */
+void cheats_trick_maps(bool on) {
+    if (on == s_maps) return;
+    s_maps = on;
+    apply_unlock();
 }
 bool cheats_active(void) { return s_unlock; }
-void cheats_tick(void) { if (s_unlock) apply_unlock(); }
+void cheats_tick(void) { if (s_unlock || s_maps) apply_unlock(); }
 void cheats_before_save(void) {
-    if (!s_unlock) return;
-    m_write_be(SECRET_KARTS, 2, s_earned[0]);
-    m_write_be(SECRET_GAME, 2, s_earned[1]);
+    for (int k = 0; k < 2; k++)
+        if (s_held[k]) m_write_be(SECRET_AT[k], 2, s_earned[k]);
 }
-void cheats_after_save(void) { if (s_unlock) apply_unlock(); }
+void cheats_after_save(void) { if (s_unlock || s_maps) apply_unlock(); }
 
 /* LAPS: RaceMgr::sForceTotalLapNum (r13 - 0x5c34, s16), the game's own debug override: nonzero
  * becomes the lap count when a race's RaceMgr is made (the same address in Plus and RTGP). Set
@@ -187,10 +199,8 @@ void laps_tick(void) {
     if (m_read_be(LAPS_FORCE, 2) != want) m_write_be(LAPS_FORCE, 2, want);
 }
 void cheats_after_load(void) {
-    if (!s_unlock) return;
-    s_earned[0] = (uint16_t)m_read_be(SECRET_KARTS, 2);
-    s_earned[1] = (uint16_t)m_read_be(SECRET_GAME, 2);
-    apply_unlock();
+    s_held[0] = s_held[1] = false; /* the loaded bits are the player's own */
+    if (s_unlock || s_maps) apply_unlock();
 }
 
 /* ---- MKDD Plus 3.3: class order ----

@@ -13,6 +13,7 @@
 #include "native_impl.h"
 #include "rt.h"
 #include "coins.h"
+#include "trickfx.h"
 
 #define PM_THIS 0x803CB6D8u     /* PauseManager::mThis: +0 net (no pause), +0x11 game over, +0x18 pause end */
 #define PM_IS_PAUSE 0x803CB6DCu /* PauseManager::mIsPause */
@@ -69,9 +70,10 @@ uint64_t i_tstPause__12PauseManagerFv(Ctx *c, uint8_t *M, ARGS) {
  * session up); the race sees no choice meanwhile. */
 uint64_t i_getPauseChoice__12PauseManagerFv(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
+    if (g_trick_comp && !g_trick_cup && ld32(c, M, PM_CHOICE) == 6 && ld32(c, M, 0x803B1464u) == 4) mst(c, M, PM_CHOICE, 4, CHOICE_QUIT); /* a trick battle's QUIT on the fifth line (above) */
     ctx_call_orig(c, g_native_addr[NAT_getPauseChoice__12PauseManagerFv]);
     uint32_t r = (uint32_t)ctx_gpr(c, 3);
-    if (r == CHOICE_RETRY && lr_in((uint32_t)RD(c, 0x1020, 4), CHECK_CHOICE, 428)) coins_restart();
+    if (r == CHOICE_RETRY && lr_in((uint32_t)RD(c, 0x1020, 4), CHECK_CHOICE, 428)) coins_restart(), battle_restart(), fx_restart();
     if (r != CHOICE_QUIT || !lan_race(c, M)) return r;
     if (!ld32(c, M, RESET_STATE)) {
         if (mld(c, M, RESET_STATE + 9, 1)) {
@@ -90,14 +92,40 @@ uint64_t i_getPauseChoice__12PauseManagerFv(Ctx *c, uint8_t *M, ARGS) {
 uint64_t i___ct__7Pause2DFP7JKRHeap(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t info = lan_race(c, M);
+    bool cup = !info && g_trick_comp && g_trick_cup; /* a trick cup's: the Grand Prix's too (trick.c cup_pause_pad) */
+    if (cup) {
+        uint32_t mgr = ld32(c, M, RACE_MGR);
+        info = ram_ptr(mgr) ? ld32(c, M, mgr + 0x38) : 0;
+        if (!ram_ptr(info)) info = 0, cup = false;
+    }
     uint32_t mode = info ? ld32(c, M, info + 8) : MODE_GP;
     if (mode != MODE_GP) {
         mst(c, M, info + 8, 4, MODE_GP);
-        rt_log("lan pause: the pause screen of a Grand Prix (race mode %u)", (unsigned)mode);
+        rt_log("%s: the pause screen of a Grand Prix (race mode %u)", cup ? "trick cup" : "lan pause", (unsigned)mode);
     }
+    uint32_t self = (uint32_t)a0;
     ctx_call_orig(c, g_native_addr[NAT___ct__7Pause2DFP7JKRHeap]);
     if (mode != MODE_GP) mst(c, M, info + 8, 4, mode);
-    return ctx_gpr(c, 3);
+    /* A trick battle (a balloon battle's pause6.blo): no CHANGE BATTLE. Its lines PM1-PM6 (+0x2c, 4 each:
+     * CONTINUE, RETRY, CHANGE STAGE, CHANGE CHARACTER, CHANGE BATTLE, QUIT; selector 0 1 3 4 6 8): the fifth
+     * shows QUIT (changeTexture, vtable +0x114, Mozi_Quit.bti as the Grand Prix's pause2.blo has it) and
+     * the sixth is hidden (J2DPane +0xb0); battle.c trick_pause_skip keeps the selector off 8 and makes
+     * the fifth's choice (6) QUIT's (8). */
+    uint32_t r = (uint32_t)ctx_gpr(c, 3);
+    if (g_trick_comp && !info && !cup && ld32(c, M, 0x803B1464u) == 4 && IS_RAM(self) && r == self) {
+        uint32_t five = ld32(c, M, self + 0x3c), six = ld32(c, M, self + 0x40), vt = IS_RAM(five) ? ld32(c, M, five) : 0;
+        uint32_t fn = IS_RAM(vt) ? ld32(c, M, vt + 0x114) : 0;
+        if (IS_RAM(six) && IS_RAM(fn)) {
+            const uint32_t args[3] = {five, 0x8032B22Cu /* "Mozi_Quit.bti" */, 0};
+            uint32_t old_sp = frame_push(c, M, 0x20);
+            ctx_call_guest(c, fn, args, 3);
+            frame_pop(c, old_sp);
+            mst(c, M, six + 0xb0, 1, 0);
+            rt_log("trick comp: the pause screen without CHANGE BATTLE");
+        }
+        ctx_set_gpr(c, 3, r);
+    }
+    return r;
 }
 
 /* GameAudioMain::setPause (0 resume, 1 pause, 2 leaving): the race's sound goes on behind

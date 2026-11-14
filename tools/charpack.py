@@ -56,8 +56,10 @@ import re
 import shutil
 import struct
 import sys
+import threading
 import types
 import zipfile
+import ui_theme
 
 # ---- characters, in MKDD-NX's order (the select screen's grid) ----
 # id (character.ini base=), name, game driver folder, race2d face, map icon, menu name tag
@@ -165,8 +167,12 @@ def yaz0(b):
                     i += 1
                 else:
                     n += 2
-                for _ in range(n):
-                    out.append(out[-dist])
+                if dist >= n:  # (no overlap: one slice)
+                    s = len(out) - dist
+                    out += out[s:s + n]
+                else:
+                    for _ in range(n):
+                        out.append(out[-dist])
     return bytes(out)
 
 
@@ -1050,12 +1056,17 @@ def enable_drop(root, on_drop, active=None):
     shell32.DragQueryFileW.argtypes = [ctypes.c_void_p, wintypes.UINT, ctypes.c_wchar_p, wintypes.UINT]
     shell32.DragFinish.argtypes = [ctypes.c_void_p]
     shell32.DragAcceptFiles.argtypes = [wintypes.HWND, wintypes.BOOL]
+    takers = getattr(root, "_drop_takers", None)
+    if takers is not None:  # the window already hooked (another tab): one hook, the drop to the tab shown
+        takers.append((on_drop, active))
+        return
+    root._drop_takers = takers = [(on_drop, active)]
     root.update_idletasks()
     hwnd = int(root.wm_frame(), 16)
     old = None
 
     def proc(h, msg, wp, lp):
-        if msg == WM_DROPFILES and (active is None or active()):
+        if msg == WM_DROPFILES:
             n = shell32.DragQueryFileW(wp, 0xFFFFFFFF, None, 0)
             paths = []
             for i in range(n):
@@ -1063,12 +1074,14 @@ def enable_drop(root, on_drop, active=None):
                 shell32.DragQueryFileW(wp, i, buf, 32768)
                 paths.append(buf.value)
             shell32.DragFinish(wp)
-            root.after(10, lambda: on_drop(paths))
+            take = next((f for f, act in reversed(takers) if act is None or act()), None)
+            if take:
+                root.after(10, lambda: take(paths))
             return 0
         return user32.CallWindowProcW(old, h, msg, wp, lp)
 
     cb = WNDPROC(proc)
-    root._drop_proc = cb  # kept alive with the window
+    root._drop_proc = cb  # kept alive with the window (one per window: a second hook would free this one's)
     old = setp(hwnd, GWLP_WNDPROC, ctypes.cast(cb, ctypes.c_void_p))
     shell32.DragAcceptFiles(hwnd, True)
 
@@ -1189,10 +1202,110 @@ def gui(root=None):
     AUTO = "Automatic"
     slot_box = ttk.Combobox(fields, textvariable=slot_v, values=[AUTO] + [b[1] for b in BASES], state="readonly", width=16)
     slot_box.grid(row=0, column=9, padx=4)
-    notes = tk.Text(detail, height=8, wrap="word")
-    notes.pack(fill="both", expand=True, pady=(6, 0))
-    for level, colour in (("ok", "#1a7f37"), ("info", "#555555"), ("warn", "#9a6700"), ("error", "#cf222e")):
+    body = ttk.Frame(detail)
+    body.pack(fill="both", expand=True, pady=(6, 0))
+    pics = ttk.Frame(body)
+    pics.pack(side="right", anchor="n", padx=(8, 0))
+    notes = tk.Text(body, height=8, wrap="word")
+    notes.pack(side="left", fill="both", expand=True)
+    for level, colour in ui_theme.NOTES.items():
         notes.tag_configure(level, foreground=colour)
+
+    # the selected character's model, front and back, each with its own turn (as the Wii tab's preview)
+    VIEW = 220
+    views = []
+    prev = {"parts": None, "seq": 0}
+
+    def show_view(v):
+        parts = prev["parts"]
+        if not parts:
+            return
+        v["seq"] += 1
+        seq, yaw = v["seq"], v["yaw"].get()
+
+        def work():
+            try:
+                import wiichar
+                pic = wiichar.render(parts, VIEW, yaw)
+            except Exception:  # a picture is only a help: never take the window with it
+                pic = None
+            root.after(0, lambda: put(pic))
+
+        def put(pic):
+            if seq != v["seq"] or pic is None or prev["parts"] is not parts:
+                return
+            from PIL import Image, ImageTk
+            sheet = Image.new("RGBA", (VIEW, VIEW), (70, 80, 95, 255))
+            sheet.alpha_composite(pic)
+            v["photo"] = ImageTk.PhotoImage(sheet)
+            v["label"].configure(image=v["photo"], text="", width=VIEW, height=VIEW)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def no_picture(text):
+        for v in views:
+            v["seq"] += 1
+            v["photo"] = None
+            v["label"].configure(image="", text=text, width=30, height=14)
+
+    def preview(c):
+        """the model of c (read in the background), then both views"""
+        prev["seq"] += 1
+        prev["parts"] = None
+        seq = prev["seq"]
+        if not c or "driver.bmd" not in c.files:
+            no_picture("(no driver model)" if c else "")
+            return
+        no_picture("drawing…")
+        disc = state["disc"]
+
+        def work():
+            try:
+                import wiichar
+                files = {n: read(c.files[n]) for n in ("driver.bmd", "kinoko_hair.bmd") if n in c.files}
+                game = None
+                try:  # the game's model only poses the cap the hair hangs from
+                    game = yaz0(disc.driver_file(c.base, "driver.bmd") or b"") if disc else None
+                except Exception:
+                    pass
+                parts = wiichar.preview_parts(files, game or None)
+            except Exception:  # no Pillow, a model the renderer can't draw
+                parts = None
+            root.after(0, lambda: shown(parts))
+
+        def shown(parts):
+            if seq != prev["seq"]:
+                return
+            prev["parts"] = parts
+            if not parts:
+                no_picture("(no picture)")
+                return
+            for v in views:
+                show_view(v)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def turned(v):
+        v["angle"].configure(text=f"{v['yaw'].get():3d}°")
+        if v.get("timer"):
+            root.after_cancel(v["timer"])
+        v["timer"] = root.after(60, lambda: show_view(v))
+
+    for k, yaw in enumerate((25, 205)):  # front, back
+        col = ttk.Frame(pics)
+        col.pack(side="left", padx=(0, 6))
+        v = {"yaw": tk.IntVar(value=yaw), "seq": 0}
+        v["label"] = tk.Label(col, text="Pick a character" if k == 0 else "", width=30, height=14,
+                              relief="groove", background=ui_theme.PREVIEW[0], foreground=ui_theme.PREVIEW[1])
+        v["label"].pack(side="top")
+        row = ttk.Frame(col)
+        row.pack(side="top", fill="x")
+        ttk.Label(row, text="Turn").pack(side="left")
+        ttk.Scale(row, from_=0, to=359, variable=v["yaw"], orient="horizontal",
+                  command=lambda _x, v=v: (v["yaw"].set(int(float(v["yaw"].get()))), turned(v))).pack(side="left", fill="x", expand=True, padx=4)
+        v["angle"] = ttk.Label(row, text=f"{yaw:3d}°", width=5)
+        v["angle"].pack(side="left")
+        views.append(v)
 
     def status(c):
         levels = [l for l, _ in c.notes]
@@ -1219,6 +1332,9 @@ def gui(root=None):
     def show(_=None):
         c = current()
         notes.delete("1.0", "end")
+        if c is not prev.get("c"):
+            prev["c"] = c
+            preview(c)
         if not c:
             return
         name_v.set(c.name), author_v.set(c.author), source_v.set(c.source), base_v.set(BASES[c.base][1])

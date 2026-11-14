@@ -98,6 +98,9 @@ static struct {
 
 /* ---- frames shared with the renderer ---- */
 uint64_t g_gx_busy_ns, g_gx_draws;
+volatile uint8_t g_gx_phase;
+static uint8_t s_conv = GXP_CONV_IMM; /* the phase draw() runs in: who asked for the draw */
+static uint8_t s_dl_why;              /* dl_call's reason for declining a list: GXP_CONV_TMTX or GXP_CONV_DL */
 static PMutex s_flock;
 static Frame *s_pending, *s_latest;
 static volatile uint64_t s_frame_count;
@@ -422,6 +425,8 @@ static void vc_frame(uint32_t frame_verts);
 static void vj_join(void);
 static void end_frame(void) {
     vj_join();
+    uint8_t ph = g_gx_phase;
+    g_gx_phase = GXP_END;
     /* a movie is playing while frames were decoded in the last half second */
     static uint64_t thp_seen;
     if (g_thp_frames != thp_seen) { thp_seen = g_thp_frames; G.movie = 30; }
@@ -444,6 +449,7 @@ static void end_frame(void) {
     G.slot_frame = G.lblock_frame = NULL;
     G.frame = frame_new();
     s_frames_decoded++;
+    g_gx_phase = ph;
 }
 
 static uint64_t copy_sig(uint32_t addr, size_t len);
@@ -709,8 +715,11 @@ static uint64_t texture(unsigned map) {
     uint32_t memo[4] = {G.bp[mode_r], G.bp[img0_r], G.bp[img3_r], G.bp[tlut_r]};
     uint64_t mk = fnv_bytes(FNV_INIT, memo, sizeof memo), key;
     if (u64map_get(&G.tex_memo, mk, &key)) return key;
+    uint8_t ph = g_gx_phase;
+    g_gx_phase = GXP_TEX;
     key = texture_inner(map);
     u64map_put(&G.tex_memo, mk, key);
+    g_gx_phase = ph;
     return key;
 }
 
@@ -1001,6 +1010,9 @@ const HudMove g_hud_move[MG_COUNT] = {
     [MGV_TIME2] = {593, 427, 600, 21.2f, 0.6f, 6},  /* the digits' bottom right */
     [MGV_MAP] = {587, 124, 335, 316, 0.6f, 4},      /* 273-335 x 316-440 */
     [MGV_ORDER] = {19, 97, 8, 300, 0.5f, 5},
+    /* a two players' trick battle, top and bottom: player 2's items at the top right of the bottom screen, left of
+     * the map (its left edge 519), the trick points panel having the bottom left: 426-512 x 230-293 */
+    [MG2_ITEMS2T] = {81, 383, 58, 237, 0.75f, 5}, /* trick battle top/bottom: P2 top-left of its view, as P1 */
     /* DASHBOARD, one player: place, lap, time, speed and items in one row, centred, x from the left of
      * the piece's panel (native.c pill_place adds where that panel is, y 6-36), the map top right; the
      * race order is a strip (order_strip), the items fit their frames (pill_place) */
@@ -1556,7 +1568,15 @@ static bool s_vtxcheck;        /* PC: MKDD_VTXCHECK=1 runs vtx_fast and the gene
 static uint64_t s_vtxcheck_n, s_vtxcheck_bad;
 
 /* Material, lights and the draw setup for a draw command (cmd: its VAT in the low bits). */
+static DrawSetup *draw_prepare_body(uint32_t cmd, const VtxFormat **fo);
 static DrawSetup *draw_prepare(uint32_t cmd, const VtxFormat **fo) {
+    uint8_t ph = g_gx_phase;
+    g_gx_phase = GXP_SETUP;
+    DrawSetup *S = draw_prepare_body(cmd, fo);
+    g_gx_phase = ph;
+    return S;
+}
+static DrawSetup *draw_prepare_body(uint32_t cmd, const VtxFormat **fo) {
     const VtxFormat *f = format(cmd & 7);
     *fo = f;
     if (!G.mat_valid || G.mat_gen != G.state_gen) {
@@ -1608,7 +1628,9 @@ static inline unsigned prim_tris(uint32_t prim, unsigned n) {
  * Writes are seen the way the GPU must see them: DCFlushRange / DCStoreRange (the CPU's vertex
  * writes) and DVD / ARAM DMA into RAM; a large DVD read (a scene load, after which the CPU may
  * unpack data into reused memory) drops everything. The XF record and matrix slots (per frame) are
- * filled in on reuse. Lists with per-vertex texture matrices or 2D draws are not kept.
+ * filled in on reuse; per-vertex texture matrices too (each vertex's position and texture matrix indices
+ * are kept as one of up to VC_TM_MAX combinations, resolved to texmtx_slot records on reuse). 2D draws
+ * are not kept.
  * config/novcache (Switch) or MKDD_NOVCACHE (PC) turns it off; MKDD_VCACHECK=1 (PC) decodes every
  * reused list again and compares. */
 bool g_gx_vcache = true;
@@ -1630,7 +1652,11 @@ typedef struct {
     uint8_t *midx;     /* per-vertex position matrix index (formats with one), or NULL */
     uint64_t mused;    /* the indices midx holds */
     uint32_t *idx;     /* indices relative to the first vertex */
+    uint8_t *tmc;      /* per-vertex texture matrices: each vertex's combination, or NULL */
+    uint8_t *tmk;      /* the combinations: 9 bytes each [position matrix index or 0xFF (fixed), texture 0..7 or 0xFF] */
+    uint32_t ntm;
 } VcEntry;
+#define VC_TM_MAX 64u /* combinations a texture-matrix list may use (a job's slots) */
 static VcEntry *s_vc;
 static uint32_t s_vc_n, s_vc_bytes, s_vc_frame;
 static int32_t s_vc_slot[VC_SLOTS]; /* entry index + 1, 0 = empty */
@@ -1649,12 +1675,16 @@ void gx_mem_dirty_all(void) {
     __atomic_store_n(&s_dirty_all, __atomic_add_fetch(&s_dirty_counter, 1, __ATOMIC_ACQ_REL), __ATOMIC_RELEASE);
 }
 
+static void vc_release(VcEntry *e) { /* no job may still read it */
+    s_vc_bytes -= e->data ? e->nverts * e->stride + e->nidx * 4 : 0;
+    free(e->data); free(e->midx); free(e->idx); free(e->tmc); free(e->tmk);
+    e->data = e->midx = e->tmc = e->tmk = NULL;
+    e->idx = NULL;
+    e->ntm = 0;
+}
 static void vc_free(VcEntry *e) {
     vj_join(); /* a job may be copying from it */
-    s_vc_bytes -= e->data ? e->nverts * e->stride + e->nidx * 4 : 0;
-    free(e->data); free(e->midx); free(e->idx);
-    e->data = e->midx = NULL;
-    e->idx = NULL;
+    vc_release(e);
 }
 static void vc_clear(void) {
     for (uint32_t i = 0; i < s_vc_n; i++) vc_free(&s_vc[i]);
@@ -1720,13 +1750,23 @@ static int vc_pnmtx_off(const DrawSetup *S) {
     return -1;
 }
 
+/* A texture-matrix list's combinations as this frame's matrix fields (decoder thread only). */
+static void vc_tm_slots(const VcEntry *e, uint32_t fixed_slot, uint32_t *out) {
+    for (uint32_t i = 0; i < e->ntm && i < VC_TM_MAX; i++) {
+        const uint8_t *k = e->tmk + 9 * i;
+        out[i] = texmtx_slot(k[0] != 0xFF ? mtx_slot(k[0]) : fixed_slot, k + 1);
+    }
+}
+
 /* The converted vertices with this frame's XF record and matrix slots (slots: resolved already, by
- * matrix index; NULL resolves them here, decoder thread only). */
+ * matrix index, or by combination for a texture-matrix list; NULL resolves them here, decoder thread only). */
 static void vc_fill(const VcEntry *e, uint8_t *out, uint32_t rec, uint32_t fixed_slot, const uint32_t *slots) {
+    uint32_t local[VC_TM_MAX];
+    if (e->tmc && !slots) { vc_tm_slots(e, fixed_slot, local); slots = local; }
     memcpy(out, e->data, (size_t)e->nverts * e->stride);
     for (uint32_t v = 0; v < e->nverts; v++) {
         uint8_t *ob = out + (size_t)v * e->stride;
-        uint32_t slot = e->midx ? (slots ? slots[e->midx[v]] : mtx_slot(e->midx[v])) : fixed_slot;
+        uint32_t slot = e->tmc ? slots[e->tmc[v]] : e->midx ? (slots ? slots[e->midx[v]] : mtx_slot(e->midx[v])) : fixed_slot;
         memcpy(ob + 12, &rec, 4);
         memcpy(ob + 16, &slot, 4);
     }
@@ -1746,7 +1786,7 @@ typedef struct {
     uint8_t *out;
     uint32_t *ix;
     uint32_t base, rec, fixed_slot;
-    uint32_t slots[64];
+    uint32_t slots[VC_TM_MAX > 64 ? VC_TM_MAX : 64];
 } VJob;
 static VJob s_vj[VJ_RING];
 static volatile uint32_t s_vj_head, s_vj_claim, s_vj_done, s_vj_sleep, s_vj_helper;
@@ -1770,8 +1810,12 @@ static bool vj_step(void) {
     return true;
 }
 static void vj_join(void) {
-    while (__atomic_load_n(&s_vj_done, __ATOMIC_ACQUIRE) != s_vj_head)
-        if (!vj_step()) plat_yield();
+    uint8_t ph = g_gx_phase;
+    while (__atomic_load_n(&s_vj_done, __ATOMIC_ACQUIRE) != s_vj_head) {
+        g_gx_phase = GXP_COPY;
+        if (!vj_step()) { g_gx_phase = GXP_JOIN; plat_yield(); }
+    }
+    g_gx_phase = ph;
 }
 static void vj_thread(void *arg) {
     (void)arg;
@@ -1787,10 +1831,11 @@ static void vj_thread(void *arg) {
 static void vj_push(const VcEntry *e, uint8_t *out, uint32_t *ix, uint32_t base, uint32_t rec, uint32_t fixed_slot) {
     /* a job being run may be the oldest one: two slots spare */
     while (s_vj_head - __atomic_load_n(&s_vj_done, __ATOMIC_ACQUIRE) >= VJ_RING - 2)
-        if (!vj_step()) plat_yield();
+        if (!vj_step()) { g_gx_phase = GXP_JOIN; plat_yield(); g_gx_phase = GXP_COPY; }
     VJob *j = &s_vj[s_vj_head & (VJ_RING - 1)];
     j->e = e; j->out = out; j->ix = ix; j->base = base; j->rec = rec; j->fixed_slot = fixed_slot;
-    for (uint64_t used = e->midx ? e->mused : 0; used; used &= used - 1) {
+    if (e->tmc) vc_tm_slots(e, fixed_slot, j->slots);
+    for (uint64_t used = e->midx && !e->tmc ? e->mused : 0; used; used &= used - 1) {
         unsigned i = (unsigned)__builtin_ctzll(used);
         j->slots[i] = mtx_slot(i);
     }
@@ -1840,7 +1885,7 @@ static bool dl_apply(const VcEntry *e, const DrawSetup *S, const VtxFormat *f) {
  * came out as one contiguous run of vertices and indices. Before: the frame's counts before it. */
 static VcEntry *dl_store(uint64_t key, uint64_t sig, uint64_t ihash, const DrawSetup *S, const VtxFormat *f, uint32_t addr,
                          uint32_t size, uint32_t stamp, size_t nverts0, size_t ix0, size_t nb0) {
-    vj_join(); /* it copies the converted vertices */
+    /* no vj_join for the copy: what it copies (the decoded tail of the frame's buffers) is the decoder's own */
     const uint8_t *d = g_ram + addr;
     Frame *fr = G.frame;
     const uint32_t vat = d[0] & 7, stride = gx_layout_stride(S->layout);
@@ -1878,15 +1923,67 @@ static VcEntry *dl_store(uint64_t key, uint64_t sig, uint64_t ihash, const DrawS
     for (size_t i = ix0; i < fr->indices.len; i++) if (fr->indices.data[i] < first) first = fr->indices.data[i];
     if ((size_t)(first + verts) * stride != fr->vb.len) return NULL;
     size_t bytes = (size_t)verts * stride;
+    int pm = vc_pnmtx_off(S);
+    bool tmx = false;
+    for (int i = 0; i < 8; i++) tmx |= f->texmtx[i];
+    uint8_t *tmc = NULL, *tmk = NULL;
+    uint32_t ntm = 0;
+    if (tmx) {
+        int toff[8];
+        for (int i = 0; i < 8; i++) toff[i] = -1;
+        unsigned off = 0;
+        for (unsigned k = 0; k < S->nops; k++) {
+            if (S->ops[k].kind == OP_TMTX && S->ops[k].dst < 8) toff[S->ops[k].dst] = (int)off;
+            off += S->ops[k].inl;
+        }
+        tmc = malloc(verts);
+        tmk = malloc(9 * VC_TM_MAX);
+        if (!tmc || !tmk) { free(tmc); free(tmk); return NULL; }
+        uint32_t v = 0, last = 0;
+        for (size_t p = 0; p < size;) {
+            if (!d[p]) { p++; continue; }
+            unsigned n = be16(d + p + 1);
+            if (prim_tris(d[p] & 0xF8, n))
+                for (unsigned k = 0; k < n; k++) {
+                    const uint8_t *q = d + p + 3 + (size_t)k * f->size;
+                    uint8_t key9[9];
+                    key9[0] = pm >= 0 ? q[pm] & 0x3F : 0xFF;
+                    for (int i = 0; i < 8; i++) key9[1 + i] = toff[i] >= 0 ? q[toff[i]] & 0x3F : 0xFF;
+                    uint32_t c = ntm && !memcmp(tmk + 9 * last, key9, 9) ? last : ntm;
+                    for (uint32_t i = 0; c == ntm && i < ntm; i++) if (!memcmp(tmk + 9 * i, key9, 9)) c = i;
+                    if (c == ntm) {
+                        if (ntm == VC_TM_MAX) { free(tmc); free(tmk); return NULL; } /* too many: decoded every time */
+                        memcpy(tmk + 9 * ntm++, key9, 9);
+                    }
+                    if (v < verts) tmc[v++] = (uint8_t)c;
+                    last = c;
+                }
+            p += 3 + (size_t)n * f->size;
+        }
+        if (v != verts) { free(tmc); free(tmk); return NULL; }
+    }
     if (s_vc_n >= VC_MAX_ENTRIES || s_vc_bytes + bytes + nidx * 4 > VC_MAX_BYTES) vc_clear();
     if (!s_vc) s_vc = calloc(VC_MAX_ENTRIES, sizeof *s_vc);
-    if (!s_vc) return NULL;
+    if (!s_vc) { free(tmc); free(tmk); return NULL; }
     VcEntry *e = vc_find(key);
-    if (e) vc_free(e);
-    else {
+    uint8_t *odata = NULL, *omidx = NULL;
+    uint32_t *oidx = NULL;
+    if (e) {
+        /* Only this frame's jobs may still read it (end_frame finishes the rest). A list over arrays the game
+         * rewrites each frame but draws twice (two views) is stored again every frame: keep that cheap. */
+        if (e->used == s_vc_frame) vj_join();
+        if (e->data && e->idx && e->nverts == verts && e->stride == stride && e->nidx == nidx && !tmx && !e->tmc &&
+            (pm >= 0) == (e->midx != NULL)) {
+            s_vc_bytes -= (uint32_t)(bytes + nidx * 4); /* same sizes: its buffers are refilled */
+            odata = e->data; oidx = e->idx; omidx = e->midx;
+            e->data = e->midx = NULL;
+            e->idx = NULL;
+        }
+        vc_release(e);
+    } else {
         uint32_t i = (uint32_t)key & (VC_SLOTS - 1), probe = 0;
         while (s_vc_slot[i] && probe < 16) { i = (i + 1) & (VC_SLOTS - 1); probe++; }
-        if (s_vc_slot[i]) return NULL; /* crowded */
+        if (s_vc_slot[i]) { free(tmc); free(tmk); return NULL; } /* crowded */
         s_vc_slot[i] = (int32_t)s_vc_n + 1;
         e = &s_vc[s_vc_n++];
     }
@@ -1902,14 +1999,22 @@ static VcEntry *dl_store(uint64_t key, uint64_t sig, uint64_t ihash, const DrawS
         if (hi > RAM_SIZE) hi = RAM_SIZE;
         if (lo < hi) { e->lo[e->nranges] = (uint32_t)lo; e->hi[e->nranges] = (uint32_t)hi; e->nranges++; }
     }
-    int pm = vc_pnmtx_off(S);
-    e->data = malloc(bytes);
-    e->idx = malloc(nidx * 4);
-    e->midx = pm >= 0 ? malloc(verts) : NULL;
-    if (!e->data || !e->idx || (pm >= 0 && !e->midx)) { vc_free(e); e->key = ~0ull; return NULL; }
+    e->data = odata ? odata : malloc(bytes);
+    e->idx = oidx ? oidx : malloc(nidx * 4);
+    e->midx = pm < 0 || tmx ? NULL : omidx ? omidx : malloc(verts);
+    e->tmc = tmc; e->tmk = tmk; e->ntm = ntm;
+    if (!e->data || !e->idx || (pm >= 0 && !tmx && !e->midx)) {
+        /* nothing of it was counted yet: free without vc_release's accounting */
+        free(e->data); free(e->idx); free(e->midx); free(e->tmc); free(e->tmk);
+        e->data = e->midx = e->tmc = e->tmk = NULL;
+        e->idx = NULL;
+        e->ntm = 0;
+        e->key = ~0ull;
+        return NULL;
+    }
     memcpy(e->data, fr->vb.data + (size_t)first * stride, bytes);
     for (size_t i = 0; i < nidx; i++) e->idx[i] = fr->indices.data[ix0 + i] - first;
-    if (pm >= 0) {
+    if (pm >= 0 && !tmx) {
         uint32_t v = 0;
         for (size_t p = 0; p < size;) {
             if (!d[p]) { p++; continue; }
@@ -1930,7 +2035,17 @@ static size_t exec(const uint8_t *d, size_t len, unsigned depth);
 
 /* A display-list call (exec, command 0x40): reuse the list's kept output, or decode it and keep it.
  * False: not handled here, decode it normally. */
+static bool dl_call_body(uint32_t addr, uint32_t size, unsigned depth);
 static bool dl_call(uint32_t addr, uint32_t size, unsigned depth) {
+    uint8_t ph = g_gx_phase, conv = s_conv;
+    g_gx_phase = GXP_DLCHK;
+    s_dl_why = GXP_CONV_DL;
+    bool r = dl_call_body(addr, size, depth);
+    g_gx_phase = ph;
+    s_conv = conv;
+    return r;
+}
+static bool dl_call_body(uint32_t addr, uint32_t size, unsigned depth) {
     if (!g_gx_vcache || s_vtxcheck || s_xfcheck || size < 4) return false;
     const uint8_t *d = g_ram + addr;
     if (d[0] < 0x80 || d[0] > 0xBF) return false; /* material and state lists */
@@ -1938,7 +2053,8 @@ static bool dl_call(uint32_t addr, uint32_t size, unsigned depth) {
     const VtxFormat *f;
     DrawSetup *S = draw_prepare(d[0], &f);
     if (!S->gpu || S->ortho) return false;
-    for (int i = 0; i < 8; i++) if (f->texmtx[i]) return false;
+    bool tmx = false;
+    for (int i = 0; i < 8; i++) tmx |= f->texmtx[i];
     if (S->vsig_dirty) { S->vsig = vc_sig(S, f, gx_layout_stride(S->layout)); S->vsig_dirty = false; }
     uint32_t stamp = __atomic_load_n(&s_dirty_counter, __ATOMIC_ACQUIRE);
     uint64_t key = vc_mix(vc_mix(S->vsig, addr), size);
@@ -1950,6 +2066,7 @@ static bool dl_call(uint32_t addr, uint32_t size, unsigned depth) {
     uint64_t ihash = same_bytes ? e->ihash : vc_hash(d, size);
     bool hit = e && e->data && e->ihash == ihash && e->sig == S->vsig && e->off == addr && e->size == size && vc_clean(e);
     if (hit && !s_vc_check) {
+        g_gx_phase = GXP_COPY;
         if (!dl_apply(e, S, f)) return false;
         e->used = s_vc_frame;
         e->changes = 0;
@@ -1959,7 +2076,10 @@ static bool dl_call(uint32_t addr, uint32_t size, unsigned depth) {
     }
     Frame *fr = G.frame;
     size_t nverts0 = fr->nverts, ix0 = fr->indices.len, nb0 = fr->batches.len;
+    g_gx_phase = GXP_CMD;
+    s_conv = tmx ? GXP_CONV_TMTX : GXP_CONV_DL;
     exec(d, size, depth);
+    g_gx_phase = GXP_DLCHK;
     s_vc_verts += fr->nverts - nverts0;
     if (hit) { /* MKDD_VCACHECK: what was kept must equal what was just decoded */
         size_t nidx = fr->indices.len - ix0;
@@ -1970,7 +2090,8 @@ static bool dl_call(uint32_t addr, uint32_t size, unsigned depth) {
         if (same) {
             uint8_t *tmp = malloc((size_t)e->nverts * e->stride);
             vc_fill(e, tmp, S->rec, !f->pnmtx ? mtx_slot(G.cp[0x30] & 0x3F) : 0, NULL);
-            same = !memcmp(tmp, fr->vb.data + (size_t)first * e->stride, (size_t)e->nverts * e->stride);
+            size_t at; /* texture-matrix records may sit at other offsets: vtx_same compares what they hold */
+            same = vtx_same(tmp, fr->vb.data + (size_t)first * e->stride, e->nverts, e->stride, &at);
             free(tmp);
         }
         if (!same && s_vc_bad++ < 20) rt_log("vcache: CHECK FAILED: list at %#x (%u bytes, %u vertices) differs", addr, size, e->nverts);
@@ -1980,6 +2101,7 @@ static bool dl_call(uint32_t addr, uint32_t size, unsigned depth) {
     }
     if (e) s_vc_changed++;
     uint32_t changes = e ? e->changes + 1 : 0;
+    g_gx_phase = GXP_STORE;
     VcEntry *ne = dl_store(key, S->vsig, ihash, S, f, addr, size, stamp, nverts0, ix0, nb0);
     if (ne) {
         s_vc_built++;
@@ -2010,10 +2132,12 @@ static void vc_frame(uint32_t frame_verts) {
         s_vc_n = keep;
     }
     if (s_vc_frame % 300 == 0) {
+        uint32_t ntm = 0;
+        for (uint32_t i = 0; i < s_vc_n; i++) ntm += s_vc[i].tmc != NULL;
         if (g_gx_vcache)
-            rt_log("vcache: %.0f%% of vertices reused (%llu lists a frame reused, %llu kept, %llu changed), %u lists kept, %u KB%s",
+            rt_log("vcache: %.0f%% of vertices reused (%llu lists a frame reused, %llu kept, %llu changed), %u lists kept (%u with texture matrices), %u KB%s",
                    all_verts ? 100.0 * (double)s_vc_hit / (double)all_verts : 0.0, (unsigned long long)s_vc_lists / 300,
-                   (unsigned long long)s_vc_built, (unsigned long long)s_vc_changed, s_vc_n, s_vc_bytes >> 10,
+                   (unsigned long long)s_vc_built, (unsigned long long)s_vc_changed, s_vc_n, ntm, s_vc_bytes >> 10,
                    s_vc_check ? (s_vc_bad ? " CHECK FAILED" : " (checked)") : "");
         if (g_gx_vjobs) rt_log("vjobs: %llu jobs a frame, helper did %.0f%%", (unsigned long long)s_vj_pushed / 300, s_vj_pushed ? 100.0 * (double)s_vj_helper / (double)s_vj_pushed : 0.0);
         s_vj_pushed = 0;
@@ -2036,8 +2160,10 @@ static bool modern_rect(const DrawSetup *S, unsigned g, uint32_t out[4]) {
     float l = bx, t = by, rr = ax * 608 + bx, bb = ay * 448 + by;
     if ((float)r[0] <= l + 2 && (float)r[1] <= t + 2 && (float)r[2] >= rr - 2 && (float)r[3] >= bb - 2) return false; /* not clipped */
     if (g == MGT_ITEMS) { /* fitted to their frames (native.c pill_place): the roulette's next item, above the frame, unseen */
-        out[0] = 0, out[1] = (uint32_t)roundf(clampf(ay * 10.7f + by, 0, eh));
-        out[2] = (uint32_t)ew, out[3] = (uint32_t)roundf(clampf(ay * 31.1f + by, 0, eh));
+        extern volatile float g_item_band_dy, g_item_band_k; /* the trick HUD's row: lower, its boxes larger */
+        float dy = g_item_band_dy, hk = 10.2f * g_item_band_k; /* the band 10.7-31.1 at k 1, round its middle */
+        out[0] = 0, out[1] = (uint32_t)roundf(clampf(ay * (20.9f - hk + dy) + by, 0, eh));
+        out[2] = (uint32_t)ew, out[3] = (uint32_t)roundf(clampf(ay * (20.9f + hk + dy) + by, 0, eh));
         return true;
     }
     float px[2] = {(float)r[0], (float)r[2]}, py[2] = {(float)r[1], (float)r[3]};
@@ -2053,7 +2179,14 @@ static bool modern_rect(const DrawSetup *S, unsigned g, uint32_t out[4]) {
     return true;
 }
 
+static void draw_body(uint32_t cmd, const uint8_t *c);
 static void draw(uint32_t cmd, const uint8_t *c) {
+    uint8_t ph = g_gx_phase;
+    g_gx_phase = s_conv;
+    draw_body(cmd, c);
+    g_gx_phase = ph;
+}
+static void draw_body(uint32_t cmd, const uint8_t *c) {
     uint32_t prim = cmd & 0xF8;
     if (bits(G.bp[0x00], 14, 2) == 3) return; /* cull all */
     unsigned n = be16(c + 1);
@@ -2375,7 +2508,12 @@ static size_t exec(const uint8_t *d, size_t len, unsigned depth) {
                 if (g_gx_dl_rejected++ < 20) rt_log("gx: display list at %#x (%u bytes) is not commands (memory reused before it was drawn): skipped", addr, size);
                 break;
             }
-            if (!dl_call(addr, size, depth + 1)) exec(g_ram + addr, size, depth + 1);
+            if (!dl_call(addr, size, depth + 1)) {
+                uint8_t conv = s_conv;
+                s_conv = s_dl_why;
+                exec(g_ram + addr, size, depth + 1);
+                s_conv = conv;
+            }
             break;
         }
         case 0x61: bp_write(be32(c + 1)); break;
@@ -2458,10 +2596,12 @@ static void gpu_thread(void *arg) {
     size_t cap = 0;
     for (;;) {
         pmutex_lock(&s_qlock);
+        g_gx_phase = GXP_IDLE;
         while (s_qlen == 0) {
             s_qbusy = false;
             pcond_wait(&s_qwork, &s_qlock);
         }
+        g_gx_phase = GXP_CMD;
         s_qbusy = true;
         /* swap buffers */
         uint8_t *tb = s_qbuf; size_t tl = s_qlen, tc = s_qcap;

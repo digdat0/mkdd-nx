@@ -1,9 +1,9 @@
 /* Battle routes (the - menu's SINGLE PLAYER BATTLE MODE, on the MODS page). The arenas have no route
  * for the computer's karts (their BOLs have no CL points), so they would sit still. A battle there gets
- * routes/<course ID>_<BOL hash>.txt (tools/battle_routes.py, tools/route_editor.py) as its CL points
+ * mods/routes/<course ID>_<BOL hash>.txt (tools/battle_routes.py, tools/route_editor.py) as its CL points
  * (battle.c, loadCrsData): the hash tells a mod's arena from the game's of the same ID. The files are
  * the port's own data. Every arena's (the game's and MKDD Plus's) is also built in (route_builtin,
- * switch/CMakeLists.txt): a file on the SD card wins, else the built-in one is read the same way. */
+ * switch/CMakeLists.txt): a file in the app folder wins (mods/routes, else the older routes folder), else the built-in one is read the same way. */
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -11,16 +11,17 @@
 #include "route.h"
 #include "rt.h"
 
-#define ROUTE_DIR "routes"
 static char s_key[32];
 
-static void route_path(char *out, size_t n) { snprintf(out, n, ROUTE_DIR "/%s.txt", s_key); }
-
-/* the arena's route file: routes/<key>.txt, else the built-in one (path: which, for the log) */
+/* the arena's route file: mods/routes/<key>.txt, routes/<key>.txt (where they were before), else the
+ * built-in one (path: which, for the log) */
 static FILE *route_open(char *path, size_t n) {
-    route_path(path, n);
-    FILE *f = fopen(path, "r");
-    if (f) return f;
+    static const char *const DIRS[] = {"mods/routes", "routes"};
+    for (int d = 0; d < 2; d++) {
+        snprintf(path, n, "%s/%s.txt", DIRS[d], s_key);
+        FILE *f = fopen(path, "r");
+        if (f) return f;
+    }
     for (int i = 0; route_builtin[i].key; i++)
         if (!strcmp(route_builtin[i].key, s_key) && route_builtin[i].end > route_builtin[i].start) {
             snprintf(path, n, "built-in %s", s_key);
@@ -169,4 +170,32 @@ int route_load(float (*pts)[3], int16_t *group, int max, int want, int *start, i
     if (n < 3) return 0;
     *got = 1, start[1] = n;
     return n;
+}
+
+/* the arena's minimap frame (tools in MKDD_TrickTracks write it): a "# map x0 z0 x1 z1 orientation"
+ * line in its route file, the world box the map texture shows and Race2D's orientation (+0x1120,
+ * getMapPos: 3 = texture x along +z, y along -x). Read once per course; false without one. */
+bool route_map(float box[4], int *orient) {
+    static char key[32];
+    static bool have;
+    static float b[4];
+    static int o;
+    if (!s_key[0]) return false;
+    if (strcmp(key, s_key)) {
+        char path[64], line[96];
+        snprintf(key, sizeof key, "%s", s_key);
+        have = false;
+        FILE *f = route_open(path, sizeof path);
+        for (int i = 0; f && i < 8 && get_line(line, sizeof line, f); i++) /* the header's lines */
+            if (sscanf(line, "# map %f %f %f %f %d", &b[0], &b[1], &b[2], &b[3], &o) == 5 && isfinite(b[0]) && isfinite(b[1]) &&
+                isfinite(b[2]) && isfinite(b[3]) && b[2] - b[0] > 100 && b[3] - b[1] > 100 && o >= 0 && o <= 3) {
+                have = true;
+                rt_log("route: minimap %.0f %.0f to %.0f %.0f, orientation %d", b[0], b[1], b[2], b[3], o);
+                break;
+            }
+        if (f) fclose(f);
+    }
+    if (!have) return false;
+    memcpy(box, b, sizeof b), *orient = o;
+    return true;
 }

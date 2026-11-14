@@ -38,6 +38,7 @@ enum { MG_NONE, MG_PLACE, MG_ITEMS, MG_LAP, MG_TIME, MG_MAP, MG_ORDER, MG_SPEED,
        MGV_PLACE1, MGV_ITEMS1, MGV_LAP1, MGV_TIME1, MGV_PLACE2, MGV_ITEMS2, MGV_LAP2, MGV_TIME2, MGV_MAP, MGV_ORDER,
        /* DASHBOARD, one player (native.c g_hud_pills): MG_PLACE .. MG_SPEED's order, the battle's map, the speed's unit */
        MGT_PLACE, MGT_ITEMS, MGT_LAP, MGT_TIME, MGT_MAP, MGT_ORDER, MGT_SPEED, MGT_MAP_BATTLE, MGT_UNIT,
+       MG2_ITEMS2T, /* two players' trick battle (top / bottom): player 2's items at the top right of its screen */
        MG_COUNT };
 typedef struct { float ox, oy, nx, ny, s; uint32_t zone; } HudMove;
 extern const HudMove g_hud_move[MG_COUNT];
@@ -206,6 +207,10 @@ bool gx_dump_frame(const char *path); /* debug: the latest frame as text */
 /* Decoder statistics: time spent decoding, draw commands decoded, draw setups rebuilt, vertices
  * transformed on the CPU, time the game waited for queue space. */
 extern uint64_t g_gx_drains, g_gx_drain_ns;
+/* What the GX decoder is doing (the Switch profiler records it with each decoder sample) */
+enum { GXP_CMD, GXP_IDLE, GXP_SETUP, GXP_TEX, GXP_DLCHK, GXP_COPY, GXP_JOIN, GXP_STORE, GXP_CONV_IMM, GXP_CONV_TMTX,
+       GXP_CONV_DL, GXP_END };
+extern volatile uint8_t g_gx_phase;
 extern uint64_t g_gx_busy_ns, g_gx_draws, g_gx_setups, g_gx_cpu_verts, g_gx_qwait_ns;
 /* sched.c: time the guest core idled (no guest thread runnable), and the part of it while the
  * decoder was still busy. */

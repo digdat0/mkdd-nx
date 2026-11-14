@@ -72,7 +72,7 @@ Release zip: `win/package.sh /e/MKDD/genM4` builds, then writes `dist/MKDD-NX-Wi
 comes from `build-win/`, so nothing personal (config, saves, logs, mods, disc image) can get in.
 
 The in-game menu is shared with the Switch (`switch/menu.c`): `SW_PC()` text and `item_hidden()` rows hide the
-Switch-only items on PC (handheld resolution, controller pairing, Joy-Con sideways, clocks, GPU test, updater)
+Switch-only items on PC (handheld resolution, controller pairing, Joy-Con sideways, clocks, GPU test)
 and add FULL SCREEN; hints show player 1's keys beside the buttons.
 
 ## Files
@@ -87,9 +87,6 @@ and add FULL SCREEN; hints show player 1's keys beside the buttons.
 | `render_gl.c` | `render.h` + `gfx.h` on OpenGL 4.5: a pass-for-pass port of `switch/render_dk.c`, same GLSL |
 | `gl.h`, `gl_load.c`, `gl_funcs.h`, `gl_names.h` | GL function pointers |
 | `nx_compat.h` | the libnx names `menu.c`, `pause_art.c`, `charpack_art.c` use |
-| `stubs_win.c` | the updater's stubs (no in-game updater on PC) |
+| `update_win.c` | the updater (`switch/update.h`, WinHTTP): the launcher's Updates page and the menu's UPDATE; the latest release's `MKDD-NX.exe`, else its Windows zip (unpacked with Windows' `tar.exe`), checked against GitHub's SHA-256, swapped in for the running `.exe` (kept as `.exe.old` until the next start) |
 | `data_win.S` | the pause screen art (as `switch/pause_art_data.S`) |
 
-## Not done yet
-
-- The in-game updater: download the new zip and copy `MKDD-NX.exe` over the old one.

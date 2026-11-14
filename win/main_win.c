@@ -38,6 +38,7 @@
 #include "../switch/charpack_art.h"
 #include "../switch/hdtex.h"
 #include "../switch/update.h"
+#include "../switch/mods_setup.h"
 #include "../runtime/native.h"
 #include "../runtime/table.h"
 const char g_build_stamp[] = __DATE__ " " __TIME__;
@@ -377,59 +378,6 @@ static __attribute__((noreturn)) void fatal(const char *line1, const char *line2
     exit(0);
 }
 
-/* The disc image next to the .exe; with several, the fastest to read wins */
-bool find_disc(char *out, size_t n) {
-    static const char *EXT[] = {".iso", ".gcm", ".ciso", ".rvz"};
-    static const int RANK[] = {0, 0, 1, 2};
-    DIR *d = opendir(".");
-    if (!d) return false;
-    struct dirent *e;
-    int best = 99;
-    while ((e = readdir(d))) {
-        const char *dot = strrchr(e->d_name, '.');
-        for (int i = 0; dot && i < 4; i++)
-            if (!strcasecmp(dot, EXT[i]) && RANK[i] < best) {
-                snprintf(out, n, "%s", e->d_name);
-                best = RANK[i];
-            }
-    }
-    closedir(d);
-    if (best < 99) rt_log("disc: using %s", out);
-    return best < 99;
-}
-
-unsigned find_mods(void) {
-    unsigned found = 0;
-    for (unsigned i = 0; i < MOD_COUNT && i < 32; i++) {
-        char dir[256], p[300];
-        struct stat st;
-        snprintf(dir, sizeof dir, MODS_DIR "/%s", MODS[i].key);
-        if (stat(dir, &st) != 0) continue;
-        bool ok = true;
-        snprintf(p, sizeof p, "%s/sys/main.dol", dir), ok = ok && stat(p, &st) == 0;
-        snprintf(p, sizeof p, "%s/sys/fst.bin", dir), ok = ok && stat(p, &st) == 0;
-        snprintf(p, sizeof p, "%s/files", dir), ok = ok && stat(p, &st) == 0 && S_ISDIR(st.st_mode);
-        if (ok) found |= 1u << i, rt_log("mod: found %s (%s)", dir, MODS[i].name);
-        else rt_log("mod: %s needs sys/main.dol, sys/fst.bin and files/", dir);
-    }
-    return found;
-}
-const char *find_audio(void) {
-    static const char *const DIRS[] = {MODS_DIR "/audio/files/AudioRes/Stream", MODS_DIR "/audio/AudioRes/Stream", MODS_DIR "/audio"};
-    for (unsigned i = 0; i < sizeof DIRS / sizeof *DIRS; i++) {
-        DIR *d = opendir(DIRS[i]);
-        if (!d) continue;
-        unsigned n = 0;
-        struct dirent *e;
-        while ((e = readdir(d))) {
-            const char *dot = strrchr(e->d_name, '.');
-            if (dot && !strcasecmp(dot, ".ast")) n++;
-        }
-        closedir(d);
-        if (n) { rt_log("mod: stereo music: %u streams in %s", n, DIRS[i]); return DIRS[i]; }
-    }
-    return NULL;
-}
 static int choose(const char *title, const char *a, const char *b, int sel, const char *hint) {
     const char *opts[2] = {a, b};
     input_poll();
@@ -619,6 +567,11 @@ static void update_pads(void) {
                 if (m < 32767 * 6 / 10) flick[p] = 0;
                 trick |= flick[p] << 4 * p;
             }
+            /* the signature: ZL + ZR held (a GameCube pad's L + R; main_switch.c) */
+            {
+                u64 sig2 = pd && pd->gc ? HidNpadButton_L | HidNpadButton_R : HidNpadButton_ZL | HidNpadButton_ZR;
+                if (drive == 1 && ((pd && pd->gc ? pd->b : b) & sig2) == sig2) trick |= 1u << (TRICK_SIG_BIT + p);
+            }
             if (pd && pd->gc) {
                 /* GameCube controller: its own layout and analog L / R (main_switch.c map_gc) */
                 static const struct { u64 bit; uint16_t gc; } GCL[] = {
@@ -696,6 +649,7 @@ static void update_pads(void) {
         }
         pad_set(p, &s);
     }
+    if (g_padplay) jump = (jump & ~1u) | (g_jump_held & 1u), trick = (trick & ~(15u | 1u << TRICK_SIG_BIT)) | (g_trick_pad & (15u | 1u << TRICK_SIG_BIT)); /* padrec.c's */
     g_jump_held = jump;
     g_trick_pad = trick;
     g_cam_reset = cam_reset;
@@ -789,6 +743,7 @@ int main(int argc, char **argv) {
     settings_load(CFG_DIR "/settings.ini");
     color_load(CFG_DIR "/color.ini");
     wincfg_load();
+    if (g_win.auto_update) update_start(); /* only looks: the launcher or the menu's UPDATE installs */
     /* players 2-4's driving buttons from 1.8.4's launcher (windows.ini p2_map ..): theirs in settings.ini now */
     for (int i = 0; i < 3; i++)
         if (g_win.pmap_set[i]) {
@@ -821,59 +776,12 @@ int main(int argc, char **argv) {
     screen("LOOKING FOR THE DISC IMAGE", NULL, 0.05f);
     if (arg_disc[0]) snprintf(disc, sizeof disc, "%s", arg_disc), rt_log("disc: using %s (command line)", disc);
     else if (g_win.disc[0] && access(g_win.disc, R_OK) == 0) snprintf(disc, sizeof disc, "%s", g_win.disc), rt_log("disc: using %s (launcher)", disc);
-    else if (!find_disc(disc, sizeof disc)) fatal("NO DISC IMAGE FOUND", "PUT YOUR GM4E01 .ISO OR .RVZ NEXT TO MKDD-NX.EXE");
+    else if (!find_disc(".", disc, sizeof disc)) fatal("NO DISC IMAGE FOUND", "PUT YOUR GM4E01 .ISO OR .RVZ NEXT TO MKDD-NX.EXE");
     if (disc_open(disc, err, sizeof err)) {
         menu_font_load();
-        unsigned found = find_mods(), pick = mods_pick(found);
-        const char *audio = find_audio();
-        if (pick) {
-            const ModInfo *mi = &MODS[pick - 1];
-            char dir[256], line[96];
-            snprintf(dir, sizeof dir, MODS_DIR "/%s", mi->key);
-            snprintf(line, sizeof line, "LOADING %s", mi->name);
-            for (char *t = line; *t; t++) *t = (char)toupper((unsigned char)*t);
-            screen(line, NULL, 0.1f);
-            if (audio && g_set.audio && mod_is_plus(pick)) disc_overlay_set_streams(audio);
-            if (disc_overlay(dir, err, sizeof err)) {
-                rt_log("mod: playing %s", mi->name);
-                s_mod_key = mi->key;
-                snprintf(dir, sizeof dir, SAVE_DIR "/%s", mi->key);
-                _mkdir(dir);
-                offer_save_copy(dir, mi->key);
-                snprintf(line, sizeof line, "%s/slotA.bin", dir);
-                memcard_set_path(line);
-            } else {
-                rt_log("mod: %s; playing the standard game", err);
-                found &= ~(1u << (pick - 1));
-                pick = 0;
-            }
-        }
-        /* MODS > LANGUAGE: a PAL disc's language files from mods/lang, for the standard game only (a level
-         * pack's menus and course names are its own, in English) */
-        static char lang_dir[256];
-        unsigned langs = langs_find(MODS_DIR);
-        int lang = pick ? 0 : langs_pick(langs);
-        if (pick && langs_pick(langs)) rt_log("lang: %s with a level pack: the game stays in English", LANG_NAMES[langs_pick(langs)]);
-        if (lang) {
-            snprintf(lang_dir, sizeof lang_dir, MODS_DIR "/lang/%s", LANG_NAMES[lang]);
-            disc_overlay_set_language(lang_dir, LANG_NAMES[lang]);
-            if (!disc_overlay(NULL, err, sizeof err)) rt_log("lang: %s; the game stays in English", err);
-        }
-        if (lang && !disc_overlay_language()) lang = 0;
-        g_language = (uint32_t)lang;
-        menu_set_langs(langs, lang);
-        menu_set_mods(found, pick);
-        struct stat st;
-        bool kf = stat(MODS_DIR "/karts", &st) == 0 && S_ISDIR(st.st_mode);
-        if (kf && g_set.karts) kartpack_scan(MODS_DIR "/karts");
-        menu_set_karts(kf, kf && g_set.karts);
-        menu_set_audio(audio != NULL, disc_overlay_stream_count() != 0);
-        pause_art_init();
-        bool cf = stat(MODS_DIR "/characters", &st) == 0 && S_ISDIR(st.st_mode);
-        if (cf && g_set.characters) charpack_scan(MODS_DIR "/characters");
-        menu_set_chars(cf, cf && g_set.characters);
-        charpack_art_init();
-        charvoice_preload();
+        trickpak_install(); /* the Trick Style files, on the first start of a new pack (runtime/trickpak.c) */
+        static const ModsHost host = {MODS_DIR, SAVE_DIR, screen, offer_save_copy, NULL};
+        s_mod_key = mods_setup(&host); /* ../switch/mods_setup.c */
         render_set_subst(subst_texture);
         render_set_below(pause_art_below);
         render_set_shift(pause_art_shift);
@@ -994,6 +902,8 @@ int main(int argc, char **argv) {
             if (!menu_is_open()) racing = race_tick && armTicksToNs(armGetSystemTick() - race_tick) < 500000000ull;
             if (g_set.border && !wide && !title && racing) menu_border(w, h);
             if (!menu_is_open() && charpack_select_active()) menu_char_hint(w, h);
+            menu_trick_pick(w, h);
+            menu_trick_guide(w, h);
             menu_draw(w, h, s_fps, perf);
         } else menu_loading(w, h, "BOOTING", NULL, 0.8f);
         render_gpu_timer_end();
@@ -1012,11 +922,12 @@ int main(int argc, char **argv) {
             double g_avg, g_max, g_img, g_out;
             if (render_gpu_timer_take(&g_avg, &g_max, &g_img, &g_out)) rt_log("gpu: %.1f ms per loop (game image %.1f, output %.1f; max %.1f)", g_avg, g_img, g_out, g_max);
             stat_tick = now;
-            diag_flush();
+            /* (the watchdog thread writes and flushes the log) */
         }
     }
     rt_log("exit: %s", s_relaunch ? "menu RESTART NOW" : s_quit ? "menu EXIT GAME" : "window closed");
     rumble_off();
+    padrec_close();
     pad_quit();
     gx_stop_gpu();
     diag_flush();

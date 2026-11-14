@@ -1,0 +1,16 @@
+T01 stadium
+T02 meadow
+T03 coral
+T04 flowline
+T05 dustdevil
+T06 redrock
+T07 sunburst
+T08 volcano
+T09 harbor
+T10 rhythmridge
+T11 steelworks
+T12 neon
+T13 frostbite
+T14 glacier
+T15 alpine
+T16 megaramp

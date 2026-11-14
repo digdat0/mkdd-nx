@@ -5,13 +5,20 @@ usage: py -3 tools/prof_report.py mkdd_prof.bin MKDD-NX.elf [--sheets <sheets di
 Self time: the function the game thread was executing. Inclusive: every function on its stack
 (each counted once per sample). Percentages are of the game thread's busy samples (idle excluded).
 """
-import argparse, bisect, csv, os, struct, subprocess, sys
+import argparse, bisect, csv, os, struct, subprocess
 from collections import Counter, defaultdict
 
 # DEVKITPRO, unless it is a path Windows can't open (Git Bash and msys2 set /opt/devkitpro)
 _DKP = os.environ.get("DEVKITPRO", "")
 NM = os.path.join(_DKP if os.path.isdir(_DKP) else "C:/devkitPro", "devkitA64/bin/aarch64-none-elf-nm")
 K_GAME, K_IDLE, K_GPU, K_FAIL, K_RENDER = 1, 2, 3, 4, 5
+# runtime/gx.h GXP_*: what the decoder was doing (builds before 2026-11-10 recorded 0 or a guest address)
+PHASES = ["commands and state (xf/bp/cp writes, parsing)", "idle (waiting for FIFO data)",
+          "draw setup (material, shader key, vertex format)", "texture lookup and decode",
+          "dl_call checks and hashing", "cached-list copy and patch on the decoder",
+          "waiting on the list helper (vj_join / full job ring)", "storing a list (dl_store)",
+          "vertex conversion: immediate draws (FIFO)", "vertex conversion: per-vertex texture-matrix lists",
+          "vertex conversion: other uncached lists (misses, declined)", "end of frame (publish)"]
 
 
 def load_syms(elf):
@@ -68,6 +75,7 @@ def main():
 
     kinds = Counter()
     self_g, incl_g, self_d = Counter(), Counter(), Counter()
+    phase_d, phase_self_d = Counter(), defaultdict(Counter)
     self_r, incl_r = Counter(), Counter()
     last_fn = Counter()
     callers = defaultdict(Counter)  # runtime function -> first generated caller
@@ -103,6 +111,9 @@ def main():
                 callers[pc_f][gen] += 1
         elif kind == K_GPU and n:
             self_d[sym(fr[0])] += 1
+            ph = lf if lf < len(PHASES) else -1
+            phase_d[ph] += 1
+            phase_self_d[ph][sym(fr[0])] += 1
         elif kind == K_RENDER and n:
             st = [sym(fr[0])] + ([sym(fr[1])] if sym(fr[1]) != sym(fr[0]) else []) + [sym(x) for x in fr[2:]]
             self_r[st[0]] += 1
@@ -160,6 +171,13 @@ def main():
         print(f"\n== GX decoder thread: self time (top 25 of {d} samples)")
         for s, c in self_d.most_common(25):
             print(f"{100 * c / d:6.2f}%  {s}")
+        busy_d = d - phase_d[1] - phase_d[-1]
+        print(f"\n== GX decoder thread: phases ({d} samples; % of all / % of busy, idle excluded)")
+        for ph, c in sorted(phase_d.items(), key=lambda x: -x[1]):
+            name = PHASES[ph] if ph >= 0 else "unknown (an older build)"
+            busy = f"{100 * c / busy_d:5.1f}%" if ph not in (1, -1) and busy_d else "     "
+            top = ", ".join(f"{s} {100 * k / c:.0f}%" for s, k in phase_self_d[ph].most_common(3))
+            print(f"{100 * c / d:6.2f}% {busy}  {name}  [{top}]")
 
     r = kinds[K_RENDER]
     if r:

@@ -9,7 +9,8 @@
 #define CISO_HEADER 0x8000
 
 static FILE *s_file;
-static PMutex s_lock;
+static PMutex s_lock; /* the read-ahead window and requests, the live overlay table, patches */
+static PMutex s_io;   /* the image file and the overlay's files (raw_read, img_read); taken after s_lock, never before */
 static uint64_t s_bs;          /* CISO block size, 0 for plain ISO */
 static int64_t *s_map;         /* CISO block -> stored slot, -1 = missing */
 static size_t s_nblocks;
@@ -37,6 +38,7 @@ bool disc_open(const char *path, char *err, size_t errlen) {
     if (!s_file) { snprintf(err, errlen, "could not open disc image %s", path); return false; }
     setvbuf(s_file, NULL, _IOFBF, 64 << 10);
     pmutex_init(&s_lock);
+    pmutex_init(&s_io);
     uint8_t *hdr = malloc(CISO_HEADER);
     if (fread(hdr, 1, 8, s_file) == 8 && !memcmp(hdr, "CISO", 4)) {
         if (fread(hdr + 8, 1, CISO_HEADER - 8, s_file) != CISO_HEADER - 8) {
@@ -99,8 +101,10 @@ static void img_read(uint64_t off, uint8_t *dst, size_t n) {
  * In a race the music streams from the disc in small reads at consecutive offsets (20 KB at a
  * time). After a small read, a worker on another core fetches the next AHEAD bytes (decompressing
  * them, for an RVZ) into a window, so the game thread's next reads are copies instead of SD card
- * reads. The worker reads in AHEAD_CHUNK pieces and drops the lock between them, so a game read
- * elsewhere waits for one piece at most. Large reads (scene loads) don't start it. */
+ * reads. The worker reads in AHEAD_CHUNK pieces holding only s_io (the file), so a game read the
+ * window has never waits for the SD card, and one that needs the file waits for one piece at most
+ * (between pieces the worker waits while s_io_waiting says a game read wants the file). Large reads (scene
+ * loads) don't start it. */
 #define AHEAD (512u << 10)
 #define AHEAD_CHUNK (64u << 10)
 #define NO_REQ UINT64_MAX
@@ -109,6 +113,7 @@ static uint8_t *s_stage;
 static uint64_t s_want = NO_REQ, s_fetching = NO_REQ; /* requested start; start being fetched */
 static PCond s_ahead_cv;
 static bool s_ahead;
+static unsigned s_io_waiting; /* reads waiting for the file (disc_read_guest) */
 static unsigned s_layout; /* bumped when the overlay goes live: a fetch started before it is stale */
 uint64_t g_disc_ahead_hits, g_disc_reads_direct;
 
@@ -128,10 +133,15 @@ static void ahead_worker(void *arg) {
         }
         while (got < AHEAD) {
             size_t k = AHEAD - got < AHEAD_CHUNK ? AHEAD - got : AHEAD_CHUNK;
+            while (s_io_waiting) pcond_wait(&s_ahead_cv, &s_lock); /* a read waiting for the file goes first */
+            if (layout != s_layout) break;
+            pmutex_lock(&s_io); /* the overlay table can't change: going live takes s_io too */
+            pmutex_unlock(&s_lock); /* game reads from the window meanwhile */
             raw_read(start + got, s_stage + got, k);
+            pmutex_unlock(&s_io);
             got += k;
-            pmutex_unlock(&s_lock); /* let a waiting game read in */
-            pmutex_lock(&s_lock);
+            pmutex_lock(&s_lock); /* after a game read waiting for the file (it holds s_lock) */
+            if (layout != s_layout) break;
             if (s_want != NO_REQ && (s_want < start || s_want > start + got)) break; /* the stream moved elsewhere */
         }
         uint8_t *t = s_win.data;
@@ -311,8 +321,10 @@ static long stream_size(const char *path) {
 }
 
 static const char *s_stream_dir;
+static const char *s_extra_dir; /* files that replace the standard game's (mods/trick: Course/Waluigi.arc ...) */
 static unsigned s_from_streams;
 void disc_overlay_set_streams(const char *dir) { s_stream_dir = dir; }
+void disc_overlay_set_extra(const char *dir) { s_extra_dir = dir; }
 unsigned disc_overlay_stream_count(void) { return s_from_streams; }
 
 #define OV_ALIGN 0x8000u
@@ -324,8 +336,20 @@ unsigned disc_overlay_stream_count(void) { return s_from_streams; }
  * (hle.c, g_language). */
 static const char *s_lang_dir, *s_lang_name;
 static bool s_lang_on; /* the table has the language's files */
+/* The trick competition's tracks (mods/trick/tracks: Course/<name>.arc, built from the disc's by the
+ * trick tools) are added the same way as Course/Trick/; the runtime swaps them in for the courses
+ * of a trick competition only (battle.c). */
+static const char *s_trick_dir;
+static bool s_trick_on;
+void disc_overlay_set_trick(const char *dir) { s_trick_dir = dir; }
+bool disc_overlay_trick(void) { return s_ext && s_trick_on; }
+const char *disc_overlay_trick_dir(void) { return s_trick_on ? s_trick_dir : NULL; }
+/* Course/<arena>.arc: the arenas; CourseName/MiniN_name.bti: their course intro names */
+static const char *const TRICK_TOPS[] = {"Course", "CourseName"};
+#define TRICK_NAME "Trick"
 void disc_overlay_set_language(const char *dir, const char *name) { s_lang_dir = dir, s_lang_name = name; }
 bool disc_overlay_language(void) { return s_ext && s_lang_on; }
+const char *disc_overlay_language_dir(void) { return s_ext && s_lang_on ? s_lang_dir : NULL; }
 #define LANG_FILES_MAX 1024 /* files a language folder adds, at most */
 static const char *const LANG_TOPS[] = {"AwardData", "CourseName", "MRAM_Locale", "SceneData"};
 static int name_cmp(const void *a, const void *b) { return strcasecmp(*(char *const *)a, *(char *const *)b); }
@@ -347,28 +371,28 @@ static uint32_t fst_child_dir(const uint8_t *fst, uint32_t n, const char *names,
 /* *fst (*size bytes, malloc'd) with the language folder's files added under each of LANG_TOPS
  * that the table has and that has no such sub-folder yet. Returns the files added; on failure
  * (out of memory) the table is left as it was. */
-static unsigned fst_add_language(uint8_t **fst, uint32_t *size) {
+static unsigned fst_add_sub(uint8_t **fst, uint32_t *size, const char *src_dir, const char *sub, const char *const *tops, size_t ntops) {
     unsigned added = 0;
-    for (size_t t_i = 0; t_i < sizeof LANG_TOPS / sizeof *LANG_TOPS; t_i++) {
+    for (size_t t_i = 0; t_i < ntops; t_i++) {
         uint8_t *f = *fst;
         uint32_t n = BE32(f + 8);
         const char *names = (const char *)f + n * 12;
         size_t names_len = *size - n * 12;
-        uint32_t t = fst_child_dir(f, n, names, names_len, 1, n, LANG_TOPS[t_i]);
+        uint32_t t = fst_child_dir(f, n, names, names_len, 1, n, tops[t_i]);
         if (!t || BE32(f + t * 12 + 4) != 0) continue; /* a top-level folder only */
         uint32_t ins = BE32(f + t * 12 + 8);
-        if (ins <= t || ins > n || fst_child_dir(f, n, names, names_len, t + 1, ins, s_lang_name)) continue;
+        if (ins <= t || ins > n || fst_child_dir(f, n, names, names_len, t + 1, ins, sub)) continue;
         char dir[512];
-        snprintf(dir, sizeof dir, "%s/%s", s_lang_dir, LANG_TOPS[t_i]);
+        snprintf(dir, sizeof dir, "%s/%s", src_dir, tops[t_i]);
         DIR *d = opendir(dir);
         if (!d) continue;
         static char *list[LANG_FILES_MAX];
         static uint32_t sizes[LANG_FILES_MAX];
         unsigned cnt = 0, left_out = 0;
-        size_t add_names = strlen(s_lang_name) + 1;
+        size_t add_names = strlen(sub) + 1;
         for (struct dirent *de; (de = readdir(d));) {
             char path[768];
-            snprintf(path, sizeof path, "%s/%s", dir, de->d_name);
+            snprintf(path, sizeof path, "%.507s/%.259s", dir, de->d_name);
             long sz = de->d_name[0] == '.' ? -1 : file_size(path);
             if (sz < 0) continue;
             if (cnt == LANG_FILES_MAX || strlen(de->d_name) > 200 || !(list[cnt] = strdup(de->d_name))) { left_out++; continue; }
@@ -406,7 +430,7 @@ static unsigned fst_add_language(uint8_t **fst, uint32_t *size) {
             put_be32(e, 0x01000000u | (uint32_t)at);
             put_be32(e + 4, t);
             put_be32(e + 8, ins + k);
-            at += (size_t)sprintf(nm + at, "%s", s_lang_name) + 1;
+            at += (size_t)sprintf(nm + at, "%s", sub) + 1;
             for (unsigned i = 0; i < cnt; i++) {
                 e = out + (size_t)(ins + 1 + i) * 12;
                 put_be32(e, (uint32_t)at);
@@ -428,20 +452,22 @@ static unsigned fst_add_language(uint8_t **fst, uint32_t *size) {
 
 /* rel ("SceneData/French/title.arc") -> the language folder's copy of it; false if rel isn't a
  * language file */
-static bool lang_source(const char *rel, char *path, size_t len) {
-    const char *a = s_lang_on ? strchr(rel, '/') : NULL;
-    size_t l = s_lang_name ? strlen(s_lang_name) : 0;
-    if (!a || strncasecmp(a + 1, s_lang_name, l) || a[1 + l] != '/' || strchr(a + 2 + l, '/')) return false;
-    snprintf(path, len, "%s/%.*s/%s", s_lang_dir, (int)(a - rel), rel, a + 2 + l);
+static bool sub_source(const char *rel, char *path, size_t len, bool on, const char *src_dir, const char *sub) {
+    const char *a = on ? strchr(rel, '/') : NULL;
+    size_t l = sub ? strlen(sub) : 0;
+    if (!a || strncasecmp(a + 1, sub, l) || a[1 + l] != '/' || strchr(a + 2 + l, '/')) return false;
+    snprintf(path, len, "%s/%.*s/%s", src_dir, (int)(a - rel), rel, a + 2 + l);
     return true;
 }
+static bool lang_source(const char *rel, char *path, size_t len) { return sub_source(rel, path, len, s_lang_on, s_lang_dir, s_lang_name); }
+static bool trick_source(const char *rel, char *path, size_t len) { return sub_source(rel, path, len, s_trick_on, s_trick_dir, TRICK_NAME); }
 
 /* mod_dir NULL: the image's own DOL and table, with only the language added */
 bool disc_overlay(const char *mod_dir, char *err, size_t errlen) {
     if (!s_file) { snprintf(err, errlen, "no disc image open"); return false; }
     if (s_ext) return true;
-    if (!mod_dir && !(s_lang_dir && s_lang_name)) { snprintf(err, errlen, "no mod and no language"); return false; }
-    const char *what = mod_dir ? mod_dir : s_lang_dir;
+    if (!mod_dir && !(s_lang_dir && s_lang_name) && !s_extra_dir && !s_trick_dir) { snprintf(err, errlen, "no mod and no language"); return false; }
+    const char *what = mod_dir ? mod_dir : s_lang_dir ? s_lang_dir : s_trick_dir ? s_trick_dir : s_extra_dir;
     char path[512];
     long dol_size = 0, fst_size = 0;
     uint8_t *fst = NULL;
@@ -464,13 +490,13 @@ bool disc_overlay(const char *mod_dir, char *err, size_t errlen) {
     uint8_t *hdr = s_ov_header = malloc(0x440);
     if (!hdr) { free(fst); snprintf(err, errlen, "out of memory"); return false; }
     s_ov_fst = fst; /* freed with the overlay from here on */
-    pmutex_lock(&s_lock); /* the read-ahead worker reads the image too */
+    pmutex_lock(&s_io); /* the read-ahead worker reads the image too */
     img_read(0, hdr, 0x440);
     image_fst_off = BE32(hdr + 0x424);
     image_fst_size = BE32(hdr + 0x428);
     if (image_fst_size >= 12 && image_fst_size < (16u << 20) && image_fst_off >= 0x440 && (image_fst = malloc(image_fst_size)))
         img_read(image_fst_off, image_fst, image_fst_size);
-    pmutex_unlock(&s_lock);
+    pmutex_unlock(&s_io);
     if (!image_fst || (uint64_t)BE32(image_fst + 8) * 12 > image_fst_size) {
         snprintf(err, errlen, "the disc image's file table is damaged");
         goto fail;
@@ -488,7 +514,7 @@ bool disc_overlay(const char *mod_dir, char *err, size_t errlen) {
     s_lang_on = false;
     if (s_lang_dir && s_lang_name) {
         uint32_t sz = (uint32_t)fst_size;
-        lang_files = fst_add_language(&fst, &sz);
+        lang_files = fst_add_sub(&fst, &sz, s_lang_dir, s_lang_name, LANG_TOPS, sizeof LANG_TOPS / sizeof *LANG_TOPS);
         s_ov_fst = fst;
         fst_size = sz;
         char probe[96];
@@ -500,6 +526,15 @@ bool disc_overlay(const char *mod_dir, char *err, size_t errlen) {
         s_lang_on = s_lang_on && find_in(fst, (uint32_t)fst_size, probe, &o, &s);
         if (!s_lang_on) rt_log("lang: %s has no %s files (SceneData/title.arc, MRAM_Locale/MRAMLoc.arc): the game stays in English", s_lang_dir, s_lang_name);
         if (!s_lang_on && !mod_dir) { snprintf(err, errlen, "%s: no %s files", s_lang_dir, s_lang_name); goto fail; }
+    }
+    unsigned trick_files = 0;
+    s_trick_on = false;
+    if (s_trick_dir && !mod_dir) { /* the standard game's courses only */
+        uint32_t sz = (uint32_t)fst_size;
+        trick_files = fst_add_sub(&fst, &sz, s_trick_dir, TRICK_NAME, TRICK_TOPS, sizeof TRICK_TOPS / sizeof *TRICK_TOPS);
+        s_ov_fst = fst;
+        fst_size = sz;
+        s_trick_on = trick_files > 0;
     }
     uint32_t n = BE32(fst + 8);
     s_files = calloc(n + 1, sizeof *s_files);
@@ -559,10 +594,22 @@ bool disc_overlay(const char *mod_dir, char *err, size_t errlen) {
             snprintf(path, sizeof path, "%s/files/%s", mod_dir, rel);
             sz = file_size(path);
         }
+        if (sz < 0 && !mod_dir && s_extra_dir) {
+            snprintf(path, sizeof path, "%s/%s", s_extra_dir, rel);
+            sz = file_size(path);
+            /* with a language on, the extra folder's English SceneData stands in for it (the trick
+             * mode's four-row menu.arc: that page is in English, but the TRICKS row is there) */
+            size_t ll = s_lang_on ? strlen(s_lang_name) : 0;
+            if (sz < 0 && ll && !strncasecmp(rel, "SceneData/", 10) && !strncasecmp(rel + 10, s_lang_name, ll) && rel[10 + ll] == '/') {
+                snprintf(path, sizeof path, "%s/SceneData/English/%s", s_extra_dir, rel + 11 + ll);
+                sz = file_size(path);
+            }
+        }
         if (sz < 0 && lang_source(rel, path, sizeof path)) {
             sz = file_size(path);
             lang = sz >= 0;
         }
+        if (sz < 0 && trick_source(rel, path, sizeof path)) sz = file_size(path);
         Extent x = {voff, 0, 0, X_FILE, 0, NULL};
         if (sz >= 0) {
             /* the file's own size: a mod can update a file without its table (MKDD Plus 3.3's MRAM.arc) */
@@ -597,23 +644,26 @@ bool disc_overlay(const char *mod_dir, char *err, size_t errlen) {
     s_is_mod = mod_dir != NULL;
     free(image_fst);
     pmutex_lock(&s_lock); /* live from the next read on */
+    pmutex_lock(&s_io);   /* not during a worker's piece */
     s_ext = s_build;
     s_next = s_nbuild;
     s_win.len = 0; /* the read-ahead window holds image offsets */
     s_want = NO_REQ;
     s_layout++;
+    pmutex_unlock(&s_io);
     pmutex_unlock(&s_lock);
     if (mod_dir)
         rt_log("mod: %s: %u files from the mod (%u streams from %s), %u from the disc image, %.0f MB disc", s_mod_name, from_mod,
                s_from_streams, s_stream_dir ? s_stream_dir : "no stream folder", from_image, (double)voff / 1048576);
     if (s_lang_on)
         rt_log("lang: %s: %u files from %s (%u added to the file table)", s_lang_name, from_lang, s_lang_dir, lang_files);
+    if (s_trick_on) rt_log("trick: %u tracks from %s as Course/%s/", trick_files, s_trick_dir, TRICK_NAME);
     return true;
 oom:
     snprintf(err, errlen, "out of memory");
 fail:
     s_from_streams = 0;
-    s_lang_on = false;
+    s_lang_on = s_trick_on = false;
     free(image_fst);
     overlay_free();
     return false;
@@ -622,21 +672,38 @@ fail:
 bool disc_overlay_active(void) { return s_ext && s_is_mod; }
 const char *disc_overlay_name(void) { return s_ext && s_is_mod ? s_mod_name : NULL; }
 
-/* Read n bytes at disc offset off. Missing CISO blocks and reads past the end are zero. */
-void disc_read(uint64_t off, void *out, size_t n) {
+/* Read n bytes at disc offset off. Missing CISO blocks and reads past the end are zero.
+ * The part the read-ahead window doesn't have is read from the file without s_lock held, so the
+ * worker and other readers' window hits go on meanwhile; s_layout tells whether the overlay went
+ * live in between (the window part and the file part would then come from different layouts:
+ * read again). For a guest thread (c) that wait is a blocking section: other guest threads run.
+ * s_io_waiting holds the worker back from starting its next piece while a read waits for the
+ * file (it held s_lock for that before). */
+void disc_read_guest(Ctx *c, uint64_t off, void *out, size_t n) {
     uint8_t *dst = out;
     if (!s_file) { memset(out, 0, n); return; }
+    bool blocked = false;
     pmutex_lock(&s_lock);
-    size_t done = 0;
-    if (s_win.len && off >= s_win.off && off < s_win.off + s_win.len) {
-        done = (size_t)(s_win.off + s_win.len - off);
-        if (done > n) done = n;
-        memcpy(dst, s_win.data + (off - s_win.off), done);
-        g_disc_ahead_hits++;
-    }
-    if (done < n) {
+    for (int tries = 0;; tries++) {
+        size_t done = 0;
+        if (s_win.len && off >= s_win.off && off < s_win.off + s_win.len) {
+            done = (size_t)(s_win.off + s_win.len - off);
+            if (done > n) done = n;
+            memcpy(dst, s_win.data + (off - s_win.off), done);
+            g_disc_ahead_hits++;
+        }
+        if (done >= n) break;
+        unsigned layout = s_layout;
+        s_io_waiting++;
+        pmutex_unlock(&s_lock);
+        if (!blocked) blocked = sched_block_begin(c);
+        pmutex_lock(&s_io);
         raw_read(off + done, dst + done, n - done);
+        pmutex_unlock(&s_io);
+        pmutex_lock(&s_lock);
+        if (--s_io_waiting == 0) pcond_broadcast(&s_ahead_cv);
         g_disc_reads_direct++;
+        if (layout == s_layout || tries >= 3) break; /* (the overlay goes live once per mod change) */
     }
     uint64_t end = off + n;
     if (s_ahead && n <= AHEAD / 4) {
@@ -645,13 +712,16 @@ void disc_read(uint64_t off, void *out, size_t n) {
         bool enough = in_win && s_win.off + s_win.len - end >= AHEAD / 2;
         if (!enough && want != s_fetching && want != s_want) {
             s_want = want;
-            pcond_signal(&s_ahead_cv);
+            pcond_broadcast(&s_ahead_cv);
         }
     }
     for (unsigned i = 0; i < s_npatch; i++)
         if (s_patch[i].off >= off && s_patch[i].off - off < n) dst[s_patch[i].off - off] = s_patch[i].b;
     pmutex_unlock(&s_lock);
+    sched_block_end(c, blocked); /* no disc lock held: a guest thread with the token may be waiting for one */
 }
+
+void disc_read(uint64_t off, void *out, size_t n) { disc_read_guest(NULL, off, out, n); }
 
 uint32_t disc_read_u32(uint64_t off) {
     uint8_t b[4];

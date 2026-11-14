@@ -6,13 +6,13 @@ usage: py -3 tools/route_editor.py [<routes dir>] [--open KEYS] [--disc IMAGE] [
 the folders, and remembers them (SETTINGS).
 
 <routes dir>: the repository's routes (built into the .nro: rebuild after saving) or the SD card's
-switch/MKDD-NX/routes (a file there wins over the built-in one). An arena with no <key>.txt there
+switch/MKDD-NX/mods/routes (a file there wins over the built-in one; the older routes folder is still read). An arena with no <key>.txt there
 opens its built-in route (BUILTIN); Save writes <key>.txt (the one before kept as <key>.bak) and
 its map edits, map/<key>.txt. The game's map is drawn from your disc image (--disc, default the one
 in the app folder) and a mod's (--mod), only read. How to use the window: the wiki's Route Editor
 page and docs/BATTLE_ROUTES.md.
 """
-import argparse, copy, glob, math, os, random, sys
+import argparse, copy, glob, math, os, random, sys, threading
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
@@ -66,6 +66,9 @@ class Editor:
         self.nets, self.cur = [[]], 0  # the file's networks (the game picks one each battle), the one shown
         self.cover_key, self.uncovered, self.covered_share = None, set(), 0.0
         self.files, self.tris, self.road, self.game = [], [], {}, None
+        self.pre = {}  # the game's maps, read in the background from the start (game_map waits for them)
+        self.pre_thread = threading.Thread(target=self.read_maps, daemon=True)
+        self.pre_thread.start()
         self.added, self.removed = {}, {}  # the map edits: (ix, iz, height band) -> (ix, iz, height)
         self.routes_dirty = self.map_dirty = False
         self.drag = None  # ("point", part, index), ("junction", number), ("pan", x, y), ("paint", add)
@@ -286,16 +289,27 @@ class Editor:
             made = "; no game map here, so the map is from the recordings" + ("" if self.m else ": none")
         self.status.set(f"{key}: {len(self.parts)} parts ({where})" + made + game)
 
+    def read_maps(self):
+        for what, kw in (("disc", {"disc_path": self.disc}), ("mod", {"mod_dir": self.mod})):
+            if next(iter(kw.values())):
+                try:
+                    self.pre[what] = br.game_collision(**kw)
+                except BaseException as e:  # (a damaged or different image or folder: the editor works without it)
+                    self.pre[what] = e
+
     def game_map(self, key):
         if self.game is None:
+            if self.pre_thread.is_alive():
+                self.status.set("Reading the game's maps...")
+                self.root.update_idletasks()
+                self.pre_thread.join()
             self.game, self.game_from = {}, {}
             for what, kw in (("disc", {"disc_path": self.disc}), ("mod", {"mod_dir": self.mod})):
-                if not next(iter(kw.values())):
+                got = self.pre.get(what)
+                if got is None:
                     continue
-                try:
-                    got = br.game_collision(**kw)
-                except Exception as e:  # (a damaged or different image or folder: the editor works without it)
-                    messagebox.showwarning("Game map", f"Could not read the {what}: {e}")
+                if isinstance(got, BaseException):
+                    messagebox.showwarning("Game map", f"Could not read the {what}: {got}")
                     continue
                 for k, v in got.items():
                     if k not in self.game:
@@ -902,11 +916,12 @@ class Editor:
 
 
 def find_disc(routes):
-    """a disc image in the app folder (the routes folder's parent), or None"""
-    app = os.path.dirname(os.path.abspath(routes))
-    for f in sorted(os.listdir(app)):
-        if f.lower().endswith(DISC_TYPES):
-            return os.path.join(app, f)
+    """a disc image in the app folder (the routes folder's parent, or its grandparent for mods/routes), or None"""
+    up = os.path.dirname(os.path.abspath(routes))
+    for app in (up, os.path.dirname(up)):
+        for f in sorted(os.listdir(app)):
+            if f.lower().endswith(DISC_TYPES):
+                return os.path.join(app, f)
     return None
 
 
@@ -928,7 +943,7 @@ def ask_folders(root):
         return None, None, None
     if again:
         return routes, disc, mod
-    messagebox.showinfo("MKDD-NX Battle Routes", "Pick the routes folder to edit: switch/MKDD-NX/routes on the SD card (create it if "
+    messagebox.showinfo("MKDD-NX Battle Routes", "Pick the routes folder to edit: switch/MKDD-NX/mods/routes on the SD card (create it if "
                         "there is none), or the repository's routes. Arenas without a file there start from the built-in route.")
     routes = filedialog.askdirectory(title="Routes folder", initialdir=routes or None)
     if not routes:

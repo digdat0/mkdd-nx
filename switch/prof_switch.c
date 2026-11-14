@@ -9,6 +9,8 @@
 #include <switch.h>
 
 #include "../runtime/rt.h"
+#include "../runtime/plat.h"
+#include "../runtime/gx.h"
 #include "prof_switch.h"
 #include "menu.h"
 
@@ -24,6 +26,7 @@ static volatile bool s_stop;
 static PMutex s_flock;
 static u64 s_samples[6];
 static Handle s_render; /* the main thread (rendering, present) */
+static u32 s_phase;     /* g_gx_phase while the decoder was paused */
 
 static void flush_locked(void) {
     if (s_f && s_n) {
@@ -49,6 +52,7 @@ static int grab(Handle h, u32 *fr) {
     ThreadContext tc;
     int n = -1;
     if (R_SUCCEEDED(svcGetThreadContext3(&tc, h))) {
+        s_phase = g_gx_phase;
         n = 0;
         fr[n++] = off(tc.pc.x);
         fr[n++] = off(tc.lr);
@@ -73,7 +77,7 @@ static void record(int kind, const u32 *fr, int n) {
     if (n < 0) { kind = K_FAIL; n = 0; }
     w[0] = (u32)kind | (u32)n << 8;
     w[1] = (u32)((armTicksToNs(armGetSystemTick()) - s_t0) / 1000000u);
-    w[2] = g_last_fn;
+    w[2] = kind == K_GPU ? s_phase : g_last_fn; /* K_GPU: what the decoder was doing (gx.h GXP_*) */
     memcpy(w + 3, fr, (size_t)n * 4);
     put(w, 3 + (size_t)n);
     s_samples[kind]++;
@@ -84,8 +88,8 @@ static void sampler(void *arg) {
     u32 fr[MAX_FRAMES];
     u64 tick = 0, last_log = armGetSystemTick();
     while (!s_stop) {
-        svcSleepThread(PERIOD_NS);
-        if (!(g_log_mask & LOG_GAME)) { svcSleepThread(100000000); continue; } /* LOGGING off: no samples */
+        plat_sleep_ns(PERIOD_NS); /* (plat.c: ends the thread at exit) */
+        if (!(g_log_mask & LOG_GAME)) { plat_sleep_ns(100000000); continue; } /* LOGGING off: no samples */
         u32 run = sched_running_now();
         if (run == SCHED_NONE) record(K_IDLE, fr, 0);
         else record(K_GAME, fr, grab(g_sched_host, fr));

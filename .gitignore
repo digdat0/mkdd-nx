@@ -23,3 +23,12 @@ pc/*.log
 # menu localization, on hold
 translations/
 tools/ui_strings.py
+
+# track builder (tools/tricktracks): the work folder holds the game's files from the player's disc; nothing it
+# makes is committed (archives, textures, previews)
+tools/tricktracks/work/
+tools/tricktracks/**/*.arc
+tools/tricktracks/**/*.bti
+tools/tricktracks/**/*.bmd
+tools/tricktracks/**/*.png
+tools/tricktracks/menu/art/

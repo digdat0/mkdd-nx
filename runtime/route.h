@@ -17,3 +17,4 @@ void route_course(uint32_t id, uint32_t hash, bool battle); /* the course a race
 /* the current arena's route: points, each one's CL group ID (-1 inside a group), 0 none. Up to want
  * different networks, *got of them, network k at points start[k] to start[k + 1] (start: want + 1) */
 int route_load(float (*pts)[3], int16_t *group, int max, int want, int *start, int *got);
+bool route_map(float box[4], int *orient); /* the arena's minimap frame from its route file (x0 z0 x1 z1), false none */

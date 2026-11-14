@@ -20,6 +20,7 @@ import sys
 import charpack
 import wiichar
 from wiichar import ConvertError, IDENT, Mesh, POS, Skeleton
+import ui_theme  # noqa: E402
 
 KART_MODEL = "kart_model.brres"
 # Double Dash's kart folders (runtime/charpack.c KP_NAMES) by who drives them
@@ -400,7 +401,7 @@ def gui(root):
         col.pack(side="left", padx=(0, 8))
         v = {"yaw": tk.IntVar(value=yaw), "seq": 0}
         v["label"] = tk.Label(col, text="The converted kart shows here" if k == 0 else "", width=44, height=20,
-                              relief="groove", background="#46505f", foreground="#ddd")
+                              relief="groove", background=ui_theme.PREVIEW[0], foreground=ui_theme.PREVIEW[1])
         v["label"].pack(side="top")
         row = ttk.Frame(col)
         row.pack(side="top", fill="x")
@@ -410,10 +411,10 @@ def gui(root):
         v["angle"] = ttk.Label(row, text=f"{yaw:3d}°", width=5)
         v["angle"].pack(side="left")
         views.append(v)
-    ttk.Label(mid, text="The wheels shown are placed by eye: the game puts them where the base kart's go.", foreground="#666").pack(side="top", anchor="w")
+    ttk.Label(mid, text="The wheels shown are placed by eye: the game puts them where the base kart's go.", foreground=ui_theme.DIM).pack(side="top", anchor="w")
     notes = tk.Text(mid, height=8, wrap="word")
     notes.pack(side="top", fill="both", expand=True, pady=(8, 0))
-    for level, colour in (("ok", "#1a7f37"), ("info", "#555555"), ("warn", "#9a6700"), ("error", "#cf222e")):
+    for level, colour in ui_theme.NOTES.items():
         notes.tag_configure(level, foreground=colour)
 
     def show_notes(items):

@@ -12,10 +12,10 @@
  * every race, on every console.
  *
  * Built on the race's first kart frame, when the course's collision is up (the BOL alone is there at
- * loadCrsData). With LOGGING on, logs/coins_<ID>_<hash>.txt holds the line, the item boxes, the start
+ * loadCrsData). A build with -DCOINS_DUMP writes logs/coins_<ID>_<hash>.txt with LOGGING on: the line, the item boxes, the start
  * and the coins (tools/coins_view.py draws it).
  *
- * A course's own layout can replace that one: coins/<course ID>_<BOL hash>.txt in the app folder (the
+ * A course's own layout can replace that one: mods/coins/<course ID>_<BOL hash>.txt in the app folder (or coins/, where they were before; the
  * key battle routes use: a mod's course has its own), from tools/coin_editor.py. One coin a line, "x y z"
  * (or the dump's "coin x y z ..." lines, so a logged layout can be copied there); '#' starts a comment.
  * Each is put on the ground under it as the made ones are (y: where the ground is searched from, about
@@ -30,6 +30,7 @@
 #include <string.h>
 #include "charpack.h"
 #include "coins.h"
+#include "route.h"
 #include "rt.h"
 
 volatile uint32_t g_coins;
@@ -54,6 +55,7 @@ volatile uint32_t g_coins;
 #define COIN_ROW_MIN 3        /* a row keeps at least this many coins, else none of it */
 #define OBJ_ITEMBOX 1         /* SObject +0x24 objID */
 #define BOX_MAX 256
+#define COIN_ROUTE_W 600.0f /* a route's half width (a trick arena's line: route.c points have none) */
 
 #define CRS_GROUND_CT 0x8017FBA4u     /* CrsGround::CrsGround(Course *) (the RaceMgr's course) */
 #define CRS_GROUND_SEARCH 0x8017FC88u /* CrsGround::search(const TVec3f &) */
@@ -79,7 +81,9 @@ static void gxcall(Ctx *c, uint8_t *M, uint32_t fn, const uint32_t *a, unsigned 
 void coins_course(Ctx *c, uint8_t *M, uint32_t bol, uint32_t hash, uint32_t mode) {
     s_ncoin = s_nwater = 0, s_built = false;
     collect_reset();
-    s_pending = g_coins && ram_ptr(bol) && (mode == 2 || mode == 3); /* Grand Prix and versus: not time trial (its records and ghosts stay fair) or the battles */
+    /* Grand Prix and versus: not time trial (its records and ghosts stay fair) or the battles; a trick battle
+     * (rt.h g_trick_comp, a balloon battle) always: its HUD counts them (switch/menu.c) */
+    s_pending = ram_ptr(bol) && ((g_coins && (mode == 2 || mode == 3)) || (g_trick_comp && mode == 4));
     s_bol = bol, s_hash = hash, s_id = s_pending ? (uint32_t)mld(c, M, bol + 0x19, 1) : 0;
 }
 
@@ -127,6 +131,7 @@ typedef struct {
     float len; /* its length */
 } Step;
 
+#ifdef COINS_DUMP
 static void dump(int n, const float (*pt)[3], const int16_t *grp, const float *sc, const float (*box)[3], int nbox,
                  const float *start, const Step *st, int nst) {
     char path[64];
@@ -142,14 +147,17 @@ static void dump(int n, const float (*pt)[3], const int16_t *grp, const float *s
         fprintf(f, "coin %.1f %.1f %.1f %u %u\n", s_coin[i].pos[0], s_coin[i].pos[1], s_coin[i].pos[2], s_coin[i].attr, s_coin[i].water);
     fclose(f);
 }
+#endif
 
-#define COIN_DIR "coins"
-
-/* coins/<key>.txt (see the top): true when there is one (the layout is then its coins) */
+/* mods/coins/<key>.txt, else coins/<key>.txt (see the top): true when there is one (the layout is then its coins) */
 static bool load_layout(Ctx *c, uint8_t *M) {
+    static const char *const DIRS[] = {"mods/coins", "coins"};
     char path[48], line[128];
-    snprintf(path, sizeof path, COIN_DIR "/%02x_%08x.txt", (unsigned)s_id, (unsigned)s_hash);
-    FILE *f = fopen(path, "r");
+    FILE *f = NULL;
+    for (int d = 0; d < 2 && !f; d++) {
+        snprintf(path, sizeof path, "%s/%02x_%08x.txt", DIRS[d], (unsigned)s_id, (unsigned)s_hash);
+        f = fopen(path, "r");
+    }
     if (!f) return false;
     int lines = 0, bad = 0, air = 0, over = 0;
     while (fgets(line, sizeof line, f)) {
@@ -194,14 +202,22 @@ static void build(Ctx *c, uint8_t *M) {
     if (load_layout(c, M)) return;
     int n = (int)ld16(c, M, bol + 0x1a);
     uint32_t clo = ld32(c, M, bol + 0x44);
-    if (n < 2 || n > CL_MAX || clo < 0x7c || !IS_RAM(bol + clo + 0x20u * (uint32_t)n - 1)) {
-        rt_log("coins: course %#x has no line to follow (%d CL points)", (unsigned)s_id, n);
-        return;
-    }
     static float pt[CL_MAX][3], sc[CL_MAX];
     static int16_t grp[CL_MAX];
     static Step st[CL_MAX + 1];
-    for (int i = 0; i < n; i++) {
+    bool cl = n >= 2 && n <= CL_MAX && clo >= 0x7c && IS_RAM(bol + clo + 0x20u * (uint32_t)n - 1);
+    if (!cl && g_trick_comp) { /* a trick arena (a battle stage: no CL points): the computers' loop (route.c), one line */
+        int start[2] = {0, 0}, got = 0, all = route_load(pt, grp, CL_MAX, 1, start, &got);
+        n = got >= 1 && start[1] > start[0] && start[1] <= all ? start[1] - start[0] : 0;
+        if (n >= 2 && start[0] > 0) memmove(pt, pt + start[0], sizeof *pt * (size_t)n);
+        for (int i = 0; i < n; i++) grp[i] = -1, sc[i] = COIN_ROUTE_W;
+        if (n >= 2) rt_log("coins: course %#x: the computers' route as the line (%d points)", (unsigned)s_id, n);
+    }
+    if (!cl && n < 2) {
+        rt_log("coins: course %#x has no line to follow (%d CL points)", (unsigned)s_id, n);
+        return;
+    }
+    for (int i = 0; i < n && cl; i++) {
         uint32_t p = bol + clo + 0x20u * (uint32_t)i;
         ldfn(c, M, p, pt[i], 3);
         grp[i] = (int16_t)ld16(c, M, p + 0xe);
@@ -312,7 +328,9 @@ static void build(Ctx *c, uint8_t *M) {
     rt_log("coins: course %#x: %d coins in %d rows of %d tried (line %.0f, %d steps of usually %.0f, row every %.0f, "
            "%d boxes); skipped %d steep, %d near start/box, %d off road, %d no ground; ground%s",
            (unsigned)s_id, s_ncoin, rows, tried, total, nst, usual, space, nbox, steep, near, off_road, no_ground, hist);
+#ifdef COINS_DUMP
     if (g_log_mask & LOG_GAME) dump(n, (const float(*)[3])pt, grp, sc, (const float(*)[3])box, nbox, have_start ? start : NULL, st, nst);
+#endif
 }
 
 

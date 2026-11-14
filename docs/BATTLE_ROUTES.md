@@ -5,8 +5,8 @@ on by default) needs a route file for each arena. These files are the port's own
 
 **Built in:** the `.nro` carries a route for every arena, the game's six and MKDD Plus's 24, made from
 the repository's `routes/<key>.txt` when it is built (`switch/CMakeLists.txt`; `-DROUTES_DIR=` for another
-folder). Nothing is needed on the SD card. **Your own:** a `switch/MKDD-NX/routes/<key>.txt` on the SD card
-wins over the built-in one for that arena; delete it to go back. The tools below work on any `routes`
+folder). Nothing is needed on the SD card. **Your own:** a `switch/MKDD-NX/mods/routes/<key>.txt` on the SD card
+(or the older `switch/MKDD-NX/routes/`) wins over the built-in one for that arena; delete it to go back. The tools below work on any `routes`
 folder: the repository's (then rebuild) or the SD card's.
 
 There are two tools:
@@ -62,7 +62,7 @@ Each network is made from a random start, so every run gives different ones.
 
 
 ```bash
-py -3 tools/battle_routes.py "<SD>/switch/MKDD-NX/routes" --seed 1 --open 35_3439d285,38_db1d03f9,3b_2ad1d46b --install
+py -3 tools/battle_routes.py "<SD>/switch/MKDD-NX/mods/routes" --seed 1 --open 35_3439d285,38_db1d03f9,3b_2ad1d46b --install
 ```
 
 - `--open` lists the arenas with no holes or inner walls (Nintendo GameCube, Tilt-a-Kart, Pipe
@@ -94,7 +94,7 @@ py -3 tools/route_editor.py routes --disc "E:/path/to/game.iso" --mod "E:/path/t
 ```
 
 That edits the built-in routes (rebuild after saving). To try a route without rebuilding, point it at
-`switch/MKDD-NX/routes` on the SD card in a card reader instead (copy the arena's `<key>.txt` there first).
+`switch/MKDD-NX/mods/routes` on the SD card in a card reader instead (copy the arena's `<key>.txt` there first).
 
 The editor needs Pillow (`py -3 -m pip install pillow`). To draw the game's own map, it reads your
 disc image. By default it uses the `.iso`, `.gcm`, `.ciso` or `.rvz` in the app folder (the folder
@@ -242,7 +242,7 @@ but the CPUs stand still.
 
 ## Files
 
-In a `routes` folder (the repository's, or `switch/MKDD-NX/routes/` on the SD card):
+In a `routes` folder (the repository's, or `switch/MKDD-NX/mods/routes/` on the SD card):
 
 | File | What it is |
 |---|---|
@@ -278,7 +278,7 @@ The game's log (`logs/mkdd.log`, with LOGGING on in the − menu's Debug page) s
 | Log line | Meaning |
 |---|---|
 | `route: network, N parts, M points` | The route is in use |
-| `route: routes/<key>.txt, network A, B, C of N` | Which of the file's networks this battle uses, in order (the SD card's file) |
+| `route: mods/routes/<key>.txt, network A, B, C of N` | Which of the file's networks this battle uses, in order (the SD card's file) |
 | `route: built-in <key>, network A, B, C of N` | The same, from the route built into the `.nro` |
 | `battle cpus: kart K drives network I of the M loaded` | Which of those each CPU drives |
 | `battle cpus: kart K onto network I at point P` | A CPU was put back on its own network (start or respawn) |

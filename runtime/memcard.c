@@ -145,22 +145,47 @@ static void backup_file(const char *path, const Entry *e) {
     free(b);
 }
 
-static void write_entry(Entry *e) {
+/* The card folder's file I/O. A guest thread (c) gives up the token while it waits for the SD
+ * card (sched_block_begin), as a real card transfer lets other threads run. Only CardMgr's task
+ * thread changes the card (writeTask, createTask, setStatusTask, deleteTask, renameTask,
+ * formatTask); the main thread only probes it, which is memory-only. The file image is built before
+ * the wait, so the wait touches no card state. s_io is taken before giving up the token, so writes
+ * reach the folder in the order the game made them. */
+static PMutex s_io = PTHREAD_MUTEX_INITIALIZER;
+typedef struct { bool blocked; } CardIo;
+static CardIo io_begin(Ctx *c) {
+    pmutex_lock(&s_io);
+    return (CardIo){c ? sched_block_begin(c) : false};
+}
+static void io_end(Ctx *c, CardIo t) {
+    pmutex_unlock(&s_io); /* before taking the token back: a thread holding it may want s_io */
+    sched_block_end(c, t.blocked);
+}
+
+static void write_entry(Ctx *c, Entry *e) {
     char p[600];
     gci_path(p, sizeof p, "card_a", e);
-    if (!e->backed_up) { backup_file(p, e); e->backed_up = true; }
     size_t n;
     uint8_t *b = gci_image(e, &n);
-    if (!plat_write_file_atomic(p, b, n)) rt_log("memcard: could not write %s", p);
+    bool backup = !e->backed_up;
+    e->backed_up = true;
+    CardIo t = io_begin(c);
+    if (backup) backup_file(p, e);
+    bool ok = b && plat_write_file_atomic(p, b, n);
+    io_end(c, t);
+    if (!ok) rt_log("memcard: could not write %s", p);
     free(b);
 }
 
 /* Remove a file from the card folder; its last version stays in backup/. */
-static void remove_entry_file(Entry *e) {
+static void remove_entry_file(Ctx *c, Entry *e) {
     char p[600];
     gci_path(p, sizeof p, "card_a", e);
-    if (!e->backed_up) backup_file(p, e);
+    bool backup = !e->backed_up;
+    CardIo t = io_begin(c);
+    if (backup) backup_file(p, e);
     remove(p);
+    io_end(c, t);
 }
 
 /* MKDDCARD v1 (one file for the whole card, little-endian fields). */
@@ -278,7 +303,7 @@ static void load(void) {
         if (!e->present) continue;
         if (blank_code(e)) { memcpy(e->game, g, 4); memcpy(e->company, co, 2); } /* saves from before 0939 */
         e->backed_up = true; /* the old file stays as slotA.bin.migrated */
-        write_entry(e);
+        write_entry(NULL, e);
     }
     char mp[600];
     snprintf(mp, sizeof mp, "%s.migrated", s_path);
@@ -419,7 +444,7 @@ bool memcard_call(Ctx *c, const char *name, int32_t *result) {
         if (a[0] != 0) r = NOCARD;
         else {
             for (int i = 0; i < MAX_FILES; i++)
-                if (s_files[i].present) { remove_entry_file(&s_files[i]); free_entry(&s_files[i]); }
+                if (s_files[i].present) { remove_entry_file(c, &s_files[i]); free_entry(&s_files[i]); }
             r = READY;
         }
     } else if (!strcmp(name, "CARDFreeBlocks")) {
@@ -471,7 +496,7 @@ bool memcard_call(Ctx *c, const char *name, int32_t *result) {
                 e->len = blocks * SECTOR_SIZE;
                 e->data = calloc(1, e->len ? e->len : 1);
                 e->perm = 0x04;
-                write_entry(e);
+                write_entry(c, e);
                 write_fileinfo(fi, chan, (uint32_t)slot, e->len);
                 r = READY;
             }
@@ -492,7 +517,7 @@ bool memcard_call(Ctx *c, const char *name, int32_t *result) {
                     if (write) e->data[off + i] = (uint8_t)m_read_be(buf + i, 1);
                     else m_write_be(buf + i, 1, e->data[off + i]);
                 }
-                if (write) { e->time = now2000(); write_entry(e); }
+                if (write) { e->time = now2000(); write_entry(c, e); }
                 m_write_be(fi + 8, 4, off + len);
                 r = READY;
             }
@@ -505,7 +530,7 @@ bool memcard_call(Ctx *c, const char *name, int32_t *result) {
             int no = -1;
             if (strstr(name, "Fast")) { if (a[1] < MAX_FILES && s_files[a[1]].present) no = (int)a[1]; }
             else { this_game(g, co); read_name(a[1], nm); no = find(nm, g, co); }
-            if (no >= 0) { remove_entry_file(&s_files[no]); free_entry(&s_files[no]); r = READY; }
+            if (no >= 0) { remove_entry_file(c, &s_files[no]); free_entry(&s_files[no]); r = READY; }
             else r = NOFILE;
         }
         r = done(c, async ? a[2] : 0, chan, r);
@@ -524,7 +549,7 @@ bool memcard_call(Ctx *c, const char *name, int32_t *result) {
             e->icon_speed = (uint16_t)m_read_be(st + 0x36, 2);
             e->comment_addr = (uint32_t)m_read_be(st + 0x38, 4);
             e->time = now2000();
-            write_entry(e);
+            write_entry(c, e);
             write_stat(st, e);
             r = READY;
         } else r = NOFILE;
@@ -541,10 +566,10 @@ bool memcard_call(Ctx *c, const char *name, int32_t *result) {
             int i;
             if (find(nm, g, co) >= 0) r = EXIST;
             else if ((i = find(o, g, co)) >= 0) {
-                remove_entry_file(&s_files[i]); /* the old name's file goes to backup/ */
+                remove_entry_file(c, &s_files[i]); /* the old name's file goes to backup/ */
                 memcpy(s_files[i].name, nm, 32);
                 s_files[i].backed_up = true;
-                write_entry(&s_files[i]);
+                write_entry(c, &s_files[i]);
                 r = READY;
             }
             else r = NOFILE;

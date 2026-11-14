@@ -1,6 +1,6 @@
 """Edit a race course's coins: the layout file runtime/coins.c reads in place of the one it makes,
-coins/<course ID>_<BOL hash>.txt in the app folder (switch/MKDD-NX/coins on the SD card, the PC
-build's folder on Windows). The key is the battle routes' one, so a mod's course has its own file.
+mods/coins/<course ID>_<BOL hash>.txt in the app folder (switch/MKDD-NX/mods/coins on the SD card, the PC
+build's folder on Windows; the game still reads the older coins/ folder too). The key is the battle routes' one, so a mod's course has its own file.
 
 usage: py -3 tools/coin_editor.py [<coins dir>] [--disc IMAGE] [--mod DIR]
 (or Coins in the MKDD-NX Tools app). The window picks its folders (Browse), remembered for next time.
@@ -15,7 +15,7 @@ game makes (the same rules, from the course's own collision); then:
 Save writes <key>.txt (the one before kept as <key>.bak). A course with no file gets the made layout;
 Remove file deletes it (asked first). A saved file with no coins: no coins on that course.
 """
-import argparse, json, math, os, re, struct, sys
+import argparse, json, math, os, re, struct, sys, threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -260,10 +260,10 @@ class Editor:
         self.dir_v = tk.StringVar(value=coins_dir or last.get("coins") or "")
         self.disc_v = tk.StringVar(value=disc or last.get("disc") or "")
         self.mod_v = tk.StringVar(value=mod or last.get("mod") or "")
-        top = ttk.Frame(root, padding=(8, 8, 8, 0))
+        self.top = top = ttk.Frame(root, padding=(8, 8, 8, 0))
         top.pack(side=tk.TOP, fill=tk.X)
         ttk.Label(top, text="Places the coins on each race course (GAME > COINS). 1) Pick the coins folder: "
-                            "switch/MKDD-NX/coins on the SD card (create it if there is none), or a coins folder next to "
+                            "switch/MKDD-NX/mods/coins on the SD card (create it if there is none), or mods/coins next to "
                             "MKDD-NX.exe. 2) Pick your disc image (only read, for the course maps) and, for a course mod's "
                             "courses, its folder (the one holding files). 3) Pick a course and place its coins.",
                   wraplength=900, justify="left").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
@@ -315,7 +315,7 @@ class Editor:
 
     # --- the folders: read again whenever one changes ---
     def pick_dir(self):
-        p = filedialog.askdirectory(title="Coins folder: switch/MKDD-NX/coins on the SD card, or coins next to MKDD-NX.exe",
+        p = filedialog.askdirectory(title="Coins folder: switch/MKDD-NX/mods/coins on the SD card, or mods/coins next to MKDD-NX.exe",
                                     initialdir=self.dir_v.get() or None)
         if p:
             self.dir_v.set(p)
@@ -353,18 +353,36 @@ class Editor:
             notes.append(f"No files folder in {mod}")
             mod = None
         self.status.set("Reading the courses...")
-        self.root.update_idletasks()
-        found = {}
-        for what, kw in (("disc image", {"disc_path": disc}), ("mod folder", {"mod_dir": mod})):
-            if not next(iter(kw.values())):
-                continue
+        self.scan_seq = getattr(self, "scan_seq", 0) + 1
+        seq = self.scan_seq
+        for w in self.top_buttons():
+            w.state(["disabled"])
+
+        def work():  # (in the background: the window stays usable while a disc image is read)
+            found, errs = {}, []
+            for what, kw in (("disc image", {"disc_path": disc}), ("mod folder", {"mod_dir": mod})):
+                if not next(iter(kw.values())):
+                    continue
+                try:
+                    got = br.game_collision(want=br.is_race_course, with_bol=True, **kw)
+                except BaseException as e:  # (a damaged or different image or folder: no maps from it)
+                    errs.append(f"Could not read the {what}: {e}")
+                    continue
+                for k, v in got.items():
+                    found.setdefault(k, v)
             try:
-                got = br.game_collision(want=br.is_race_course, with_bol=True, **kw)
-            except Exception as e:  # (a damaged or different image or folder: no maps from it)
-                notes.append(f"Could not read the {what}: {e}")
-                continue
-            for k, v in got.items():
-                found.setdefault(k, v)
+                self.root.after(0, lambda: seq == self.scan_seq and self.scanned(cdir, disc, mod, found, notes + errs))
+            except RuntimeError:  # (the window closed meanwhile)
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def top_buttons(self):
+        return [w for w in self.top.winfo_children() if isinstance(w, ttk.Button)]
+
+    def scanned(self, cdir, disc, mod, found, notes):
+        for w in self.top_buttons():
+            w.state(["!disabled"])
         try:
             files = {f[:11] for f in os.listdir(cdir) if re.fullmatch(r"[0-9a-f]{2}_[0-9a-f]{8}\.txt", f)} if cdir else set()
         except OSError as e:
@@ -588,7 +606,10 @@ class Editor:
         self.root.update_idletasks()
         tris, bol, arc = self.found[key]
         if not self.course or self.course.key != key:
-            self.course = Course(key, tris, bol)
+            cache = self.__dict__.setdefault("courses", {})  # (made once each: a course's map takes a second)
+            if cache.get(key, (None,))[0] is not tris:
+                cache[key] = (tris, Course(key, tris, bol))
+            self.course = cache[key][1]
             self.make_base()
             room = min(max(self.canvas.winfo_width(), 400), max(self.canvas.winfo_height(), 400)) - 40
             self.zoom_i = 0  # the largest zoom the whole course fits in

@@ -20,6 +20,7 @@ from tkinter import filedialog, messagebox, ttk
 if not getattr(sys, "frozen", False):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import hdtex_pack  # noqa: E402
+import ui_theme  # noqa: E402
 
 APP = "MKDD-NX HD Textures"
 OUT_NAME = "hd-textures.bin"
@@ -87,19 +88,19 @@ class App:
         ttk.Label(intro, text="Converts the MKDD HD texture pack (made for Dolphin) into one file for MKDD-NX on Switch.\n"
                   "Download the English pack from its site (Mega link there) and extract it first:",
                   wraplength=560, justify="left").pack(anchor="w")
-        link = tk.Label(intro, text=PACK_URL, fg="#0066cc", cursor="hand2", font=("", 9, "underline"))
+        link = tk.Label(intro, text=PACK_URL, fg=ui_theme.LINK, cursor="hand2", font=("", 9, "underline"))
         link.pack(anchor="w", pady=(2, 0))
         link.bind("<Button-1>", lambda e: webbrowser.open(PACK_URL))
 
         ttk.Label(f, text="1. Texture pack", font=("", 10, "bold")).grid(row=1, column=0, sticky="w")
         self.pack_var = tk.StringVar(value="Choose the pack's GM4E01 folder")
-        ttk.Label(f, textvariable=self.pack_var, wraplength=400, foreground="gray").grid(row=1, column=1, sticky="w", padx=8)
+        ttk.Label(f, textvariable=self.pack_var, wraplength=400, foreground=ui_theme.DIM).grid(row=1, column=1, sticky="w", padx=8)
         self.pack_btn = ttk.Button(f, text="Choose...", command=self.choose_pack)
         self.pack_btn.grid(row=1, column=2)
 
         ttk.Label(f, text="2. Output folder", font=("", 10, "bold")).grid(row=2, column=0, sticky="w", pady=(8, 0))
         self.out_var = tk.StringVar(value="Choose where to save " + OUT_NAME + " (about 800 MB)")
-        ttk.Label(f, textvariable=self.out_var, wraplength=400, foreground="gray").grid(row=2, column=1, sticky="w", padx=8, pady=(8, 0))
+        ttk.Label(f, textvariable=self.out_var, wraplength=400, foreground=ui_theme.DIM).grid(row=2, column=1, sticky="w", padx=8, pady=(8, 0))
         self.out_btn = ttk.Button(f, text="Choose...", command=self.choose_out)
         self.out_btn.grid(row=2, column=2, pady=(8, 0))
 

@@ -14,6 +14,7 @@ enum {
 
 typedef struct {
     bool launcher;      /* show the launcher at start (Shift held at start shows it anyway) */
+    bool auto_update;   /* look for a new release at start (the launcher's Updates page; off by default) */
     bool fullscreen;    /* start borderless full screen (F11 / Alt+Enter, remembered) */
     int win_w, win_h;   /* window size, client area */
     int volume;         /* 0-100 */

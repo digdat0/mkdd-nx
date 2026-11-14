@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """MKDD-NX Tools' Languages tab: copies the French, German, Italian and Spanish files out of the
-player's own PAL disc image (GM4P01: .iso, .gcm, .ciso or .rvz) for MKDD-NX's MODS > LANGUAGE.
+player's own PAL disc image (GM4P01), or the Japanese files out of their own Japanese disc image
+(GM4J01): .iso, .gcm, .ciso or .rvz, for MKDD-NX's MODS > LANGUAGE.
 Nothing else from the disc is read or kept.
 
     py -3 tools/langpack.py <PAL disc image> <output folder>
 
-writes <output folder>/lang/<Language>/{AwardData,CourseName,MRAM_Locale,SceneData}/..., the PAL
+writes <output folder>/lang/<Language>/{AwardData,CourseName,MRAM_Locale,SceneData}/..., the
 disc's <folder>/<Language>/ files: the lang folder goes in MKDD-NX's mods folder
 (sdmc:/switch/MKDD-NX/mods/lang on the Switch, mods\\lang next to MKDD-NX.exe). runtime/disc.c adds
 them to the USA game's file table and runtime/hle.c sets the game's language.
@@ -14,7 +15,7 @@ import os
 import struct
 import sys
 
-LANGS = ("French", "German", "Italian", "Spanish")
+LANGS = ("French", "German", "Italian", "Spanish", "Japanese")
 TOPS = ("AwardData", "CourseName", "MRAM_Locale", "SceneData")
 NEEDED = ("SceneData/title.arc", "MRAM_Locale/MRAMLoc.arc")  # what MKDD-NX checks a language folder by
 
@@ -61,8 +62,31 @@ def disc_files(d):
     return out
 
 
+def dol_font(d):
+    """the disc's DOL's two-byte (Shift-JIS) font, the Japanese game's kartfont.bfn, else None"""
+    dol = struct.unpack(">I", d.read(0x420, 4))[0]
+    hdr = d.read(dol, 0x100)
+    if len(hdr) < 0x100:
+        return None
+    best = None
+    for s in range(7, 18):  # the data sections
+        off, size = struct.unpack(">I", hdr[4 * s:4 * s + 4])[0], struct.unpack(">I", hdr[0x90 + 4 * s:0x94 + 4 * s])[0]
+        if not off or not size or size > 8 << 20:
+            continue
+        sec = d.read(dol + off, size)
+        i = sec.find(b"FONTbfn1")
+        while i >= 0:
+            fs = struct.unpack(">I", sec[i + 8:i + 12])[0] if i + 12 <= len(sec) else 0
+            inf = sec.find(b"INF1", i, i + 0x40)
+            if 0x20 <= fs <= len(sec) - i and inf > 0 and struct.unpack(">H", sec[inf + 8:inf + 10])[0] == 2:
+                if not best or fs > len(best):
+                    best = sec[i:i + fs]
+            i = sec.find(b"FONTbfn1", i + 8)
+    return best
+
+
 def extract(disc_path, out_dir, log=print):
-    """the PAL disc's languages -> out_dir/lang/<Language>/...; returns {language: files written}"""
+    """the disc's languages (PAL or Japanese) -> out_dir/lang/<Language>/...; returns {language: files written}"""
     d = open_disc(disc_path)
     gid = d.read(0, 6)
     if gid[:3] != b"GM4":
@@ -75,8 +99,8 @@ def extract(disc_path, out_dir, log=print):
         if top and lang:
             files.setdefault(lang, []).append((f"{top}/{parts[2]}", off, size))
     if not files:
-        raise ValueError(f"game {gid.decode('latin-1')} has no French, German, Italian or Spanish files: "
-                         "they are on the European (PAL) disc, GM4P01")
+        raise ValueError(f"game {gid.decode('latin-1')} has no French, German, Italian, Spanish or Japanese files: "
+                         "they are on the European (PAL) disc, GM4P01, and the Japanese disc, GM4J01")
     done = {}
     for lang in LANGS:
         have = {p.lower() for p, _, _ in files.get(lang, [])}
@@ -94,7 +118,16 @@ def extract(disc_path, out_dir, log=print):
                 f.write(data)
             os.replace(dst + ".part", dst)
         done[lang] = len(files[lang])
-        log(f"{lang}: {len(files[lang])} files")
+        if lang == "Japanese":  # its texts need the Japanese game's font (runtime/hle.c language_font)
+            font = dol_font(d)
+            if font:
+                with open(os.path.join(base, "kartfont.bfn.part"), "wb") as f:
+                    f.write(font)
+                os.replace(os.path.join(base, "kartfont.bfn.part"), os.path.join(base, "kartfont.bfn"))
+                done[lang] += 1
+            else:
+                log("Japanese: the disc's font was not found: the pause boxes' names will not show")
+        log(f"{lang}: {done[lang]} files")
     if not done:
         raise ValueError("no complete language on this disc")
     return done
@@ -130,12 +163,12 @@ def gui(root):
     top = ttk.Frame(root, padding=8)
     top.pack(fill="x")
     ttk.Label(top, text="Copies the French, German, Italian and Spanish menus and texts from your own European (PAL) disc "
-                        "image, for MKDD-NX's MODS > LANGUAGE. Only those files are read. Put the lang folder it writes in "
+                        "image, or the Japanese ones from your own Japanese disc image, for MKDD-NX's MODS > LANGUAGE. Only those files are read. Put the lang folder it writes in "
                         "MKDD-NX's mods folder, then pick the language in the - menu (MODS > LANGUAGE) or the Windows "
                         "launcher, and restart.", wraplength=900, justify="left").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
 
     def pick_iso():
-        p = filedialog.askopenfilename(title="Your PAL disc image (only read)",
+        p = filedialog.askopenfilename(title="Your PAL or Japanese disc image (only read)",
                                        filetypes=[("Disc image", "*.iso *.gcm *.ciso *.rvz"), ("All", "*.*")])
         if p:
             iso_v.set(p)
@@ -147,7 +180,7 @@ def gui(root):
             out_v.set(p)
             save_cfg()
 
-    for r, (label, var, cmd) in enumerate((("PAL disc image:", iso_v, pick_iso), ("Output folder:", out_v, pick_out)), start=1):
+    for r, (label, var, cmd) in enumerate((("PAL or Japanese disc:", iso_v, pick_iso), ("Output folder:", out_v, pick_out)), start=1):
         ttk.Label(top, text=label).grid(row=r, column=0, sticky="w")
         ttk.Entry(top, textvariable=var, width=80).grid(row=r, column=1, sticky="we", padx=6, pady=2)
         ttk.Button(top, text="Browse...", command=cmd).grid(row=r, column=2)
@@ -168,7 +201,7 @@ def gui(root):
     def run():
         disc, out = iso_v.get().strip(), out_v.get().strip()
         if not disc or not os.path.isfile(disc):
-            messagebox.showerror("Languages", "Pick your PAL disc image first.")
+            messagebox.showerror("Languages", "Pick your PAL or Japanese disc image first.")
             return
         if not out:
             messagebox.showerror("Languages", "Pick the output folder first.")

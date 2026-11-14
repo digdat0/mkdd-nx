@@ -16,26 +16,28 @@
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
+#include <ctype.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include "nx_compat.h"
 #include "pad.h"
 #include "win.h"
+#include "../switch/mods_setup.h"
 #include "wincfg.h"
 #include "../runtime/rt.h"
 #include "../runtime/table.h"
 #include "../switch/menu.h"
 #include "../switch/update.h"
 
-enum { P_GAME, P_GFX, P_AUDIO, P_CTRL, P_KEYS, P_MODS, P_COUNT };
-static const char *const PAGE_NAMES[P_COUNT] = {"Game", "Graphics", "Audio", "Controller", "Keyboard", "Mods"};
+enum { P_GAME, P_GFX, P_AUDIO, P_CTRL, P_KEYS, P_MODS, P_UPD, P_COUNT };
+static const char *const PAGE_NAMES[P_COUNT] = {"Game", "Graphics", "Audio", "Controller", "Keyboard", "Mods", "Updates"};
 /* Segoe MDL2 Assets glyphs: flag, monitor, volume, game pad, keyboard, puzzle piece */
-static const wchar_t PAGE_ICONS[P_COUNT] = {0xE7C1, 0xE7F4, 0xE767, 0xE7FC, 0xE765, 0xEA86};
+static const wchar_t PAGE_ICONS[P_COUNT] = {0xE7C1, 0xE7F4, 0xE767, 0xE7FC, 0xE765, 0xEA86, 0xE895};
 
 enum { /* control ids */
     ID_PLAY = 100, ID_QUIT, ID_BROWSE, ID_OPEN_DIR, ID_OPEN_MODS, ID_INSTALL, ID_MAP_DEFAULT, ID_KEYS_DEFAULT,
-    ID_VOLUME, ID_DISC, ID_PAD_VIEW, ID_PAD_PLAYER,
+    ID_VOLUME, ID_DISC, ID_PAD_VIEW, ID_PAD_PLAYER, ID_UPDATE,
     ID_MAP0 = 200,  /* + row * 2 + column */
     ID_KEY0 = 300,  /* + row * KB_KEYS + column */
     ID_TOG0 = 400,  /* + toggle number */
@@ -148,12 +150,20 @@ static HWND button(int page, const char *t, int x, int y, int w, int id) {
     return kind(add(page, "BUTTON", t, WS_TABSTOP | BS_OWNERDRAW, x, y, w, 28, id), K_BTN);
 }
 
+/* Updates page (win/update_win.c does the work on its own thread; WM_TIMER polls it) */
+static HWND c_auto, c_upd_btn, c_upd_prog, c_upd_status, c_upd_latest;
+static UpdateStatus s_upd = {.state = -1};
+static bool s_upd_go; /* the button was clicked: check, install and restart in one go */
+static void upd_show(void) {
+    if (c_upd_prog) ShowWindow(c_upd_prog, s_page == P_UPD && (s_upd.state == UPD_DOWNLOADING || s_upd.state == UPD_READY) ? SW_SHOW : SW_HIDE);
+}
 static void show_page(int page) {
     if (page < 0 || page >= P_COUNT) return;
     s_page = page;
     for (int i = 0; i < s_nctl; i++)
         if (s_ctl[i].page >= 0) ShowWindow(s_ctl[i].h, s_ctl[i].page == page ? SW_SHOW : SW_HIDE);
     if (!s_installing) ShowWindow(c_progress, SW_HIDE);
+    upd_show();
     for (int i = 0; i < P_COUNT; i++) InvalidateRect(c_nav[i], NULL, FALSE);
     s_capture = -1;
 }
@@ -565,7 +575,7 @@ static int count_entries(const char *dir) {
     return n;
 }
 static void mods_fill(void) {
-    s_found = find_mods();
+    s_found = find_mods(MODS_DIR);
     SendMessageA(c_mod, CB_RESETCONTENT, 0, 0);
     SendMessageA(c_mods, LB_RESETCONTENT, 0, 0);
     int k = 0, sel = 0;
@@ -586,7 +596,7 @@ static void mods_fill(void) {
     }
     if (!MOD_COUNT) SendMessageA(c_mods, LB_ADDSTRING, 0, (LPARAM) "(this build has no mod support)");
     combo_set(c_mod, sel);
-    /* languages: a PAL disc's, extracted by MKDD-NX Tools into mods\lang */
+    /* languages: a PAL or Japanese disc's, extracted by MKDD-NX Tools into mods\lang */
     unsigned langs = langs_find(MODS_DIR);
     SendMessageA(c_lang, CB_RESETCONTENT, 0, 0);
     k = sel = 0;
@@ -623,7 +633,7 @@ static void install_mod(void) {
     char disc[MAX_PATH];
     const char *d = disc_choice();
     if (d) snprintf(disc, sizeof disc, "%s", d);
-    else if (!find_disc(disc, sizeof disc)) {
+    else if (!find_disc(".", disc, sizeof disc)) {
         MessageBoxA(s_wnd, "Installing a mod needs your Mario Kart: Double Dash!! (USA) disc image: put it next to MKDD-NX.exe or pick it on the Game page.", APP_TITLE, MB_ICONWARNING);
         return;
     }
@@ -811,7 +821,7 @@ static void build(void) {
     static const char *const LAT[] = {"Low (43 ms; may crackle)", "Normal (85 ms)", "High (128 ms; for slow PCs)"};
     c_lat = combo_list(P_AUDIO, L + 180, y, 280, LAT, 3, g_win.latency), y += 48;
     heading(P_AUDIO, "Music", L, y), y += 26;
-    const char *audio = find_audio();
+    const char *audio = find_audio(MODS_DIR);
     c_music = toggle(P_AUDIO, audio ? "Stereo music for MKDD Plus (mods\\audio)" : "Stereo music for MKDD Plus (none yet: mods\\audio)", g_set.audio, L, y, W - 20);
 
     /* Controller */
@@ -888,7 +898,7 @@ static void build(void) {
     c_status = add(P_MODS, "STATIC", "", SS_NOPREFIX, L, y + 14, W - 20, 20, 0), y += 40;
     note(P_MODS, "Pick a mod's .xdelta patch, or a disc image with the mod already patched in (MKDD Plus, Retro Track GP...). "
                  "It is unpacked into mods\\; play the mod from there with your own clean disc image. Languages: "
-                 "MKDD-NX Tools copies them from a PAL disc into mods\\lang.",
+                 "MKDD-NX Tools copies them from a PAL or Japanese disc into mods\\lang.",
          L, y - 8, W - 20, 62), y += 64;
     heading(P_MODS, "Extras", L, y), y += 26;
     int nc = count_entries(MODS_DIR "/characters"), nk = count_entries(MODS_DIR "/karts");
@@ -905,6 +915,31 @@ static void build(void) {
     c_hd = toggle(P_MODS, t, g_set.hd_textures, L, y, W - 20);
     mods_fill();
 
+    /* Updates */
+    y = T;
+    heading(P_UPD, "Updates", L, y), y += 26;
+    {
+        char t[96];
+        snprintf(t, sizeof t, "This version: %s", update_version());
+        label(P_UPD, t, L, y, 300);
+    }
+    c_upd_latest = label(P_UPD, "Latest release: not checked yet", L + 300, y, W - 320), y += 34;
+    c_upd_btn = button(P_UPD, "Check for updates", L, y, 260, ID_UPDATE), y += 40;
+    c_upd_prog = add(P_UPD, PROGRESS_CLASSA, "", 0, L, y, W - 20, 10, 0);
+    if (c_upd_prog) {
+        SetWindowTheme(c_upd_prog, L"", L"");
+        SendMessageA(c_upd_prog, PBM_SETRANGE32, 0, 1000);
+        SendMessageA(c_upd_prog, PBM_SETBARCOLOR, 0, C_RED);
+        SendMessageA(c_upd_prog, PBM_SETBKCOLOR, 0, C_FIELD);
+    }
+    c_upd_status = add(P_UPD, "STATIC", "", SS_NOPREFIX, L, y + 14, W - 20, 20, 0), y += 48;
+    c_auto = toggle(P_UPD, "Check for updates when the game starts", g_win.auto_update, L, y, W - 20), y += 34;
+    note(P_UPD, "One click checks GitHub for the latest MKDD-NX release and, when there is a newer one, downloads it, "
+                "replaces MKDD-NX.exe and starts the launcher again (your settings are saved first). The previous "
+                "MKDD-NX.exe is kept as MKDD-NX.exe.old until the next start. Needs an internet connection; your "
+                "disc image, saves and mods are not touched.",
+         L, y, W - 20, 82);
+
     HWND play = kind(add(-1, "BUTTON", "PLAY", WS_TABSTOP | BS_OWNERDRAW, SIDE_X, CH - 12 - 36 - 10 - 54, SIDE_W, 54, ID_PLAY), K_PLAY);
     kind(add(-1, "BUTTON", "Quit", WS_TABSTOP | BS_OWNERDRAW, SIDE_X, CH - 12 - 36, SIDE_W, 36, ID_QUIT), K_BTN);
     show_page(P_GAME);
@@ -919,6 +954,7 @@ static void apply(void) {
     GetWindowTextA(c_peer, g_set.lan_peer, sizeof g_set.lan_peer);
     g_set.logging = combo_get(c_log);
     g_win.launcher = checked(c_show);
+    g_win.auto_update = checked(c_auto);
     const char *d = disc_choice();
     snprintf(g_win.disc, sizeof g_win.disc, "%s", d ? d : "");
     int ws = combo_get(c_winsize);
@@ -955,6 +991,97 @@ static void apply(void) {
 static void open_folder(const char *dir) {
     char full[MAX_PATH];
     if (GetFullPathNameA(dir, sizeof full, full, NULL)) ShellExecuteA(s_wnd, "open", full, NULL, NULL, SW_SHOWNORMAL);
+}
+
+/* the updater's messages are menu letters (CAPITALS): sentence case for the launcher */
+static void upd_text(HWND c, const char *msg) {
+    char t[128];
+    size_t i = 0;
+    for (; msg[i] && i + 1 < sizeof t; i++) t[i] = i ? (char)tolower((unsigned char)msg[i]) : msg[i];
+    t[i] = 0;
+    for (char *p = strstr(t, "github"); p; p = strstr(p + 1, "github")) memcpy(p, "GitHub", 6);
+    SetWindowTextA(c, t);
+}
+
+/* the new .exe is in place: settings saved, the launcher started again from it, this one closed */
+static void upd_restart(void) {
+    apply();
+    wchar_t exe[MAX_PATH], cmd[32768];
+    DWORD n = GetModuleFileNameW(NULL, exe, MAX_PATH);
+    const wchar_t *line = GetCommandLineW();
+    if (!n || n >= MAX_PATH || !line || wcslen(line) + 16 >= sizeof cmd / sizeof *cmd) return;
+    swprintf(cmd, sizeof cmd / sizeof *cmd, L"%ls --launcher", line);
+    STARTUPINFOW si = {.cb = sizeof si};
+    PROCESS_INFORMATION pi;
+    if (!CreateProcessW(exe, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        rt_log("launcher: restart failed (%lu)", GetLastError());
+        SetWindowTextA(c_upd_status, "Installed. Close the launcher and start MKDD-NX again to use it.");
+        return;
+    }
+    CloseHandle(pi.hThread), CloseHandle(pi.hProcess);
+    rt_log("launcher: restarted for the update");
+    s_done = true; /* quit (not play): the new copy takes over */
+}
+
+static void upd_poll(void) {
+    UpdateStatus st;
+    update_status(&st);
+    bool changed = st.state != s_upd.state || strcmp(st.version, s_upd.version) || strcmp(st.msg, s_upd.msg);
+    int pos = (int)(st.progress * 1000);
+    if (st.state == UPD_DOWNLOADING && pos != (int)(s_upd.progress * 1000)) {
+        char t[64];
+        SendMessageA(c_upd_prog, PBM_SETPOS, (WPARAM)pos, 0);
+        snprintf(t, sizeof t, "Downloading %s... %d%%", st.version, (pos + 5) / 10);
+        SetWindowTextA(c_upd_status, t);
+    }
+    s_upd.progress = st.progress;
+    if (!changed) return;
+    s_upd = st;
+    char t[96];
+    if (st.version[0]) snprintf(t, sizeof t, "Latest release: %s", st.version), SetWindowTextA(c_upd_latest, t);
+    bool busy = st.state == UPD_CHECKING || st.state == UPD_DOWNLOADING;
+    EnableWindow(c_upd_btn, !busy);
+    switch (st.state) {
+    case UPD_CHECKING: SetWindowTextA(c_upd_btn, "Checking..."), SetWindowTextA(c_upd_status, "Connecting to GitHub..."); break;
+    case UPD_CURRENT:
+        s_upd_go = false;
+        SetWindowTextA(c_upd_btn, "Check for updates"), SetWindowTextA(c_upd_status, "You have the latest version.");
+        break;
+    case UPD_AVAILABLE:
+        snprintf(t, sizeof t, "Update to %s", st.version), SetWindowTextA(c_upd_btn, t);
+        snprintf(t, sizeof t, "Version %s is available.", st.version), SetWindowTextA(c_upd_status, t);
+        if (s_upd_go) update_start(); /* the same click: install it */
+        break;
+    case UPD_DOWNLOADING:
+        SetWindowTextA(c_upd_btn, "Downloading...");
+        SendMessageA(c_upd_prog, PBM_SETPOS, (WPARAM)pos, 0);
+        break;
+    case UPD_READY:
+        SendMessageA(c_upd_prog, PBM_SETPOS, 1000, 0);
+        SetWindowTextA(c_upd_btn, "Restart now");
+        snprintf(t, sizeof t, "Version %s is installed. Restarting...", st.version), SetWindowTextA(c_upd_status, t);
+        if (s_upd_go) upd_restart();
+        else SetWindowTextA(c_upd_status, "The update is installed: restart to use it.");
+        break;
+    case UPD_ERROR:
+        s_upd_go = false;
+        SetWindowTextA(c_upd_btn, "Check for updates");
+        upd_text(c_upd_status, st.msg);
+        break;
+    default: break;
+    }
+    SetWindowTextA(c_nav[P_UPD], st.state == UPD_AVAILABLE || st.state == UPD_READY ? "Update!" : "Updates");
+    InvalidateRect(c_nav[P_UPD], NULL, FALSE);
+    upd_show();
+    InvalidateRect(c_upd_btn, NULL, FALSE);
+}
+
+static void upd_click(void) {
+    UpdateStatus st;
+    update_status(&st);
+    s_upd_go = true;
+    if (st.state == UPD_READY) upd_restart();
+    else update_start(); /* checks (then installs, from upd_poll), or installs what the start-up check found */
 }
 
 static LRESULT CALLBACK proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
@@ -997,6 +1124,7 @@ static LRESULT CALLBACK proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     case WM_TIMER: {
         pad_poll();
         if (s_page == P_CTRL) pad_view_update(), map_live();
+        upd_poll();
         POINT p;
         if (s_hot && GetCursorPos(&p) && WindowFromPoint(p) != s_hot) set_hot(NULL);
         return 0;
@@ -1013,6 +1141,7 @@ static LRESULT CALLBACK proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         else if (id == ID_OPEN_DIR) open_folder(".");
         else if (id == ID_OPEN_MODS) open_folder(MODS_DIR);
         else if (id == ID_INSTALL) install_mod();
+        else if (id == ID_UPDATE) upd_click();
         else if (id == ID_MAP_DEFAULT) memcpy(map_edit(), MAP_DRIVE_DEFAULT, sizeof s_maps[0]), map_show(); /* the shown player's only */
         else if (id == ID_KEYS_DEFAULT) wincfg_default_keys(), s_capture = -1, keys_show();
         else if (id == ID_PAD_VIEW && code == CBN_SELCHANGE) {

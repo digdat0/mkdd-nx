@@ -70,8 +70,19 @@ ALWAYS_INLINE bool ram_ptr(uint32_t a) { return a && IS_RAM(a); }
 /* each native's guest address (NAT_*), from the function names at start-up */
 extern uint32_t g_native_addr[NATIVE_COUNT];
 
+/* native.c's helpers for trick.c: a 3-vector made unit length; DriverModel d's top joint in its
+ * base's frame (up, forward, joint, joints, base scale; false unreadable), HEAD_UP above the kart's
+ * centre until one is seen; first-person cameras in this kart turned by r (rows + translation) */
+void v3_norm(float v[3]);
+bool driver_top(Ctx *c, uint8_t *M, uint32_t d, float out[5]);
+#define HEAD_UP 145.0f
+void fp_cams_turn(Ctx *c, uint8_t *M, uint32_t body, const float r[12]);
 /* battle.c: once a frame, from the race camera (FUN_802b6bd4) */
 void bai_tick(Ctx *c, uint8_t *M);
+/* trick.c: Trick Style's battle (bai_tick's time up, battle.c's TRICKS row and the mode page) */
+void trick_battle_tick(Ctx *c, uint8_t *M, uint32_t rm, int karts);
+void trick_comp_set(Ctx *c, uint8_t *M, bool on);
+void trick_type_skip(Ctx *c, uint8_t *M, uint32_t m);
 /* lanpause.c's natives */
 uint64_t i_tstPause__12PauseManagerFv(Ctx *c, uint8_t *M, ARGS);
 uint64_t i_getPauseChoice__12PauseManagerFv(Ctx *c, uint8_t *M, ARGS);

@@ -11,7 +11,7 @@ set(CMAKE_C_RESPONSE_FILE_LINK_FLAG "@")
 
 set(ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 # The app's version: the NACP's and the updater's (only update.c sees it, so a bump rebuilds one file)
-set(MKDD_VERSION "1.9.1")
+set(MKDD_VERSION "2.0.0")
 if(NOT GEN_DIR)
     message(FATAL_ERROR "set -DGEN_DIR=<output of tools/gen_c.py>")
 endif()
@@ -37,7 +37,7 @@ file(GLOB RT_SOURCES CONFIGURE_DEPENDS "${ROOT}/runtime/*.c")
 # NAT_ numbers come from this list: a runtime file built against an older one calls the wrong function
 set_source_files_properties(${RT_SOURCES} PROPERTIES OBJECT_DEPENDS "${ROOT}/runtime/native.h")
 file(GLOB GEN_SOURCES CONFIGURE_DEPENDS "${GEN_DIR}/part_*.c")
-set(SW_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/main_switch.c ${BACKEND_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/tev_gen.c ${CMAKE_CURRENT_SOURCE_DIR}/prof_switch.c ${CMAKE_CURRENT_SOURCE_DIR}/menu.c ${CMAKE_CURRENT_SOURCE_DIR}/ui_font.c ${CMAKE_CURRENT_SOURCE_DIR}/pause_art.c ${CMAKE_CURRENT_SOURCE_DIR}/charpack_art.c ${CMAKE_CURRENT_SOURCE_DIR}/hdtex.c ${CMAKE_CURRENT_SOURCE_DIR}/update.c)
+set(SW_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/main_switch.c ${BACKEND_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/tev_gen.c ${CMAKE_CURRENT_SOURCE_DIR}/prof_switch.c ${CMAKE_CURRENT_SOURCE_DIR}/menu.c ${CMAKE_CURRENT_SOURCE_DIR}/ui_font.c ${CMAKE_CURRENT_SOURCE_DIR}/pause_art.c ${CMAKE_CURRENT_SOURCE_DIR}/charpack_art.c ${CMAKE_CURRENT_SOURCE_DIR}/hdtex.c ${CMAKE_CURRENT_SOURCE_DIR}/mods_setup.c ${CMAKE_CURRENT_SOURCE_DIR}/update.c)
 
 # Generated code: -O2 (big functions; -O3 mostly costs compile time). Runtime hot paths -O3.
 set(GEN_OPTIONS -O2 -w)
@@ -47,8 +47,8 @@ endif()
 set_source_files_properties(${GEN_SOURCES} ${GEN_DIR}/table.c PROPERTIES COMPILE_OPTIONS "${GEN_OPTIONS}")
 set_source_files_properties(${RT_SOURCES} ${SW_SOURCES} PROPERTIES COMPILE_OPTIONS "-O3;-Wall;-Wno-unused-function")
 # pause_art_data.S: the pause screen's Switch picture and button badges (tools/make_pause_art.py)
-set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/pause_art_data.S PROPERTIES COMPILE_OPTIONS "-I${CMAKE_CURRENT_SOURCE_DIR}"
-    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/pause_console.rgba;${CMAKE_CURRENT_SOURCE_DIR}/pause_badges.rgba")
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/pause_art_data.S PROPERTIES COMPILE_OPTIONS "-I${CMAKE_CURRENT_SOURCE_DIR};-I${ROOT}/assets"
+    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/pause_console.rgba;${CMAKE_CURRENT_SOURCE_DIR}/pause_badges.rgba;${ROOT}/assets/trick.pak")
 
 # The battle routes built in (route.c's route_builtin): ROUTES_DIR's <key>.txt (tools/battle_routes.py,
 # tools/route_editor.py), each embedded whole, with a table of keys. A routes/<key>.txt on the SD card wins.

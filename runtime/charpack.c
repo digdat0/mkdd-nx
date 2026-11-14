@@ -302,7 +302,7 @@ static void scan_pack(const char *pack) {
     unsigned nf = 0;
     struct dirent *e;
     while ((e = readdir(d)) && nf < CP_BASES)
-        if (charpack_base(e->d_name, strlen(e->d_name)) >= 0) snprintf(folders[nf++], sizeof folders[0], "%s", e->d_name);
+        if (charpack_base(e->d_name, strlen(e->d_name)) >= 0) snprintf(folders[nf++], sizeof folders[0], "%.23s", e->d_name);
     closedir(d);
     rt_log("charpack: %s: %u driver folders", drivers, nf);
     snprintf(p, sizeof p, "%s/modinfo.ini", pack);
@@ -317,7 +317,7 @@ static void scan_pack(const char *pack) {
     for (unsigned f = 0; f < nf; f++) {
         const char *folder = folders[f];
         int b = charpack_base(folder, strlen(folder));
-        snprintf(p, sizeof p, "%s/%s/driver.bmd", drivers, folder);
+        snprintf(p, sizeof p, "%.191s/%.23s/driver.bmd", drivers, folder);
         if (!is_file(p)) {
             rt_log("charpack: %s has no driver.bmd", p);
             continue;
@@ -367,7 +367,7 @@ void charpack_scan(const char *dir) {
     unsigned n = 0;
     struct dirent *e;
     while (d && (e = readdir(d)) && n < VAR_MAX)
-        if (e->d_name[0] != '.' && strcasecmp(e->d_name, "files")) snprintf(subs[n++], sizeof subs[0], "%s", e->d_name);
+        if (e->d_name[0] != '.' && strcasecmp(e->d_name, "files")) snprintf(subs[n++], sizeof subs[0], "%.63s", e->d_name);
     if (d) closedir(d);
     /* folder name order, so the pages keep their order */
     for (unsigned i = 1; i < n; i++)
@@ -377,7 +377,7 @@ void charpack_scan(const char *dir) {
         }
     for (unsigned i = 0; i < n; i++) {
         char sub[160], p[200];
-        snprintf(sub, sizeof sub, "%s/%s", dir, subs[i]);
+        snprintf(sub, sizeof sub, "%.95s/%.63s", dir, subs[i]);
         snprintf(p, sizeof p, "%s/character.ini", sub);
         if (is_file(p)) scan_character(sub);
         else scan_pack(sub);

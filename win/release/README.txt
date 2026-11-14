@@ -12,8 +12,9 @@ GETTING STARTED
 3. In the game, press - (Back on Xbox pads, Esc on the keyboard) for the options menu.
 
 The first start takes longer while shaders are prepared. MKDD-NX creates config\,
-logs\ and save\ next to itself; keep them when you update (copy the new MKDD-NX.exe
-over the old one).
+logs\ and save\ next to itself; keep them when you update. To update: the launcher's
+Updates page (one click: it downloads the latest release, replaces MKDD-NX.exe and
+starts again; it can also check by itself at start) or the in-game menu's UPDATE.
 
 Windows may warn about an unknown publisher (the exe is not signed): More info > Run anyway.
 

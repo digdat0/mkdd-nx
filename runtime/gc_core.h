@@ -250,7 +250,25 @@ ALWAYS_INLINE bool ctx_enter_nh(Ctx *c, uint32_t addr, uint32_t entry) {
 }
 
 void ctx_block_miss(Ctx *c, uint32_t func, uint32_t pc);
-void ctx_call(Ctx *c, uint64_t target);
+/* Indirect calls: recently dispatched targets (runtime/core.c fills it). The hit path is inlined
+ * at each call site so every bctrl gets its own indirect branch (one shared blr in ctx_call
+ * predicted poorly across the few hundred virtual targets per frame). Only the token holder
+ * dispatches, so the guest threads sharing it never race. */
+#define CORE_DCACHE 2048
+typedef struct { uint32_t addr; void (*fn)(Ctx *c, uint32_t entry); } CoreDcache;
+extern CoreDcache g_dcache[CORE_DCACHE];
+void ctx_call_slow(Ctx *c, uint64_t target);
+ALWAYS_INLINE void ctx_call(Ctx *c, uint64_t target) {
+    const CoreDcache *e = &g_dcache[((uint32_t)target >> 2) & (CORE_DCACHE - 1)];
+    void (*fn)(Ctx *, uint32_t) = e->fn;
+    if (LIKELY(e->addr == (uint32_t)target && fn && c->depth <= 20000)) {
+        c->depth++;
+        fn(c, (uint32_t)target);
+        c->depth--;
+        return;
+    }
+    ctx_call_slow(c, target);
+}
 void ctx_call_orig(Ctx *c, uint32_t addr);
 uint32_t ctx_call_guest(Ctx *c, uint32_t addr, const uint32_t *args, unsigned n);
 uint64_t ctx_intrinsic(Ctx *c, const char *name, const uint64_t *args, unsigned n);

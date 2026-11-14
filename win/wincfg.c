@@ -49,6 +49,7 @@ void wincfg_load(void) {
         *v++ = 0;
         if (!strcmp(l, "launcher")) g_win.launcher = atoi(v) != 0;
         else if (!strcmp(l, "fullscreen")) g_win.fullscreen = atoi(v) != 0;
+        else if (!strcmp(l, "auto_update")) g_win.auto_update = atoi(v) != 0;
         else if (!strcmp(l, "window")) {
             int w, h;
             if (sscanf(v, "%dx%d", &w, &h) == 2) g_win.win_w = clampi(w, 640, 7680), g_win.win_h = clampi(h, 480, 4320);
@@ -80,8 +81,8 @@ void wincfg_load(void) {
 void wincfg_save(void) {
     FILE *f = fopen(INI ".tmp", "w");
     if (!f) return;
-    fprintf(f, "launcher=%d\nfullscreen=%d\nwindow=%dx%d\nvolume=%d\nlatency=%d\naudio_device=%s\ndisc=%s\n", g_win.launcher,
-            g_win.fullscreen, g_win.win_w, g_win.win_h, g_win.volume, g_win.latency, g_win.audio_dev, g_win.disc);
+    fprintf(f, "launcher=%d\nauto_update=%d\nfullscreen=%d\nwindow=%dx%d\nvolume=%d\nlatency=%d\naudio_device=%s\ndisc=%s\n", g_win.launcher,
+            g_win.auto_update, g_win.fullscreen, g_win.win_w, g_win.win_h, g_win.volume, g_win.latency, g_win.audio_dev, g_win.disc);
     for (int i = 0; i < KB_COUNT; i++) fprintf(f, "%s=%d,%d\n", KB_KEYS_INI[i], g_win.keys[i][0], g_win.keys[i][1]);
     bool ok = !ferror(f);
     if (fclose(f) || !ok) { remove(INI ".tmp"); return; }

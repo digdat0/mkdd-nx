@@ -2,12 +2,14 @@
  * karts up to 4, which drive the arena's route (route.c) and play: item boxes, chasing, items, the
  * Shine, running away. The hooks here are natives (native.h NATIVE_LIST), called like native.c's. */
 #include "native_impl.h"
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include "charpack.h"
 #include "coins.h"
 #include "route.h"
+#include "trickfx.h"
 #include "rt.h"
 
 /* the AI's decisions in the log: only with LOGGING on GAME + BATTLE AI (two thirds of a battle's lines otherwise) */
@@ -30,7 +32,10 @@ static bool battle_on(void) { return g_battle_cpus && !s_net; }
 uint64_t i_FUN_8018c878(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     s_net = g_lan_play && ((int32_t)a3 != 1 || (int32_t)a4 > 1);
-    if (battle_on() && a1 >= 4 && a1 <= 7 && (int32_t)a2 < 4) {
+    if (battle_on() && a1 == 4 && g_trick_comp && (int32_t)a2 < 8) { /* Trick Style with 2-4 players: a field of 8 too */
+        rt_log("battle cpus: trick battle, %d players, 8 karts", (int)(int32_t)a3);
+        ctx_set_gpr(c, 5, 8);
+    } else if (battle_on() && a1 >= 4 && a1 <= 7 && (int32_t)a2 < 4) {
         rt_log("battle cpus: mode %u, %d players, 4 karts", (unsigned)a1, (int)(int32_t)a3);
         ctx_set_gpr(c, 5, 4);
     } else if (a1 == 3) {
@@ -128,19 +133,21 @@ static void bai_reset(void);
 static void bai_graph(const int16_t *grp);
 uint64_t i_loadCrsData__6CourseFb(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
-    uint32_t crs = ld32(c, M, (uint32_t)a0 + 0x4dc), bol = IS_RAM(crs) ? ld32(c, M, crs + 4) : 0;
+    uint32_t crs = ld32(c, M, (uint32_t)a0 + 0x4dc), bol = ram_ptr(crs) ? ld32(c, M, crs + 4) : 0;
     uint32_t mode = ld32(c, M, RACE_MODE);
     bool battle = mode >= 4 && mode <= 7;
     s_route_cpus = false, s_nets = 0, s_cl_n = 0, s_cl_base = 0;
     bai_reset();
     uint32_t bol_hash = 0;
     static unsigned races; /* (its number: rt_log drops repeated lines) */
-    if (IS_RAM(bol)) rt_log("race %u: mode %u, course %#x, %u karts, %u players", ++races, mode, (unsigned)mld(c, M, bol + 0x19, 1), ld16(c, M, RACE_INFO + 0x1c), ld16(c, M, RACE_INFO + 0x1e));
-    if (IS_RAM(bol) && IS_RAM(bol + BOL_HEAD)) {
+    if (ram_ptr(bol)) g_trick_music = (uint32_t)mld(c, M, bol + 0x19, 1), g_trick_newrace = 1; /* (the BOL's music id) */
+    if (ram_ptr(bol)) rt_log("race %u: mode %u, course %#x, %u karts, %u players, level %d", ++races, mode, (unsigned)mld(c, M, bol + 0x19, 1), ld16(c, M, RACE_INFO + 0x1c), ld16(c, M, RACE_INFO + 0x1e), (int)ld32(c, M, RACE_INFO + 0x10));
+    if (ram_ptr(bol) && ram_ptr(bol + BOL_HEAD)) {
         uint32_t h = 2166136261u;
         for (uint32_t i = 0; i < BOL_HEAD; i++) h = (h ^ mld(c, M, bol + i, 1)) * 16777619u;
         bol_hash = h;
         route_course(mld(c, M, bol + 0x19, 1), h, battle);
+        fx_course(mld(c, M, bol + 0x19, 1), h); /* the trick tracks' spring pads, geysers, tornadoes (trickfx.c) */
         float (*pts)[3] = s_cl_pts;
         static int16_t grp[ROUTE_POINTS];
         static uint32_t mem;
@@ -186,7 +193,8 @@ uint64_t i_loadCrsData__6CourseFb(Ctx *c, uint8_t *M, ARGS) {
         }
     }
     ctx_call_orig(c, g_native_addr[NAT_loadCrsData__6CourseFb]);
-    coins_course(c, M, IS_RAM(bol + BOL_HEAD) ? bol : 0, bol_hash, mode);
+    if (g_padplay) padrec_course(ram_ptr(crs) ? ld32(c, M, crs + 4) : 0); /* tests: the route driver's CL points */
+    coins_course(c, M, ram_ptr(bol + BOL_HEAD) ? bol : 0, bol_hash, mode);
     return 0;
 }
 /* KartCtrl::IsMiniGame (battle modes 4-7). A battle sets up no computer drivers (RivalKart) and
@@ -222,7 +230,7 @@ static int cl_index(Ctx *c, uint8_t *M, uint32_t cl) {
 }
 /* any: the nearest point even when cl is on the kart's network already (the start) */
 static uint32_t net_point(Ctx *c, uint8_t *M, int kart, uint32_t cl, const float *ref, bool any) {
-    if (!s_route_cpus || s_nets < 2 || kart < 0 || kart > 7 || s_kart_net[kart] < 0) return cl;
+    if (!s_route_cpus || s_nets < 1 || kart < 0 || kart > 7 || s_kart_net[kart] < 0) return cl;
     int i = cl_index(c, M, cl), k = s_kart_net[kart];
     if (i < 0 || (!any && i >= s_net_start[k] && i < s_net_start[k + 1])) return cl;
     if (!s_cl_base) s_cl_base = cl - 0x2c * (uint32_t)i;
@@ -267,7 +275,7 @@ uint64_t i_FUN_802b2174(Ctx *c, uint8_t *M, ARGS) {
 uint64_t i_FUN_802be4cc(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     ctx_call_orig(c, g_native_addr[NAT_FUN_802be4cc]);
-    if (s_route_cpus && s_nets > 1) {
+    if (s_route_cpus && s_nets > 0) { /* (one network too: a trick track's single loop, its starts spread round it) */
         uint32_t kc = ld32(c, M, (uint32_t)ctx_gpr(c, 13) - 0x4e98);
         target_fix(c, M, kc, target_kart(c, M, kc, (uint32_t)a0), (uint32_t)a0, true); /* every kart from its nearest point, not network 0's first */
     }
@@ -317,6 +325,10 @@ static float bai_rand(void);
 static void bai_state(Ctx *c, uint8_t *M, uint32_t mode, uint32_t rm, int karts, int players, uint32_t shine);
 void bai_tick(Ctx *c, uint8_t *M) {
     uint32_t mode = ld32(c, M, RACE_MODE), r13 = (uint32_t)ctx_gpr(c, 13);
+    if (g_trick_comp && mode == 4) {
+        uint32_t rm = ld32(c, M, r13 - 0x5c38), info = ram_ptr(rm) ? ld32(c, M, rm + 0x38) : 0;
+        if (ram_ptr(info)) trick_battle_tick(c, M, rm, (int16_t)ld16(c, M, info + 0x1c));
+    }
     if (!battle_on() || mode < 4 || mode > 7) return;
     uint32_t rm = ld32(c, M, r13 - 0x5c38), info = ram_ptr(rm) ? ld32(c, M, rm + 0x38) : 0;
     if (!ram_ptr(info)) return;
@@ -815,6 +827,9 @@ static struct stuck {
     int ncrumb, tries;
     bool armed, escaping;
 } s_stuck[8];
+static uint32_t s_rejoin_at[8]; /* a trick battle's computer is put on the loop at its nearest point at this frame (its start, after Lakitu); 0 none */
+static uint32_t s_lost[8]; /* frames a trick battle's computer has steered at a point off the loop */
+#define TRICK_LOST 45
 /* each frame (bai_state), a computer's kart k at p: how long it has stayed put, its trail. busy: hit,
  * spinning, tumbling (KartBody +0x570 status, the bits doColWallCtrl leaves alone: r13 - 0x6f98,
  * - 0x6f94), not stuck */
@@ -852,26 +867,83 @@ static void bai_escape(Ctx *c, uint8_t *M, uint32_t bc, int k) {
     rt_log("battle cpus: kart %d stuck at (%.0f %.0f %.0f): backs out to (%.0f %.0f %.0f), try %d", k, p[0], p[1], p[2], to[0], to[1], to[2],
            st->tries);
 }
+/* a trick battle: the loop's point nearest kart k that lies ahead of it along the loop's way (its heading
+ * with the loop there), the nearest of all when it faces none */
+static int trick_nearest_ahead(int n, int k) {
+    int best = -1, a = s_net_start[n], len = s_net_start[n + 1] - a;
+    float bd = BAI_INF;
+    for (int j = a; j < a + len; j++) {
+        const float *p = s_cl_pts[j], *q = s_cl_pts[a + (j - a + 1) % len];
+        float dx = q[0] - p[0], dz = q[2] - p[2], tx = p[0] - s_kpos[k][0], tz = p[2] - s_kpos[k][2];
+        if (dx * s_kfw[k][0] + dz * s_kfw[k][2] <= 0 || tx * dx + tz * dz <= 0) continue; /* the loop runs against it there, or the point is behind */
+        float d = dist3(p, s_kpos[k]);
+        if (d < bd) bd = d, best = j;
+    }
+    return best >= 0 ? best : bai_nearest(n, s_kpos[k]);
+}
 /* the place reached (or time up): kart k rejoins its network at the point nearest it */
 static void bai_rejoin(Ctx *c, uint8_t *M, uint32_t bc, int k) {
     s_stuck[k].escaping = false, s_stuck[k].at = s_bai_frame;
     uint32_t ctrl = ld32(c, M, bc + 0x24), cur = ram_ptr(ctrl) ? ld32(c, M, ctrl + 4) : 0;
-    int n = s_kart_net[k], i = cl_index(c, M, cur), best = n >= 0 && n < s_nets ? bai_nearest(n, s_kpos[k]) : -1;
+    int n = s_kart_net[k], i = cl_index(c, M, cur), best = n >= 0 && n < s_nets ? (g_trick_comp ? trick_nearest_ahead(n, k) : bai_nearest(n, s_kpos[k])) : -1;
     if (ld32(c, M, bc + 0x84) == 3) mst(c, M, bc + 0x84, 4, 0);
-    if (i < 0 || best < 0) return;
-    uint32_t to = cur - 0x2c * (uint32_t)i + 0x2c * (uint32_t)best;
-    if (cl_index(c, M, to) != best) return;
+    if (best < 0 || (i < 0 && !s_cl_base)) return;
+    /* (after Lakitu's rescue in a trick battle its point is none of the route's: from the array's start instead) */
+    uint32_t to = i >= 0 ? cur - 0x2c * (uint32_t)i + 0x2c * (uint32_t)best : s_cl_base + 0x2c * (uint32_t)best;
+    if (cl_index(c, M, to) != best) {
+        if (BAI_LOGGING || g_trick_comp) rt_log("battle cpus: kart %d not put back on network %d (its point %#x)", k, n + 1, cur);
+        return;
+    }
     ctx_set_gpr(c, 3, bc), ctx_set_gpr(c, 4, to), ctx_set_gpr(c, 5, 0);
     i_comebackRescure__13RivalBodyCtrlFP7CLPointb(c, M, bc, to, 0, 0, 0, 0, 0, 0);
     uint32_t kc = ld32(c, M, (uint32_t)ctx_gpr(c, 13) - 0x4e98);
     if (ram_ptr(kc)) target_fix(c, M, kc, k, ld32(c, M, kc + 0x1c0 + 4 * (uint32_t)k), true);
     rt_log("battle cpus: kart %d back on network %d at point %d", k, n + 1, best);
 }
+/* A trick battle's computers steer at a point TRICK_AHEAD further along the loop than the game's (its points are
+ * about 700 apart: steering at the next one, they weaved from side to side); the game's own point is put back. */
+#define TRICK_AHEAD 2000.0f
+static bool trick_lookahead(Ctx *c, uint8_t *M, uint32_t bc, int k) {
+    int n = s_kart_net[k];
+    float keep[3] = {ldf(c, M, bc + 0x58), ldf(c, M, bc + 0x5c), ldf(c, M, bc + 0x60)};
+    if (n < 0 || n >= s_nets || !isfinite(keep[0]) || !isfinite(keep[1]) || !isfinite(keep[2])) return false;
+    int i = bai_nearest(n, keep), a = s_net_start[n], len = s_net_start[n + 1] - a;
+    if (i < 0 || len < 3 || dist3(s_cl_pts[i], keep) > 4000.0f) { /* not near the loop (the game's point is one of the loop's, moved up to the route's width to a side) */
+        /* Lakitu's rescue sets the steering from the respawn point (Cookie Land's slot links none to the route): it
+         * drove off the track into a corner. Off the loop for TRICK_LOST frames: back on it */
+        if (++s_lost[k] >= TRICK_LOST && !s_rejoin_at[k]) s_rejoin_at[k] = s_bai_frame, s_lost[k] = 0;
+        return false;
+    }
+    s_lost[k] = 0;
+    float to[3], walked = 0;
+    int j = i;
+    for (int q = 0; q < len && walked < TRICK_AHEAD; q++) {
+        int nx = a + (j - a + 1) % len;
+        walked += dist3(s_cl_pts[nx], s_cl_pts[j]);
+        j = nx;
+    }
+    memcpy(to, s_cl_pts[j], 12);
+    for (int q = 0; q < 3; q++) stf(c, M, bc + 0x58 + 4 * (uint32_t)q, to[q]);
+    ctx_call_orig(c, g_native_addr[NAT_doSterrCtrl__13RivalBodyCtrlFv]);
+    bool moved = false; /* the game moved on to its next point meanwhile: that one stays */
+    for (int q = 0; q < 3; q++) moved |= ldf(c, M, bc + 0x58 + 4 * (uint32_t)q) != to[q];
+    if (!moved)
+        for (int q = 0; q < 3; q++) stf(c, M, bc + 0x58 + 4 * (uint32_t)q, keep[q]);
+    return true;
+}
 uint64_t i_doSterrCtrl__13RivalBodyCtrlFv(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t bc = (uint32_t)a0, mode = ld32(c, M, RACE_MODE), rival = ram_ptr(bc) ? ld32(c, M, bc + 4) : 0;
     int k = ram_ptr(rival) ? (int)ld32(c, M, rival + 0x38) : -1;
     bool can = battle_on() && s_route_cpus && mode >= 4 && mode <= 7 && k >= s_players_now && k < s_karts_now && k < 8 && s_alive[k];
+    if (can && g_trick_comp && s_rejoin_at[k] && s_bai_frame >= s_rejoin_at[k]) {
+        /* the steering's own CL point starts on the route's first point (KartTarget's is moved to the nearest by
+         * KartTarget::Init above), and Lakitu's rescue sets it from the respawn point (Cookie Land's slot links
+         * none): a computer drove across the arena to the route's start, or into a corner */
+        s_rejoin_at[k] = 0;
+        bai_rejoin(c, M, bc, k);
+        ctx_set_gpr(c, 3, bc);
+    }
     if (can) {
         struct stuck *st = &s_stuck[k];
         if (st->escaping && (dist3(s_kpos[k], st->esc) < ESCAPE_NEAR || s_bai_frame - st->esc_at > ESCAPE_FRAMES)) bai_rejoin(c, M, bc, k);
@@ -890,7 +962,7 @@ uint64_t i_doSterrCtrl__13RivalBodyCtrlFv(Ctx *c, uint8_t *M, ARGS) {
             return 0;
         }
     }
-    bool on = can && bai_direct(k);
+    bool on = can && !g_trick_comp && bai_direct(k); /* a trick battle's computers keep to the loop over the ramps */
     if (k >= 0 && k < 8 && on != s_direct[k] && s_bai_frame - s_direct_at[k] < BAI_DIRECT_HOLD &&
         (on || (can && s_goal[k].kind == GOAL_CHASE && isfinite(s_goal[k].p[0]))))
         on = s_direct[k];
@@ -899,6 +971,7 @@ uint64_t i_doSterrCtrl__13RivalBodyCtrlFv(Ctx *c, uint8_t *M, ARGS) {
         if (BAI_LOGGING) rt_log("battle ai: frame %u, kart %d %s (target %d at %.0f)", (unsigned)s_bai_frame, k, on ? "leaves the route for its target" : "back on the route",
                s_goal[k].target, dist3(s_goal[k].p, s_kpos[k]));
     }
+    if (!on && can && g_trick_comp && trick_lookahead(c, M, bc, k)) return 0;
     if (!on) {
         ctx_call_orig(c, g_native_addr[NAT_doSterrCtrl__13RivalBodyCtrlFv]);
         return 0;
@@ -919,12 +992,16 @@ static void bai_reset(void) {
         s_goal[k].kind = GOAL_NONE, s_goal[k].target = -1, s_goal[k].p[0] = NAN;
         s_focus[k] = 0.6f + 0.3f * bai_rand();
         memset(&s_stuck[k], 0, sizeof s_stuck[k]);
+        s_rejoin_at[k] = 1, s_lost[k] = 0;
     }
     for (int i = 0; i < BAI_BOXES; i++) s_box_gone[i] = 0;
     if (!(s_bai_rnd & 0xffff)) s_bai_rnd ^= plat_now_ns() | 1;
     s_bai_rnd ^= plat_now_ns() << 1;
     if (!s_bai_rnd) s_bai_rnd = 1;
 }
+/* the pause's RETRY (lanpause.c): the battle again without a course load; the computers' state from the last one
+ * was kept (their goals, stuck counts, a trick battle's start on the loop) */
+void battle_restart(void) { bai_reset(); }
 /* the karts this frame (bai_tick): positions, forward, living; the boxes taken; the goals */
 static void bai_state(Ctx *c, uint8_t *M, uint32_t mode, uint32_t rm, int karts, int players, uint32_t shine) {
     uint32_t kc = ld32(c, M, (uint32_t)ctx_gpr(c, 13) - 0x4e98), now = s_bai_frame;
@@ -1000,25 +1077,306 @@ static const uint32_t SM_ROWS2[] = {SM_MODE2, 0xc1c, 0xc28, 0xc34, 0xcf4}; /* N_
 static bool s_three;
 static uint16_t s_ta_id[2];
 static bool solo_menu(Ctx *c, uint8_t *M, uint32_t m) {
-    return g_battle_cpus && IS_RAM(m) && ld32(c, M, m + SM_KARTS) == 0 && ld32(c, M, m + SM_PLAYERS) == 0 &&
-           IS_RAM(ld32(c, M, m + SM_MODE2)) && IS_RAM(ld32(c, M, m + SM_VS_PIC)) && IS_RAM(ld32(c, M, m + SM_VS_TITLE)) &&
-           IS_RAM(ld32(c, M, m + SM_TA_PIC)) && IS_RAM(ld32(c, M, m + SM_TA_TITLE));
+    return g_battle_cpus && ram_ptr(m) && ld32(c, M, m + SM_KARTS) == 0 && ld32(c, M, m + SM_PLAYERS) == 0 &&
+           ram_ptr(ld32(c, M, m + SM_MODE2)) && ram_ptr(ld32(c, M, m + SM_VS_PIC)) && ram_ptr(ld32(c, M, m + SM_VS_TITLE)) &&
+           ram_ptr(ld32(c, M, m + SM_TA_PIC)) && ram_ptr(ld32(c, M, m + SM_TA_TITLE));
+}
+/* the 2-player mode page (two karts: Grand Prix 0, Versus 1, Battle 3 in N_Mode2's own rows): TRICKS as row 4 there
+ * too. Not the 3-4 player page (Versus and Battle only, other panes), nor Wi-Fi races (the game's own) */
+static bool multi_menu(Ctx *c, uint8_t *M, uint32_t m) {
+    uint32_t karts = ram_ptr(m) ? ld32(c, M, m + SM_KARTS) : 0;
+    return g_battle_cpus && !g_lan_play && karts == 1 && ram_ptr(ld32(c, M, m + SM_MODE2)) &&
+           ram_ptr(ld32(c, M, m + SM_VS_PIC)) && ram_ptr(ld32(c, M, m + SM_PW_VS));
 }
 static void pane_show(Ctx *c, uint8_t *M, uint32_t p, bool on) {
-    if (IS_RAM(p)) mst(c, M, p + 0xb0, 1, on);
+    if (ram_ptr(p)) mst(c, M, p + 0xb0, 1, on);
 }
 /* N_Mode1's child M4bar4 or M4bar5 (not on the page's list): its JSUTree at +0xdc, links' +0 the
  * pane, +0xc the next */
 static uint32_t mode1_bar(Ctx *c, uint8_t *M, uint32_t m, char n) {
-    uint32_t parent = ld32(c, M, m + SM_MODE1), link = IS_RAM(parent) ? ld32(c, M, parent + 0xdc) : 0;
-    for (int i = 0; i < 64 && IS_RAM(link); i++, link = ld32(c, M, link + 0xc)) {
+    uint32_t parent = ld32(c, M, m + SM_MODE1), link = ram_ptr(parent) ? ld32(c, M, parent + 0xdc) : 0;
+    for (int i = 0; i < 64 && ram_ptr(link); i++, link = ld32(c, M, link + 0xc)) {
         uint32_t p = ld32(c, M, link);
-        if (IS_RAM(p) && ld32(c, M, p + 0x10) == 0x00004d34u /* "M4" */ && ld32(c, M, p + 0x14) == (0x62617200u | (uint8_t)n))
+        if (ram_ptr(p) && ld32(c, M, p + 0x10) == 0x00004d34u /* "M4" */ && ld32(c, M, p + 0x14) == (0x62617200u | (uint8_t)n))
             return p;
     }
     return 0;
 }
+/* ---- the fourth row (TRICKS) ----
+ * The trick competition's menu.arc (mods/trick, built from the disc's by the trick tools) has the
+ * Battle row's panes cloned as row 4 (M4crsr6, M4bar6, MNtrP21, MtrickN; children Q*) and bones
+ * appended to selectmode.bck: 134.. the three rows moved up to make room (given to their panes here,
+ * on this page only), 147.. row 4's. The game knows three rows: with row 4 picked it is told Battle
+ * (its panes animate as picked) and the picked look moves to row 4: the clones take the Battle
+ * panes' animations (pane +0xf8, the transform animation; +4 the pane's bone), the Battle panes the
+ * Grand Prix ones (not picked), the bars swap materials (their light is a colour animation of the
+ * material). The bars have no transform animation of their own: they get N_Mode2's for their bones. */
+#define BONE_SOLO 134u
+#define BONE_TRICK_PW 151u /* the engine class panes beside row 4 */
+#define BONE_VS_PW 152u    /* Versus's engine class panes (N_Pw_vs), moved up with its row (the 2-4 player page) */
+#define SM_ANIM(e) ((e) - 4) /* an entry's animation, before its pane */
+/* the rows' panes (entries), in the order of menu4.py's SOLO_BONES */
+static const uint32_t ROW_PANES[13] = {0xc1c, 0xf94, 0xc40, 0xcac, 0xcf4, 0xc28, 0xfa0, 0xc4c, 0xcc4, 0xc34, 0xfac, 0xc70, 0xcdc};
+#define ROW_BARS(i) ((i) == 1 || (i) == 6 || (i) == 10)
+enum { TR_CRSR, TR_BAR, TR_PIC, TR_TITLE, TR_COUNT };
+static const char *const TR_TAGS[TR_COUNT] = {"M4crsr6", "M4bar6", "MNtrP21", "MtrickN"};
+static const uint32_t TR_SRC[TR_COUNT] = {0xc34, 0xfac, 0xc70, 0xcdc}; /* Battle's: M4crsr3, M4bar3, MNminP21, MminiN */
+static const uint32_t TR_GP[TR_COUNT] = {0xc1c, 0xf94, 0xc40, 0xcac};  /* Grand Prix's */
+static const int TR_ROW[TR_COUNT] = {9, 10, 11, 12};                   /* their places in ROW_PANES */
+#define KID_MAX 8
+static struct {
+    bool on, picked, decided;
+    uint32_t cur, prev, age; /* the mode the game is told, the one before, frames since */
+    uint32_t pane[TR_COUNT], kid[2][KID_MAX], kid_anim[KID_MAX]; /* kid[0] the clones' children, kid[1] Battle's */
+    int kids;
+    uint32_t kid_src[KID_MAX][4], kid_cp[KID_MAX][4]; /* Battle's children's material animations, their still copies */
+    uint32_t kid_tcp[KID_MAX];                        /* the still copies of their transform animations */
+    uint32_t kid_mat[2][KID_MAX]; /* the children pictures' own materials (0: not swapped: panes, the title) */
+    uint16_t idx[13], pw_vs_idx;
+    uint32_t anim[13], mat_off, bar_mat[4]; /* the bars' materials: Battle's, row 4's, Grand Prix's, Time Trial's */
+} s_tr;
+/* a new SceneMenu (after a race): the panes s_tr and the three-row page knew are gone, so their set-up
+ * is redone on the new page (nothing written to the old panes) */
+void battle_menu_new(void) {
+    s_tr.on = s_tr.picked = s_tr.decided = false;
+    s_three = false;
+}
+static void tag_of(const char *s, uint32_t *hi, uint32_t *lo) {
+    uint8_t b[8] = {0};
+    size_t n = strlen(s);
+    for (size_t i = 0; i < n && i < 8; i++) b[8 - n + i] = (uint8_t)s[i];
+    *hi = (uint32_t)b[0] << 24 | (uint32_t)b[1] << 16 | (uint32_t)b[2] << 8 | b[3];
+    *lo = (uint32_t)b[4] << 24 | (uint32_t)b[5] << 16 | (uint32_t)b[6] << 8 | b[7];
+}
+static uint32_t pane_kid(Ctx *c, uint8_t *M, uint32_t parent, int n) { /* the n-th child */
+    uint32_t link = ram_ptr(parent) ? ld32(c, M, parent + 0xdc) : 0;
+    for (int i = 0; i < 64 && ram_ptr(link); i++, link = ld32(c, M, link + 0xc))
+        if (i == n) return ld32(c, M, link);
+    return 0;
+}
+static uint32_t pane_find(Ctx *c, uint8_t *M, uint32_t parent, uint32_t hi, uint32_t lo, int depth) {
+    if (!ram_ptr(parent) || depth > 6) return 0;
+    for (int i = 0; i < 64; i++) {
+        uint32_t p = pane_kid(c, M, parent, i);
+        if (!ram_ptr(p)) break;
+        if (ld32(c, M, p + 0x10) == hi && ld32(c, M, p + 0x14) == lo) return p;
+        uint32_t q = pane_find(c, M, p, hi, lo, depth + 1);
+        if (q) return q;
+    }
+    return 0;
+}
+/* the pane's children in preorder, appended to out from n, at most KID_MAX in all */
+static int pane_kids(Ctx *c, uint8_t *M, uint32_t p, uint32_t *out, int n, int depth) {
+    for (int i = 0; i < 16 && n < KID_MAX && depth < 4; i++) {
+        uint32_t k = pane_kid(c, M, p, i);
+        if (!ram_ptr(k)) break;
+        out[n++] = k;
+        n = pane_kids(c, M, k, out, n, depth + 1);
+    }
+    return n;
+}
+/* a picture's material pointer: the word where the two bars differ and the two cursors (one material) don't */
+static uint32_t find_mat_off(Ctx *c, uint8_t *M, uint32_t bar_a, uint32_t bar_b, uint32_t crsr_a, uint32_t crsr_b) {
+    for (uint32_t o = 0x100; o < 0x1a0; o += 4) {
+        uint32_t ba = ld32(c, M, bar_a + o), bb = ld32(c, M, bar_b + o), ca = ld32(c, M, crsr_a + o);
+        if (ram_ptr(ba) && ram_ptr(bb) && ba != bb && ram_ptr(ca) && ca == ld32(c, M, crsr_b + o) && ba != bar_a && bb != bar_b) return o;
+    }
+    return 0;
+}
+/* The clone's children pictures' materials (menu4.py) have no animations: their J2DMaterialAnmPointer
+ * (material +0x84, 0x44 bytes; freed by the material's destructor) is made here with the game's
+ * operator new, a copy of Battle's, its animations (colour, texture SRT, pattern, TEV registers)
+ * copies of Battle's kept in the exception vectors' unused tail (0x80001800-0x80003000; nothing of
+ * the game's frees them) whose frames follow Battle's while Battle is not lit: the not-lit look. */
+#define TR_SCRATCH 0x80001800u
+#define TR_SCRATCH_END 0x80003000u
+#define TR_ANM_COPY 0x100u /* bytes per animation copy (J2DAnm* objects are smaller) */
+#define MAT_ANM 0x84u
+#define ANM_PTR_SIZE 0x44u
+static void guest_copy(Ctx *c, uint8_t *M, uint32_t dst, uint32_t src, uint32_t n) {
+    for (uint32_t o = 0; o < n; o += 4) mst(c, M, dst + o, 4, ld32(c, M, src + o));
+}
+static uint32_t guest_new(Ctx *c, uint8_t *M, uint32_t size) { /* operator new (the current heap) */
+    const uint32_t args[1] = {size};
+    uint32_t old_sp = frame_push(c, M, 0x20);
+    uint32_t r = ctx_call_guest(c, 0x800155A8u, args, 1);
+    frame_pop(c, old_sp);
+    return ram_ptr(r) ? r : 0;
+}
+static void kid_anims(Ctx *c, uint8_t *M, bool battle_lit) {
+    uint32_t at = TR_SCRATCH;
+    for (int i = 0; i < s_tr.kids; i++) { /* the transform animations' still copies: a row not lit stands still */
+        s_tr.kid_tcp[i] = 0;
+        if (!ram_ptr(s_tr.kid_anim[i])) continue;
+        guest_copy(c, M, at, s_tr.kid_anim[i], TR_ANM_COPY);
+        if (battle_lit) mst(c, M, at + 8, 4, 0);
+        s_tr.kid_tcp[i] = at, at += TR_ANM_COPY;
+    }
+    for (int i = 0; i < s_tr.kids; i++) {
+        memset(s_tr.kid_src[i], 0, sizeof s_tr.kid_src[i]), memset(s_tr.kid_cp[i], 0, sizeof s_tr.kid_cp[i]);
+        uint32_t ma = s_tr.kid_mat[0][i], mb = s_tr.kid_mat[1][i];
+        if (!ma) continue;
+        uint32_t bp = ld32(c, M, mb + MAT_ANM), ap = ld32(c, M, ma + MAT_ANM);
+        if (!ram_ptr(bp)) continue;
+        if (!ram_ptr(ap)) {
+            ap = guest_new(c, M, ANM_PTR_SIZE);
+            if (!ap) continue;
+            mst(c, M, ma + MAT_ANM, 4, ap);
+        }
+        guest_copy(c, M, ap, bp, ANM_PTR_SIZE);
+        for (int k = 0; k < 4; k++) {
+            uint32_t src = ld32(c, M, bp + 4 * k);
+            if (!ram_ptr(src)) continue;
+            if (at + TR_ANM_COPY > TR_SCRATCH_END) { mst(c, M, ap + 4 * k, 4, 0); continue; }
+            guest_copy(c, M, at, src, TR_ANM_COPY);
+            if (battle_lit) mst(c, M, at + 8, 4, 0); /* frame 0: not lit */
+            mst(c, M, ap + 4 * k, 4, at);
+            s_tr.kid_src[i][k] = src, s_tr.kid_cp[i][k] = at;
+            at += TR_ANM_COPY;
+        }
+    }
+}
+static void four_rows(Ctx *c, uint8_t *M, uint32_t m, bool on) {
+    if (on == s_tr.on) return;
+    if (on) {
+        uint32_t root = ld32(c, M, m + SM_MODE2);
+        for (int i = 0; i < TR_COUNT; i++) {
+            uint32_t hi, lo;
+            tag_of(TR_TAGS[i], &hi, &lo);
+            s_tr.pane[i] = pane_find(c, M, root, hi, lo, 0);
+            if (!s_tr.pane[i] || !ram_ptr(ld32(c, M, m + TR_SRC[i]))) return; /* the game's own menu.arc: three rows */
+        }
+        uint32_t ka[KID_MAX], kb[KID_MAX];
+        int na = pane_kids(c, M, s_tr.pane[TR_PIC], ka, 0, 0), nb = pane_kids(c, M, ld32(c, M, m + TR_SRC[TR_PIC]), kb, 0, 0);
+        int nt = pane_kids(c, M, s_tr.pane[TR_TITLE], ka, na, 0), nt2 = pane_kids(c, M, ld32(c, M, m + TR_SRC[TR_TITLE]), kb, nb, 0);
+        s_tr.kids = na == nb && nt == nt2 ? nt : 0;
+        for (int i = 0; i < s_tr.kids; i++) s_tr.kid[0][i] = ka[i], s_tr.kid[1][i] = kb[i], s_tr.kid_anim[i] = ld32(c, M, kb[i] + 0xf8);
+        uint32_t n2anim = ld32(c, M, m + SM_ANIM(SM_MODE2));
+        for (int i = 0; i < 13; i++) {
+            uint32_t p = ld32(c, M, m + ROW_PANES[i]);
+            if (!ram_ptr(p)) continue;
+            s_tr.idx[i] = (uint16_t)ld16(c, M, p + 4), s_tr.anim[i] = ld32(c, M, p + 0xf8);
+            mst(c, M, p + 4, 2, BONE_SOLO + (uint32_t)i);
+            if (ROW_BARS(i)) mst(c, M, p + 0xf8, 4, n2anim);
+        }
+        mst(c, M, s_tr.pane[TR_BAR] + 0xf8, 4, n2anim);
+        uint32_t pwv = ld32(c, M, m + SM_PW_VS);
+        if (ram_ptr(pwv)) s_tr.pw_vs_idx = (uint16_t)ld16(c, M, pwv + 4), mst(c, M, pwv + 4, 2, BONE_VS_PW);
+        uint32_t bar3 = ld32(c, M, m + TR_SRC[TR_BAR]);
+        s_tr.mat_off = find_mat_off(c, M, bar3, s_tr.pane[TR_BAR], ld32(c, M, m + TR_SRC[TR_CRSR]), s_tr.pane[TR_CRSR]);
+        if (s_tr.mat_off) {
+            s_tr.bar_mat[0] = ld32(c, M, bar3 + s_tr.mat_off), s_tr.bar_mat[1] = ld32(c, M, s_tr.pane[TR_BAR] + s_tr.mat_off);
+            s_tr.bar_mat[2] = ld32(c, M, ld32(c, M, m + TR_GP[TR_BAR]) + s_tr.mat_off);
+            s_tr.bar_mat[3] = ld32(c, M, ld32(c, M, m + ROW_PANES[6]) + s_tr.mat_off);
+        }
+        /* the clone's children pictures have materials of their own (menu4.py), unlit: Battle's while row 4 is lit */
+        uint32_t qhi, qlo, pic_vt = ld32(c, M, s_tr.pane[TR_BAR]);
+        tag_of("Qmini", &qhi, &qlo);
+        for (int i = 0; i < s_tr.kids; i++) {
+            uint32_t a = s_tr.kid[0][i], b = s_tr.kid[1][i];
+            s_tr.kid_mat[0][i] = s_tr.kid_mat[1][i] = 0;
+            if (!s_tr.mat_off || ld32(c, M, a) != pic_vt || ld32(c, M, b) != pic_vt) continue;
+            if (ld32(c, M, a + 0x10) == qhi && ld32(c, M, a + 0x14) == qlo) continue; /* the TRICKS title */
+            uint32_t ma = ld32(c, M, a + s_tr.mat_off), mb = ld32(c, M, b + s_tr.mat_off);
+            uint32_t bp = ram_ptr(mb) ? ld32(c, M, mb + MAT_ANM) : 0; /* only the lit-coloured ones (colour, TEV registers) swap */
+            bool lights = ram_ptr(bp) && (ld32(c, M, bp) || ld32(c, M, bp + 0xc));
+            if (ram_ptr(ma) && ram_ptr(mb) && ma != mb && lights) s_tr.kid_mat[0][i] = ma, s_tr.kid_mat[1][i] = mb;
+        }
+        kid_anims(c, M, ld32(c, M, m + SM_MODE) == 3);
+        int nm = 0;
+        for (int i = 0; i < s_tr.kids; i++) nm += s_tr.kid_mat[0][i] != 0;
+        rt_log("menu: four rows (%d children, %d with own materials, bar material at +%x)", s_tr.kids, nm, (unsigned)s_tr.mat_off);
+        s_tr.picked = s_tr.decided = false;
+        s_tr.cur = s_tr.prev = ld32(c, M, m + SM_MODE), s_tr.age = 1000;
+        s_tr.on = true;
+    } else {
+        for (int i = 0; i < 13; i++) {
+            uint32_t p = ld32(c, M, m + ROW_PANES[i]);
+            if (ram_ptr(p)) mst(c, M, p + 4, 2, s_tr.idx[i]), mst(c, M, p + 0xf8, 4, s_tr.anim[i]);
+        }
+        uint32_t pwv = ld32(c, M, m + SM_PW_VS);
+        if (ram_ptr(pwv) && s_tr.pw_vs_idx) mst(c, M, pwv + 4, 2, s_tr.pw_vs_idx);
+        for (int i = 0; i < s_tr.kids; i++) {
+            mst(c, M, s_tr.kid[1][i] + 0xf8, 4, s_tr.kid_anim[i]);
+            if (s_tr.kid_mat[1][i]) mst(c, M, s_tr.kid[1][i] + s_tr.mat_off, 4, s_tr.kid_mat[1][i]);
+        }
+        if (s_tr.mat_off) {
+            mst(c, M, ld32(c, M, m + TR_SRC[TR_BAR]) + s_tr.mat_off, 4, s_tr.bar_mat[0]);
+            mst(c, M, ld32(c, M, m + TR_GP[TR_BAR]) + s_tr.mat_off, 4, s_tr.bar_mat[2]);
+        }
+        for (int i = 0; i < TR_COUNT; i++) pane_show(c, M, s_tr.pane[i], false);
+        s_tr.on = s_tr.picked = s_tr.decided = false;
+    }
+}
+/* after the game's frame: the picked look on row 4 when it is picked, else kept off it. Picked and
+ * not yet decided the game is told Battle (P, its panes animate as picked); decided, Grand Prix
+ * (the engine class panes, moved beside row 4). P's panes take the other row's animations (not
+ * picked), the clones P's. */
+static void four_rows_look(Ctx *c, uint8_t *M, uint32_t m) {
+    if (!s_tr.on) return;
+    /* row 4's A decides Battle (trick battles), not Grand Prix: decided keeps the picked look, the game's
+     * Battle animations on row 4 (the Grand Prix look moved the lit row up to Battle) */
+    bool pk = s_tr.picked, dec = false;
+    uint32_t mode = ld32(c, M, m + SM_MODE);
+    if (mode != s_tr.cur) s_tr.prev = s_tr.cur, s_tr.cur = mode, s_tr.age = 0;
+    else if (s_tr.age < 1000) s_tr.age++;
+    /* a row not picked and not just left: its animations stand still (not picked) */
+    uint32_t left = s_tr.age < 90 ? s_tr.prev : mode;
+    uint32_t row2 = s_three ? 2 : 1; /* Time Trial on the 1-player page, Versus on the 2-4 player one */
+    int still = mode != 0 && left != 0 ? 0 : mode != row2 && left != row2 ? 5 : 9;
+    static const int GP_ROW[TR_COUNT] = {0, 1, 2, 3}; /* Grand Prix's places in ROW_PANES */
+    for (int i = 0; i < TR_COUNT; i++) {
+        if (i == TR_BAR) continue;
+        uint32_t bat = ld32(c, M, m + TR_SRC[i]), gp = ld32(c, M, m + TR_GP[i]);
+        uint32_t bat_a = s_tr.anim[TR_ROW[i]], gp_a = s_tr.anim[GP_ROW[i]], still_a = s_tr.anim[still + i];
+        mst(c, M, s_tr.pane[i] + 0xf8, 4, pk ? (dec ? gp_a : bat_a) : still_a);
+        mst(c, M, bat + 0xf8, 4, pk && !dec ? still_a : bat_a);
+        mst(c, M, gp + 0xf8, 4, dec ? still_a : gp_a);
+    }
+    if (mode != 3 && left != 3) /* Battle not lit: the still copies take its frames */
+        for (int i = 0; i < s_tr.kids; i++)
+            for (int k = 0; k < 4; k++)
+                if (s_tr.kid_cp[i][k]) mst(c, M, s_tr.kid_cp[i][k] + 8, 4, ld32(c, M, s_tr.kid_src[i][k] + 8));
+    if (mode != 3 && left != 3)
+        for (int i = 0; i < s_tr.kids; i++)
+            if (s_tr.kid_tcp[i]) mst(c, M, s_tr.kid_tcp[i] + 8, 4, ld32(c, M, s_tr.kid_anim[i] + 8));
+    for (int i = 0; i < s_tr.kids; i++) {
+        bool lit = pk && !dec;
+        mst(c, M, s_tr.kid[0][i] + 0xf8, 4, lit ? s_tr.kid_anim[i] : s_tr.kid_tcp[i]);
+        mst(c, M, s_tr.kid[1][i] + 0xf8, 4, lit ? s_tr.kid_tcp[i] : s_tr.kid_anim[i]);
+        if (s_tr.kid_mat[0][i]) {
+            mst(c, M, s_tr.kid[0][i] + s_tr.mat_off, 4, s_tr.kid_mat[lit ? 1 : 0][i]);
+            mst(c, M, s_tr.kid[1][i] + s_tr.mat_off, 4, s_tr.kid_mat[lit ? 0 : 1][i]);
+        }
+    }
+    if (s_tr.mat_off) { /* bars share materials (lit or not by the game's colour animations): row 4 takes
+                         * the lit one when picked (its row an unlit one), else an unlit one */
+        uint32_t bar3 = ld32(c, M, m + TR_SRC[TR_BAR]), bar1 = ld32(c, M, m + TR_GP[TR_BAR]);
+        const uint32_t *bm = s_tr.bar_mat;
+        uint32_t b6 = !pk ? (mode == 3 ? bm[3] : bm[0]) : dec ? bm[2] : bm[0];
+        mst(c, M, bar3 + s_tr.mat_off, 4, pk && !dec ? bm[3] : bm[0]);
+        mst(c, M, bar1 + s_tr.mat_off, 4, dec ? bm[0] : bm[2]);
+        mst(c, M, s_tr.pane[TR_BAR] + s_tr.mat_off, 4, b6);
+    }
+    uint32_t pw = ld32(c, M, m + ROW_PANES[4]); /* N_Pw_gp2: the engine class, beside the decided row */
+    if (ram_ptr(pw)) mst(c, M, pw + 4, 2, dec ? BONE_TRICK_PW : BONE_SOLO + 4);
+    for (int i = 0; i < TR_COUNT; i++) pane_show(c, M, s_tr.pane[i], true);
+    if (dec) { /* the engine class is beside row 4: Grand Prix keeps its picture, row 4 has none */
+        pane_show(c, M, ld32(c, M, m + TR_GP[TR_PIC]), true);
+        pane_show(c, M, s_tr.pane[TR_PIC], false);
+    }
+}
+
+static void menu_se(Ctx *c, uint8_t *M, uint32_t id) { /* GameAudio's system sound (the mode page's cursor: 0x20000) */
+    uint32_t audio = ld32(c, M, (uint32_t)ctx_gpr(c, 13) - 0x5dc8);
+    if (!ram_ptr(audio)) return;
+    const uint32_t args[2] = {audio, id};
+    uint32_t old_sp = frame_push(c, M, 0x20);
+    ctx_call_guest(c, 0x80115E74u, args, 2);
+    frame_pop(c, old_sp);
+}
 static void three_rows(Ctx *c, uint8_t *M, uint32_t m, bool on) {
+    four_rows(c, M, m, on);
     uint32_t ta[2] = {ld32(c, M, m + SM_TA_PIC), ld32(c, M, m + SM_TA_TITLE)};
     uint32_t vs[2] = {ld32(c, M, m + SM_VS_PIC), ld32(c, M, m + SM_VS_TITLE)};
     if (on && !s_three)
@@ -1062,41 +1420,150 @@ uint64_t i_mode_init__9SceneMenuFv(Ctx *c, uint8_t *M, ARGS) {
     if (bat) mst(c, M, m + SM_MODE, 4, 3);
     if (solo) {
         three_rows(c, M, m, true);
-    } else if (s_three && IS_RAM(m)) {
-        three_rows(c, M, m, false);
+        s_tr.decided = false; /* the page starts undecided (a trick battle before: quit, or B from the character page) */
+        if (g_trick_comp) {
+            s_tr.picked = s_tr.on;
+            if (s_tr.picked) mst(c, M, m + SM_MODE, 4, 3);
+        }
+        four_rows_look(c, M, m);
+    } else {
+        if (s_three && ram_ptr(m)) three_rows(c, M, m, false);
+        if (multi_menu(c, M, m)) { /* the 2-4 player page: row 4 as on the 1-player page, the page's own three rows */
+            four_rows(c, M, m, true);
+            s_tr.decided = false;
+            if (g_trick_comp) {
+                s_tr.picked = s_tr.on;
+                if (s_tr.picked) mst(c, M, m + SM_MODE, 4, 3);
+            }
+            four_rows_look(c, M, m);
+        } else if (s_tr.on && ram_ptr(m)) {
+            four_rows(c, M, m, false);
+        }
     }
+    trick_comp_set(c, M, false);
+    return 0;
+}
+/* the 2-4 player page's frame: row 4 below Battle (the game is told Battle while it is picked, and its A
+ * decides Battle: a trick battle), Grand Prix below row 4 */
+static uint64_t mode_multi(Ctx *c, uint8_t *M, uint32_t m) {
+    uint32_t pad = ld32(c, M, MENU_PAD), m0 = ld32(c, M, m + SM_MODE);
+    uint32_t press = ram_ptr(pad) ? ld32(c, M, pad + 0x1c) : 0, rep = ram_ptr(pad) ? ld32(c, M, pad + 0x30) : 0;
+    bool decided = mld(c, M, m + SM_DECIDED, 1);
+    if (s_tr.picked) {
+        if (s_tr.decided && !decided) s_tr.decided = false, trick_comp_set(c, M, false);
+        bool go = !s_tr.decided && (press & MENU_A);
+        uint32_t keep = MENU_UP | MENU_DOWN | (go || s_tr.decided ? 0 : MENU_A);
+        if (ram_ptr(pad)) mst(c, M, pad + 0x1c, 4, press & ~keep), mst(c, M, pad + 0x30, 4, rep & ~keep);
+        mst(c, M, m + SM_MODE, 4, 3);
+        ctx_set_gpr(c, 3, m);
+        ctx_call_orig(c, g_native_addr[NAT_mode__9SceneMenuFv]);
+        if (ram_ptr(pad)) mst(c, M, pad + 0x1c, 4, press), mst(c, M, pad + 0x30, 4, rep);
+        if (go && mld(c, M, m + SM_DECIDED, 1)) {
+            s_tr.decided = true;
+            trick_comp_set(c, M, true);
+            static bool cc_set;
+            if (!cc_set) cc_set = true, mst(c, M, m + 0x2104, 4, 2);
+            rt_log("menu: TRICKS (%u players)", (unsigned)ld32(c, M, m + SM_PLAYERS) + 1);
+        } else if (!s_tr.decided && !mld(c, M, m + SM_DECIDED, 1) && (rep & (MENU_UP | MENU_DOWN))) {
+            s_tr.picked = false;
+            mst(c, M, m + SM_MODE, 4, rep & MENU_UP ? 3 : 0);
+            menu_se(c, M, 0x20000);
+        }
+        four_rows_look(c, M, m);
+        return 0;
+    }
+    /* row 4 from Battle (down) or Grand Prix (up): the game doesn't see the move */
+    bool to4 = !decided && !(press & MENU_A) && ram_ptr(pad) && ((m0 == 3 && (rep & MENU_DOWN)) || (m0 == 0 && (rep & MENU_UP)));
+    if (to4) mst(c, M, pad + 0x1c, 4, press & ~(MENU_UP | MENU_DOWN)), mst(c, M, pad + 0x30, 4, rep & ~(MENU_UP | MENU_DOWN));
+    ctx_set_gpr(c, 3, m);
+    ctx_call_orig(c, g_native_addr[NAT_mode__9SceneMenuFv]);
+    if (to4) {
+        mst(c, M, pad + 0x1c, 4, press), mst(c, M, pad + 0x30, 4, rep);
+        s_tr.picked = true;
+        mst(c, M, m + SM_MODE, 4, 3);
+        menu_se(c, M, 0x20000);
+    }
+    four_rows_look(c, M, m);
     return 0;
 }
 uint64_t i_mode__9SceneMenuFv(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t m = (uint32_t)a0;
     bool solo = solo_menu(c, M, m) && s_three;
+    if (!solo && s_tr.on && multi_menu(c, M, m)) return mode_multi(c, M, m);
     if (solo && g_bt_kind >= 0) mst(c, M, m + SM_MODE, 4, 3);
     uint32_t pad = ld32(c, M, MENU_PAD), m0 = solo ? ld32(c, M, m + SM_MODE) : 0;
-    uint32_t press = IS_RAM(pad) ? ld32(c, M, pad + 0x1c) : 0, rep = IS_RAM(pad) ? ld32(c, M, pad + 0x30) : 0;
+    uint32_t press = ram_ptr(pad) ? ld32(c, M, pad + 0x1c) : 0, rep = ram_ptr(pad) ? ld32(c, M, pad + 0x30) : 0;
+    bool decided = solo && mld(c, M, m + SM_DECIDED, 1);
+    if (solo && s_tr.on && s_tr.picked) {
+        /* row 4: the 1-player code sees Grand Prix with up/down (and A, until decided) held back; its A decides Battle */
+        if (s_tr.decided && !decided) { /* B on the engine class: back to row 4 */
+            s_tr.decided = false;
+            trick_comp_set(c, M, false);
+        }
+        bool go = !s_tr.decided && (press & MENU_A);
+        uint32_t keep = (go ? 0 : MENU_A) | MENU_UP | MENU_DOWN;
+        if (s_tr.decided) keep = MENU_UP | MENU_DOWN;
+        if (ram_ptr(pad)) mst(c, M, pad + 0x1c, 4, press & ~keep), mst(c, M, pad + 0x30, 4, rep & ~keep);
+        mst(c, M, m + SM_MODE, 4, go || s_tr.decided ? 3 : 0); /* A: decided as Battle; else the 1-player code sees Grand Prix */
+        ctx_call_orig(c, g_native_addr[NAT_mode__9SceneMenuFv]);
+        if (ram_ptr(pad)) mst(c, M, pad + 0x1c, 4, press), mst(c, M, pad + 0x30, 4, rep);
+        uint32_t m1 = 3;
+        if (go && mld(c, M, m + SM_DECIDED, 1)) { /* A: the trick competition, a balloon battle on the trick arenas */
+            s_tr.decided = true;
+            trick_comp_set(c, M, true);
+            /* 150cc to start with (SceneMenu +0x2104: the engine class cursor, 0 50cc .. 3 mirror), the first
+             * time this session; after that the game keeps what the player picked (its init reads the race's) */
+            static bool cc_set;
+            if (!cc_set) cc_set = true, mst(c, M, m + 0x2104, 4, 2);
+            rt_log("menu: TRICKS");
+        } else if (!s_tr.decided && (rep & (MENU_UP | MENU_DOWN))) {
+            s_tr.picked = false;
+            m1 = rep & MENU_UP ? 3 : 0;
+            menu_se(c, M, 0x20000);
+        }
+        mst(c, M, m + SM_MODE, 4, m1);
+        as_two_rows(c, M, m, g_native_addr[NAT_mode__9SceneMenuFv]);
+        four_rows_look(c, M, m);
+        return 0;
+    }
     /* on Battle, not yet decided: the 1-player code sees Grand Prix (its A decides any mode the same) */
-    bool as_gp = solo && m0 == 3 && !mld(c, M, m + SM_DECIDED, 1) && !(press & MENU_A);
+    bool as_gp = solo && m0 == 3 && !decided && !(press & MENU_A);
+    /* the moves the 1-player code lacks (up from Grand Prix, down from Time Trial or Battle) are made
+     * here, the code not seeing them: it would start the wrong row's animations */
+    uint32_t to = 0xffffffffu;
+    if (solo && !decided && !(press & MENU_A) && ram_ptr(pad)) {
+        if (m0 == 0 && (rep & MENU_UP)) to = s_tr.on ? 4 : 3;
+        else if (m0 == 2 && (rep & MENU_DOWN)) to = 3;
+        else if (m0 == 3 && (rep & MENU_DOWN)) to = s_tr.on ? 4 : 0;
+    }
+    if (to != 0xffffffffu) mst(c, M, pad + 0x1c, 4, press & ~(MENU_UP | MENU_DOWN)), mst(c, M, pad + 0x30, 4, rep & ~(MENU_UP | MENU_DOWN));
     if (as_gp) mst(c, M, m + SM_MODE, 4, 0);
     ctx_call_orig(c, g_native_addr[NAT_mode__9SceneMenuFv]);
+    if (to != 0xffffffffu) mst(c, M, pad + 0x1c, 4, press), mst(c, M, pad + 0x30, 4, rep);
     if (!solo) return 0;
     uint32_t m1 = ld32(c, M, m + SM_MODE); /* the 1-player code goes 0 <-> 2 */
-    if (as_gp) m1 = m1 == 2 ? (rep & MENU_UP ? 2 : 0) : 3;
-    else if (m0 == 0 && m1 == 2 && (rep & MENU_UP)) m1 = 3;
-    else if (m0 == 2 && m1 == 0 && (rep & MENU_DOWN)) m1 = 3;
+    if (to != 0xffffffffu) {
+        menu_se(c, M, 0x20000);
+        if (to == 4) s_tr.picked = true; /* row 4: the game sees Battle */
+        m1 = to == 4 ? 3 : to;
+    } else if (as_gp) m1 = m1 == 2 ? 2 : 3; /* up from Battle: Time Trial */
     mst(c, M, m + SM_MODE, 4, m1);
     as_two_rows(c, M, m, g_native_addr[NAT_mode__9SceneMenuFv]);
+    four_rows_look(c, M, m);
     return 0;
 }
 uint64_t i_mode_end__9SceneMenuFv(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t m = (uint32_t)a0;
     ctx_call_orig(c, g_native_addr[NAT_mode_end__9SceneMenuFv]);
-    if (!s_three || !IS_RAM(m)) return 0;
+    trick_type_skip(c, M, m);
+    if (!s_three || !ram_ptr(m)) return 0;
     /* the three rows leave with the two: N_Mode2 as N_Mode1, N_Pw_gp2 fading as N_Pw_gp1 */
     stf(c, M, m + SM_MODE2 + 4, ldf(c, M, m + SM_MODE1 + 4));
     stf(c, M, m + 0xcf8, ldf(c, M, m + 0xef0));
     uint32_t rows = ld32(c, M, m + SM_MODE1);
-    if (IS_RAM(rows) && !mld(c, M, rows + 0xb0, 1)) { /* the page is gone */
+    if (ram_ptr(rows) && !mld(c, M, rows + 0xb0, 1)) { /* the page is gone */
         for (size_t i = 0; i < sizeof SM_ROWS2 / sizeof *SM_ROWS2; i++) pane_show(c, M, ld32(c, M, m + SM_ROWS2[i]), false);
         three_rows(c, M, m, false);
     }
@@ -1114,6 +1581,7 @@ uint64_t i_setRaceData__9SceneMenuFv(Ctx *c, uint8_t *M, ARGS) {
     if (kind < 3) {
         static const uint32_t race_mode[3] = {4, 7, 6};
         uint32_t karts = g_lan_play || g_battle_karts < 4 ? 4 : g_battle_karts > 8 ? 8 : g_battle_karts;
+        if (g_trick_comp && !g_lan_play) karts = 8; /* Trick Style: always a full field of 8 */
         const uint32_t args[6] = {0x803B145Cu /* gRaceInfo */, race_mode[kind], karts, 1, 1, 1};
         uint32_t old_sp = frame_push(c, M, 0x20);
         rt_log("1-player battle: mode %u, %u karts", race_mode[kind], karts);
@@ -1122,6 +1590,13 @@ uint64_t i_setRaceData__9SceneMenuFv(Ctx *c, uint8_t *M, ARGS) {
         ctx_set_gpr(c, 3, m);
     }
     ctx_call_orig(c, g_native_addr[NAT_setRaceData__9SceneMenuFv]);
+    /* a trick battle has no engine class of its own (the game gives a battle 50cc, 1 player too, logs of
+     * 2026-11-11): 150cc at least (gRaceInfo +0x10 the level, +0x2c mirror; a higher class or Mirror kept) */
+    if (g_trick_comp && !g_lan_play && ld32(c, M, RACE_MODE) == 4 && (int)ld32(c, M, RACE_INFO + 0x10) < 2) {
+        rt_log("trick battle: %u players, level %d -> 150cc", ld16(c, M, RACE_INFO + 0x1e), (int)ld32(c, M, RACE_INFO + 0x10));
+        mst(c, M, RACE_INFO + 0x10, 4, 2);
+        mst(c, M, RACE_INFO + 0x2c, 1, 0);
+    }
     return 0;
 }
 /* SceneMenu::getCharSel(&a, &b): setRaceData's two cells for each computer's kart, from the cells

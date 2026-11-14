@@ -32,7 +32,21 @@ DKDEBUG=OFF
 [ "${MKDD_DEKO3D_DEBUG:-0}" = 1 ] && DKDEBUG=ON
 "${RUN[@]}" cmake -S switch -B "$BUILD" -G "Unix Makefiles" \
     -DCMAKE_TOOLCHAIN_FILE="$DKP/cmake/Switch.cmake" -DGEN_DIR="$GEN" \
-    -DMKDD_DEKO3D_DEBUG="$DKDEBUG" -DMKDD_HOT_ORDER="${MKDD_HOT_ORDER:-ON}" -DMKDD_MMIO_CENSUS="${MKDD_MMIO_CENSUS:-OFF}"
+    -DMKDD_DEKO3D_DEBUG="$DKDEBUG" -DMKDD_HOT_ORDER="${MKDD_HOT_ORDER:-ON}" -DMKDD_MMIO_CENSUS="${MKDD_MMIO_CENSUS:-OFF}" \
+    -DMKDD_FRAME_POINTERS="${MKDD_FRAME_POINTERS:-OFF}"
+# devkitPro's msys make misses header changes (its depend files name E:/... paths): drop every object older
+# than a project header its .d lists, so a struct change (trick.h) can't leave a reader on the old layout.
+ROOT="$(cygpath -m "$PWD" 2>/dev/null || pwd)"
+for h in runtime/*.h switch/*.h; do
+    find "$BUILD/CMakeFiles" -name '*.o' ! -newer "$h" 2>/dev/null | while read -r o; do
+        if [ -f "$o.d" ] && grep -qF "$ROOT/$h" "$o.d"; then rm -f "$o"; echo "stale (header $h): $o"; fi
+    done
+done
+# CMAKE_DEPENDS_USE_COMPILER=FALSE (CMakeLists.txt) still makes each object depend on a compiler_depend.ts
+# that a fresh build folder never gets ("No rule to make target ... compiler_depend.ts"): create them.
+for d in "$BUILD"/CMakeFiles/*.dir "$BUILD"/uam/CMakeFiles/*.dir; do
+    [ -f "$d/build.make" ] && [ ! -f "$d/compiler_depend.ts" ] && : > "$d/compiler_depend.ts"
+done
 # main_switch.c carries the build stamp (boot.txt, the menu's BUILD HHMM): always recompile it.
 touch switch/main_switch.c
 "${RUN[@]}" cmake --build "$BUILD" -j"$(nproc)" -- "$@"

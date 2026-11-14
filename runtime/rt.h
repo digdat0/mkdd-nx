@@ -35,11 +35,14 @@ void machine_run(Ctx *boot); /* runs the game from the DOL entry point on this t
 bool disc_open(const char *path, char *err, size_t errlen);
 bool disc_present(void);
 void disc_read(uint64_t off, void *out, size_t n);
+/* disc_read for a guest thread: a read the read-ahead window misses gives up the token while it waits. */
+void disc_read_guest(Ctx *c, uint64_t off, void *out, size_t n);
 /* RVZ images (runtime/rvz.c), used by disc.c */
 bool rvz_open(FILE *f, uint64_t *disc_size, char *err, size_t errlen);
 void rvz_read(uint64_t off, uint8_t *out, size_t n);
 uint32_t disc_read_u32(uint64_t off);
 bool disc_find(const char *path, uint64_t *off, uint32_t *size); /* file in the disc's FST */
+void trickpak_install(void); /* after disc_open: the built-in Trick Style files into mods/trick, mods/coins (trickpak.c) */
 /* Play a mod extracted to mod_dir (sys/main.dol, sys/fst.bin, files/) over the open image: from
  * then on the disc is the mod's, its missing files taken from the image. mod_dir NULL: the image
  * itself, with only the language folder (disc_overlay_set_language) added. */
@@ -47,9 +50,15 @@ bool disc_overlay(const char *mod_dir, char *err, size_t errlen);
 /* before disc_overlay: a PAL disc's language files (dir/AwardData, CourseName, MRAM_Locale, SceneData,
  * as MKDD-NX Tools extracts them) added as those folders' <name>/ sub-folders. Both strings must last */
 void disc_overlay_set_language(const char *dir, const char *name);
+void disc_overlay_set_extra(const char *dir); /* a folder of files that replace the image's (standard game only) */
+void disc_overlay_set_trick(const char *dir); /* mods/trick/tracks: Course/<arena>.arc added as Course/Trick/ (standard game only) */
+bool disc_overlay_trick(void);
+const char *disc_overlay_trick_dir(void); /* that folder while its files are in the table, else NULL */
 bool disc_overlay_language(void); /* the overlay has the language's files */
+const char *disc_overlay_language_dir(void); /* its folder (mods/lang/<name>), NULL without one */
 /* the game's language from System::init on (hle.c): 0 English (the USA game's), 1 French, 2 German,
- * 3 Italian, 4 Spanish; set it only when disc_overlay_language() */
+ * 3 Italian, 4 Spanish, 5 Japanese (menu.c LANG_NAMES; hle.c maps it to the game's numbers); set it
+ * only when disc_overlay_language() */
 extern uint32_t g_language;
 /* before disc_overlay: a folder of .ast files played instead of the mod's streams of those names (NULL none) */
 void disc_overlay_set_streams(const char *dir);
@@ -98,6 +107,10 @@ void sched_cancel(Ctx *c, uint32_t t);
 void sched_set_alarm(uint32_t ptr, uint32_t handler, uint64_t fire, uint64_t period);
 void sched_cancel_alarm(uint32_t ptr);
 void sched_describe(char *out, size_t n);
+/* Blocking section around a host wait (sched.c): false = not given up (keep holding the token). */
+bool sched_block_begin(Ctx *c);
+void sched_block_end(Ctx *c, bool blocked);
+extern uint64_t g_sched_blocks;
 
 /* ---- hle.c ---- */
 void hle_init(void);
@@ -154,6 +167,13 @@ typedef struct {
 } PadStatus;
 void pad_set(int port, const PadStatus *s);
 void pad_get_all(PadStatus out[4]);
+/* padrec.c: MKDD_PADREC / MKDD_PADPLAY test recording and replay of player 1, per PADRead */
+void padrec_frame(PadStatus *p0, uint32_t scene, bool race, uint32_t r13);
+void padrec_close(void);
+void padrec_course(uint32_t bol); /* a course loaded (Course::loadCrsData): its CL points for the route driver */
+void battle_restart(void); /* battle.c: the pause's RETRY, the computers' state from the start */
+void battle_menu_new(void); /* SceneMenu constructed: the mode page's row-4 state from an earlier menu is stale */
+extern volatile bool g_padplay; /* replaying: the front end leaves player 1's jump / trick bits alone */
 /* PADControlMotor: the rumble motor of each port (bit per port, set = running). */
 void pad_motor_set(int port, bool on);
 unsigned pad_motor_mask(void);
@@ -247,6 +267,7 @@ extern bool g_car_check;  /* config/car_check: the native car check (off: unprov
 void cheats_unlock_all(void);
 void cheats_set(bool on); /* on: unlock_all; off: the earned bits back */
 bool cheats_active(void);
+void cheats_trick_maps(bool on); /* the two locked battle stages, session only (trick battles) */
 void cheats_tick(void);
 /* LAPS (the - menu's GAME page, misc.c laps_tick, each pad read): the next Grand Prix or Versus
  * race's lap count, 1-7; 0 the course's own. */
@@ -369,15 +390,40 @@ extern volatile float g_mt_speed, g_mt_length;
 /* JUMP (hle.c): controller ports holding the JUMP button (bit = port, the front end's), and the
  * hop's upward speed (0: off). One hop per press, players' karts on the ground. */
 extern volatile uint32_t g_jump_held;
+extern volatile uint16_t g_pad_buttons[4]; /* hle.c: the buttons PADRead gave the game last, per port */
 extern volatile float g_jump_power;
-/* TRICKS (native.c): a D-pad press (or a stick flick) while a players' kart is in the air off a
- * ramp or a drop (not the drift hop) spins the drawn kart once round: up a front flip, down a
- * backflip, left a flat 360, right a barrel roll; the same again quickly a double, another during
- * or after it a combo; landing clean a boost. Only what is drawn turns (the physics, camera and
- * shadow stay level). g_trick_pad: 4 bits per controller port (TRICK_*), the front end's. Off once
- * the game has entered LAN MODE (g_lan_play). */
-enum { TRICK_UP = 1, TRICK_DOWN = 2, TRICK_LEFT = 4, TRICK_RIGHT = 8 };
+/* TRICKS (native.c): while a players' kart is in the air off a ramp or a drop (not the drift hop),
+ * a HELD D-pad direction (or a stick flick) turns the drawn kart: up / down flip it, left / right
+ * spin it, diagonals both; a tap then the same direction again a special; JUMP the rider's tricks,
+ * JUMP then a direction a rider pose. Touchdown is graded by the drawn kart's angle: perfect (a
+ * boost), sketchy, bail (WIPEOUTS / the competition: a spin-out); L / R just before it catches a
+ * sketchy one. The competition adds combos, multipliers and a signature meter (ZL + ZR). Only what is
+ * drawn turns (the physics, camera and shadow stay level). g_trick_pad: 4 bits per controller port
+ * (TRICK_*), the front end's; bit TRICK_SIG_BIT + port: that port's signature buttons held (ZL + ZR;
+ * a GameCube pad's L + R, a sideways Joy-Con's SL + SR). Off once the game has entered LAN MODE (g_lan_play). */
+enum { TRICK_UP = 1, TRICK_DOWN = 2, TRICK_LEFT = 4, TRICK_RIGHT = 8, TRICK_SIG_BIT = 16 };
 extern volatile uint32_t g_tricks, g_trick_pad;
+extern volatile uint32_t g_trick_comp, g_trick_frames, g_trick_score[8], g_trick_live; /* the trick competition: on, frames played (kart 0's), points per kart, the countdown seen this race (its HUD from then) */
+/* trick.c: the trick guide over a trick battle's pause screen: 0 closed, else its page (1-2); the pause screen's "Y: TRICK GUIDE" while closed */
+extern volatile uint32_t g_trick_guide, g_trick_guide_hint;
+extern volatile uint32_t g_trick_res, g_trick_res_t; /* the trick results (native.c trick_results): 0 not yet, 1 shown, 2 passed by; frames shown */
+void trick_guide_pad(Ctx *c, uint8_t *M, PadStatus p[4]); /* trick.c: the trick guide's buttons (opens on Y over the pause screen; the game sees none while it is open) */
+void trick_battle_pad(Ctx *c, uint8_t *M, uint16_t *btn); /* trick.c: a trick battle's type page and pause CHANGE BATTLE passed by, no balloons, the TRICK STYLE banner, the results' buttons, from PADRead */
+extern volatile uint32_t g_trick_total[8], g_trick_track, g_trick_ended, g_trick_music, g_trick_newrace; /* points banked at time up, the arena (1-6, 0 none), the clock ran out, the loading course's music id, a race just loaded */
+/* trick.c: the sixteen tracks in four cups (track k is cup k / 4's, Course/Trick/T<k+1>.arc), and the track picker
+ * over the stage page (menu.c menu_trick_pick draws it): g_tp_page 0 hidden, 1 SINGLE TRACK / TRICK CUP (g_tp_mode
+ * 0 / 1), 2 the cups (g_tp_cup), 3 a cup's tracks (g_tp_track), 4 a cup's next round (goes on by itself). A cup under way:
+ * g_trick_cup 1-4 (0 none), g_trick_round 0-3 (the round on, or just played while its results show). g_tp_confirm:
+ * a cup's pause menu asks QUIT? (g_tp_csel 0 YES, 1 NO) */
+#define TRICK_CUPS 4
+#define TRICK_TRACKS 16
+extern const char *const TRICK_CUP_NAME[TRICK_CUPS];
+extern const char *const TRICK_TRACK_NAME[TRICK_TRACKS];
+extern volatile uint32_t g_tp_page, g_tp_mode, g_tp_cup, g_tp_track, g_tp_t, g_trick_cup, g_trick_round, g_trick_pick, g_tp_confirm, g_tp_csel, g_tp_place;
+void trick_pick(Ctx *c, uint8_t *M, int k);
+void trick_pick_pad(Ctx *c, uint8_t *M, PadStatus p[4]); /* trick.c: the picker's buttons and the cup's way between rounds, from PADRead */
+
+#define TRICK_COMP_FRAMES 7200 /* 2 minutes */
 #define SPECIAL_ANY 0xFF
 extern volatile uint8_t g_special[21];
 /* Start-up: game lines are logged whatever LOGGING says, each written to the SD card at once, so

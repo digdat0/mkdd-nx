@@ -26,7 +26,7 @@
 #include "../runtime/rt.h"
 
 volatile int g_pause_kind;
-volatile bool g_p1_gamecube;
+volatile bool g_p1_gamecube, g_p1_sideways;
 
 extern const uint8_t pause_console_rgba[], pause_badges_rgba[];
 #define CON_W 352
