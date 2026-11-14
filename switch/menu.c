@@ -174,6 +174,7 @@ static void defaults(void) {
     g_set.battle_cpus = true;
     g_set.battle_karts = 4;
     g_set.bomb_hits = 4;
+    g_set.vs_karts = 0;
     g_set.jump = 2; /* MID, on ZL (g_map_default) */
     g_set.tricks = 0;
     g_set.laps = 0;
@@ -226,10 +227,10 @@ static void apply_logging(void) {
 /* what a report needs to know (from loading and each save; an unchanged line is dropped by rt_log) */
 static void settings_log(void) {
     rt_log("settings: 16:9 %d, fov %d / %d, fps %d, logging %d, rumble %d, unlock all %d, res docked %d handheld %d, aniso %d, hd %d, "
-           "mod %s, characters %d, stereo music %d, extra karts %d, clocks %d, camera %d, any kart %d, laps %d, multi-thread cpu %d, single battle %d, battle karts %d, bomb hits %d, split %d, lan %d",
+           "mod %s, characters %d, stereo music %d, extra karts %d, clocks %d, camera %d, any kart %d, laps %d, multi-thread cpu %d, single battle %d, battle karts %d, bomb hits %d, vs karts %d, split %d, lan %d",
            g_set.wide, g_set.fov[0], g_set.fov[1], g_set.show_fps, g_set.logging, g_set.rumble, g_set.unlock_all, g_set.docked_res, g_set.handheld_res,
            g_set.aniso, g_set.hd_textures, g_set.mod, g_set.characters, g_set.audio, g_set.karts, g_set.game_clocks, g_set.camera, g_set.any_kart, g_set.laps, g_set.mt_cpu,
-           g_set.battle_cpus, g_set.battle_karts, g_set.bomb_hits, g_set.vsplit, g_set.lan);
+           g_set.battle_cpus, g_set.battle_karts, g_set.bomb_hits, g_set.vs_karts, g_set.vsplit, g_set.lan);
 }
 
 void settings_load(const char *path) {
@@ -284,6 +285,7 @@ void settings_load(const char *path) {
         else if (!strcmp(k, "coins")) g_set.coins = atoi(v) != 0;
         else if (!strcmp(k, "single_battle")) g_set.battle_cpus = atoi(v) != 0;
         else if (!strcmp(k, "battle_karts")) g_set.battle_karts = atoi(v) < 4 ? 4 : atoi(v) > 8 ? 8 : atoi(v);
+        else if (!strcmp(k, "vs_karts")) g_set.vs_karts = atoi(v) < 4 ? 0 : atoi(v) > 8 ? 8 : atoi(v);
         else if (!strcmp(k, "bomb_hits")) g_set.bomb_hits = atoi(v) < 4 ? 4 : atoi(v) > 20 ? 20 : atoi(v) & ~1;
         else if (!strcmp(k, "mt_length")) g_set.mt_length = atoi(v) < 0 ? 0 : atoi(v) >= MT_N_LENGTHS ? MT_N_LENGTHS - 1 : atoi(v);
         else if (!strcmp(k, "tricks")) g_set.tricks = atoi(v) < 0 || atoi(v) > 2 ? 0 : atoi(v);
@@ -413,6 +415,7 @@ void settings_save(void) {
     fprintf(f, "drafting=%d\ncpu_draft=%d\ndraft_strength=%d\ndraft_distance=%d\n", g_set.draft, g_set.draft_cpu,
             g_set.draft_power, g_set.draft_range);
     fprintf(f, "coins=%d\n", g_set.coins);
+    fprintf(f, "vs_karts=%d\n", g_set.vs_karts);
     fprintf(f, "mt_cpu=%d\nsingle_battle=%d\nbattle_karts=%d\nbomb_hits=%d\nperfect_start=%d\ntricks=%d\n", g_set.mt_cpu, g_set.battle_cpus, g_set.battle_karts, g_set.bomb_hits, g_set.perfect_start, g_set.tricks);
     fprintf(f, "mt_sweeps=%d\nmt_speed=%d\nmt_length=%d\njump=%d\nlaps=%d\nfree_camera=%d\ncamera_height=%d\ncamera_distance=%d\n", g_set.mt_sweeps, g_set.mt_speed,
             g_set.mt_length, g_set.jump, g_set.laps, g_set.free_cam, g_set.cam_height, g_set.cam_dist);
@@ -658,7 +661,9 @@ static void upper(char *dst, size_t size, const char *s) {
     dst[i] = 0;
 }
 enum { C_MAP, C_JOYMAP, C_SYNC, C_HOLD, C_BACK, C_COUNT };
-enum { GM_STYLE, GM_UNITS, GM_HUD, GM_JUMP, GM_TRICKS, GM_DRAFT, GM_COINS, GM_RUMBLE, GM_BATTLE, GM_BACK, GM_COUNT };
+enum { GM_STYLE, GM_UNITS, GM_HUD, GM_JUMP, GM_TRICKS, GM_DRAFT, GM_COINS, GM_RUMBLE, GM_BATTLE, GM_VERSUS, GM_BACK, GM_COUNT };
+/* VERSUS CPUS: OFF, then the karts a 2-4 player Versus is filled to (g_set.vs_karts 0, 4-8) */
+static const char *VS_KARTS_NAMES[6] = {"OFF", "4 KARTS", "5 KARTS", "6 KARTS", "7 KARTS", "8 KARTS"};
 /* DRAFTING's page (A on GAME's row while it is on) */
 enum { DR_CPU, DR_POWER, DR_RANGE, DR_BACK, DR_COUNT };
 static const char *DRAFT_CPU_NAMES[3] = {"OFF", "WEAKER", "SAME AS YOU"};
@@ -720,6 +725,7 @@ void cheats_apply(void) {
         g_battle_cpus = g_set.battle_cpus; /* battle.c keeps Wi-Fi races the game's own */
         g_battle_karts = (uint32_t)g_set.battle_karts;
         g_bomb_hits = (uint32_t)g_set.bomb_hits;
+        g_vs_karts = 0;
         g_jump_power = 0;
         g_tricks = 0;
         memset((void *)g_special, 0, sizeof g_special);
@@ -737,6 +743,7 @@ void cheats_apply(void) {
     g_battle_cpus = g_set.battle_cpus;
     g_battle_karts = (uint32_t)g_set.battle_karts;
     g_bomb_hits = (uint32_t)g_set.bomb_hits;
+    g_vs_karts = (uint32_t)g_set.vs_karts;
     g_jump_power = JUMP_POWER[g_set.jump & 3];
     g_tricks = (uint32_t)g_set.tricks;
     special_apply();
@@ -1138,6 +1145,13 @@ bool menu_input(const uint64_t down_[4], const uint64_t held_[4], bool *quit) {
             g_set.draft = !g_set.draft; cheats_apply(); settings_save();
             break;
         case GM_COINS: g_set.coins = !g_set.coins; cheats_apply(); settings_save(); break;
+        case GM_VERSUS: { /* OFF, 4 ... 8 KARTS, round */
+            int i = g_set.vs_karts >= 4 ? g_set.vs_karts - 3 : 0;
+            i = (i + (left ? 5 : 1)) % 6;
+            g_set.vs_karts = i ? i + 3 : 0;
+            cheats_apply(); settings_save();
+            break;
+        }
         case GM_BACK: if (ok) s_page = PAGE_MAIN; break;
         }
         return true;
@@ -1790,17 +1804,18 @@ void menu_draw(int w, int h, float fps, const char *perf) {
                    : s == LN_RESTART               ? restart_hint()
                                                    : "B: BACK";
         } else if (s_page == PAGE_GAME) {
-            static const char *labels[GM_COUNT] = {"RACE HUD", "SPEED", "HUD ASSETS", "JUMP HEIGHT", "TRICKS", "DRAFTING", "COINS", "RUMBLE STRENGTH", "SINGLE PLAYER BATTLE MODE", "BACK"};
+            static const char *labels[GM_COUNT] = {"RACE HUD", "SPEED", "HUD ASSETS", "JUMP HEIGHT", "TRICKS", "DRAFTING", "COINS", "RUMBLE STRENGTH", "SINGLE PLAYER BATTLE MODE", "VERSUS CPUS", "BACK"};
             const char *values[GM_COUNT] = {HUD_STYLES[g_set.hud_style], g_set.speed_kmh ? "KMH" : "MPH", hud_value(),
                                             JUMP_NAMES[g_set.jump & 3], g_set.tricks == 2 ? "ON + WIPEOUTS" : g_set.tricks ? "ON" : "OFF", g_set.draft ? "ON" : "OFF", g_set.coins ? "ON" : "OFF", RUMBLE_NAMES[g_set.rumble % 3],
-                                            g_set.battle_cpus ? "ON" : "OFF", NULL};
-            const bool more[GM_COUNT] = {false, false, true, false, false, g_set.draft != 0, false, false, g_set.battle_cpus, false};
+                                            g_set.battle_cpus ? "ON" : "OFF", VS_KARTS_NAMES[g_set.vs_karts >= 4 && g_set.vs_karts <= 8 ? g_set.vs_karts - 3 : 0], NULL};
+            const bool more[GM_COUNT] = {false, false, true, false, false, g_set.draft != 0, false, false, g_set.battle_cpus, false, false};
             for (int i = 0; i < GM_COUNT; i++, ry += rh) mrow(x, ROW_Y(i, GM_COUNT), pw, rh, k, s_sel[PAGE_GAME] == i, labels[i], values[i], more[i]);
             hint = s_sel[PAGE_GAME] == GM_STYLE ? (g_set.hud_style == 2 ? "ONE BAR ACROSS THE TOP, REAR-VIEW MIRROR, RACE ORDER BELOW. 1 PLAYER" : g_set.hud_style == 1 ? "MODERN: SMALLER, IN THE CORNERS. 1 TO 4 PLAYERS" : "THE GAME'S OWN")
                    : s_sel[PAGE_GAME] == GM_UNITS ? "SPEEDOMETER IN MILES OR KILOMETRES PER HOUR"
                    : s_sel[PAGE_GAME] == GM_HUD  ? "A: CHOOSE   LEFT/RIGHT: ALL ON, ALL OFF"
                    : s_sel[PAGE_GAME] == GM_BATTLE ? (g_set.battle_cpus ? "A: BATTLE KARTS, BOB-OMB HITS   LEFT/RIGHT: OFF"
                                                                         : "CPUS FILL BATTLES TO 4 KARTS. 1 PLAYER: BATTLE ON THE MODE PAGE")
+                   : s_sel[PAGE_GAME] == GM_VERSUS ? (g_lan_play ? "OFF IN LAN PLAY" : "2-4 PLAYER VERSUS: CPUS FILL THE RACE TO THIS MANY KARTS. FROM THE NEXT RACE")
                    : s_sel[PAGE_GAME] == GM_TRICKS ? (g_lan_play ? "OFF IN LAN PLAY" : g_set.tricks == 2 ? "AS ON, BUT LANDING MID-TRICK SPINS YOU OUT" : "IN THE AIR: D-PAD OR STICK FLICK, JUMP: RIDER TRICKS. LAND CLEAN: BOOST")
                    : s_sel[PAGE_GAME] == GM_RUMBLE ? "VIBRATION STRENGTH. THE GAME'S OWN RUMBLE OPTION MUST BE ON TOO"
                    : s_sel[PAGE_GAME] == GM_DRAFT ? (g_lan_play ? "OFF IN LAN PLAY"

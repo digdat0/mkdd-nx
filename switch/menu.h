@@ -29,6 +29,7 @@ typedef struct {
     bool battle_cpus;  /* MODS > SINGLE PLAYER BATTLE MODE (default on): battles filled up to 4 karts with computer karts */
     int battle_karts;  /* MODS > BATTLE KARTS (default 4): the karts in a 1-player battle, 4 to 8 */
     int bomb_hits;     /* MODS > BOB-OMB HITS TO WIN (default 4, the game's): in a 1-player Bob-omb Blast, 4 to 20 */
+    int vs_karts;      /* GAME > VERSUS CPUS (runtime/versus.c g_vs_karts): 0 off (the default), else 4-8 karts in a 2-4 player Versus */
     int tricks;        /* GAME > TRICKS: 0 off (the default), 1 on, 2 on + wipeouts (native.c g_tricks) */
     int jump;          /* JUMP: 0 off, 1-3 low / mid / high hop on the JUMP button (map[MAP_JUMP]) */
     int laps;          /* LAPS: Grand Prix and Versus races, 0 the course's own, else 1-7 */

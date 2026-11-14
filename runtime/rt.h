@@ -345,6 +345,10 @@ extern volatile uint32_t g_any_kart;
 extern volatile uint32_t g_battle_cpus; /* SINGLE PLAYER BATTLE MODE: battles get computer karts up to 4 */
 extern volatile uint32_t g_battle_karts; /* MODS > BATTLE KARTS: the karts in a 1-player battle, 4 to 8 */
 extern volatile uint32_t g_bomb_hits; /* MODS > BOB-OMB HITS TO WIN: in a 1-player Bob-omb Blast, 4 (the game's) to 20 */
+/* VERSUS CPUS (versus.c): a 2-4 player Versus race filled with computer karts up to this many, 4 to 8 (0 off) */
+extern volatile uint32_t g_vs_karts;
+/* setRace's karts for a Versus of karts (players' karts) and players, 0 to keep them; net: a Wi-Fi race */
+int versus_karts(int karts, int players, bool net);
 extern volatile int g_bt_kind, g_bt_starts; /* debug (tools/battle_test.sh): the battle type (-1 off), the starts an arena keeps (0 all) */
 extern volatile uint32_t g_perfect_start; /* PERFECT STARTS (cheats): every player's kart gets the start boost */
 /* DRAFTING (native.c): 0 off, 1 weak, 2 medium, 3 strong; g_draft_cpu for computer karts: 0 none, 1 weaker,
