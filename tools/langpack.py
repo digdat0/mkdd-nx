@@ -7,7 +7,8 @@ Nothing else from the disc is read or kept.
     py -3 tools/langpack.py <PAL disc image> <output folder>
 
 writes <output folder>/lang/<Language>/{AwardData,CourseName,MRAM_Locale,SceneData}/..., the
-disc's <folder>/<Language>/ files: the lang folder goes in MKDD-NX's mods folder
+disc's <folder>/<Language>/ files, plus Message/*.bmg, the language's texts from the disc's DOL
+(the unlock windows, Memory Card messages; hle.c language_messages): the lang folder goes in MKDD-NX's mods folder
 (sdmc:/switch/MKDD-NX/mods/lang on the Switch, mods\\lang next to MKDD-NX.exe). runtime/disc.c adds
 them to the USA game's file table and runtime/hle.c sets the game's language.
 """
@@ -85,6 +86,53 @@ def dol_font(d):
     return best
 
 
+def dol_messages(d, lang):
+    """{file name: bytes}: the language's message files (secret.bmg: the unlock windows, card.bmg,
+    yesno.bmg...) from the archive in the disc's DOL's data (its <language>/ folder); {} if none"""
+    dol = struct.unpack(">I", d.read(0x420, 4))[0]
+    hdr = d.read(dol, 0x100)
+    if len(hdr) < 0x100:
+        return {}
+    for s in range(7, 18):  # the data sections
+        off, size = struct.unpack(">I", hdr[4 * s:4 * s + 4])[0], struct.unpack(">I", hdr[0x90 + 4 * s:0x94 + 4 * s])[0]
+        if not off or not size or size > 8 << 20:
+            continue
+        sec = d.read(dol + off, size)
+        i = sec.find(b"RARC")
+        while i >= 0:
+            try:
+                got = rarc_folder(sec[i:], lang.lower())
+            except (struct.error, ValueError, IndexError):
+                got = None
+            if got:
+                return got
+            i = sec.find(b"RARC", i + 4)
+    return {}
+
+
+def rarc_folder(a, name):
+    """{file name: bytes} of the folder called name (lower case) in the RARC archive a, else None"""
+    size, data = struct.unpack(">I", a[4:8])[0], struct.unpack(">I", a[0x0C:0x10])[0]
+    if not 0x40 < size <= len(a):
+        return None
+    info = 0x20
+    nn, no, ne, eo, ss, so = struct.unpack(">IIIIII", a[info:info + 24])
+    strs = a[info + so:info + so + ss]
+    nm = lambda o: strs[o:strs.index(b"\0", o)].decode("latin-1")
+    for n in range(nn):
+        _, name_off, _, count, first = struct.unpack(">4sIHHI", a[info + no + n * 16:info + no + n * 16 + 16])
+        if nm(name_off).lower() != name:
+            continue
+        out = {}
+        for e in range(first, first + count):
+            _, _, flags, noff, doff, dsize = struct.unpack(">HHHHII", a[info + eo + e * 20:info + eo + e * 20 + 16])
+            if flags >> 8 & 2:  # (the . and .. folders)
+                continue
+            out[nm(noff)] = a[info + data + doff:info + data + doff + dsize]
+        return out
+    return None
+
+
 def extract(disc_path, out_dir, log=print):
     """the disc's languages (PAL or Japanese) -> out_dir/lang/<Language>/...; returns {language: files written}"""
     d = open_disc(disc_path)
@@ -118,6 +166,18 @@ def extract(disc_path, out_dir, log=print):
                 f.write(data)
             os.replace(dst + ".part", dst)
         done[lang] = len(files[lang])
+        # the game's own texts kept in its DOL (the unlock windows, Memory Card messages...): the USA
+        # game's DOL only has English ones (runtime/hle.c language_messages)
+        msgs = dol_messages(d, lang)
+        for name, data in msgs.items():
+            dst = os.path.join(base, "Message", name)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(dst + ".part", "wb") as f:
+                f.write(data)
+            os.replace(dst + ".part", dst)
+        done[lang] += len(msgs)
+        if not msgs:
+            log(f"{lang}: the disc's message texts were not found: unlock and Memory Card windows will be empty")
         if lang == "Japanese":  # its texts need the Japanese game's font (runtime/hle.c language_font)
             font = dol_font(d)
             if font:

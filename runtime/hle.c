@@ -7,6 +7,7 @@
  *
  * The Rust version's stream / ARQ / heap diagnostics (they only log, then run the original)
  * are left out: their hooks fall through to the original code here. */
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include "gx.h"
@@ -69,6 +70,97 @@ static void language_font(void) {
     free(b);
 }
 
+/* The game's own texts kept in its DOL's archive (DOL_ARC: message/english/secret.bmg, the windows
+ * that show what a cup unlocked; card.bmg, yesno.bmg, lan.bmg...). The game reads
+ * message/<language>/, and the USA DOL only has english/: with another language those windows were
+ * empty. MKDD-Tools copies the PAL/Japanese DOL's files to mods/lang/<Language>/Message/; here the
+ * english folder is renamed to the language (its name added in the string table's spare bytes) and
+ * each file the language has is pointed at its copy in MEM1 above the game's 24 MiB. Files it lacks
+ * stay English. Only when the archive is the one expected. */
+static uint16_t arc_hash(const char *s) {
+    uint16_t h = 0;
+    for (; *s; s++) h = (uint16_t)(h * 3 + (uint8_t)*s);
+    return h;
+}
+
+/* the archive's name at string table offset o is nm */
+static bool arc_name_is(uint32_t strs, uint32_t strsz, uint32_t o, const char *nm) {
+    for (size_t k = 0;; k++) {
+        if (o + k >= strsz) return false;
+        char c = (char)m_read_be(strs + o + (uint32_t)k, 1);
+        if (c != nm[k]) return false;
+        if (!c) return true;
+    }
+}
+
+static void language_messages(const char *lang) {
+    const char *dir = disc_overlay_language_dir();
+    if (!dir || !lang) return;
+    uint32_t a = DOL_ARC, info = a + 0x20;
+    if (m_read_be(a, 4) != 0x52415243u) return;
+    uint32_t data = info + (uint32_t)m_read_be(a + 0x0C, 4);
+    uint32_t nnode = (uint32_t)m_read_be(info, 4), node = info + (uint32_t)m_read_be(info + 4, 4);
+    uint32_t nent = (uint32_t)m_read_be(info + 0x08, 4), ent = info + (uint32_t)m_read_be(info + 0x0C, 4);
+    uint32_t strs = info + (uint32_t)m_read_be(info + 0x14, 4), strsz = (uint32_t)m_read_be(info + 0x10, 4);
+    if (nnode > 64 || nent > 4096 || strsz > 0x10000) return;
+    char low[16];
+    size_t ln = strlen(lang);
+    if (ln >= sizeof low) return;
+    for (size_t k = 0; k <= ln; k++) low[k] = (char)tolower((unsigned char)lang[k]);
+    uint32_t eng = 0, eng_entry = 0;
+    for (uint32_t i = 0; i < nnode && !eng; i++)
+        if (arc_name_is(strs, strsz, (uint32_t)m_read_be(node + i * 16 + 4, 4), "english")) eng = node + i * 16;
+    for (uint32_t i = 0; i < nent && eng && !eng_entry; i++) {
+        uint32_t e = ent + i * 0x14;
+        if (m_read_be(e + 4, 2) >> 8 & 2 && m_read_be(e + 8, 4) != 0xFFFFFFFFu &&
+            arc_name_is(strs, strsz, (uint32_t)m_read_be(e + 6, 2), "english") && m_read_be(e + 8, 4) == (eng - node) / 16)
+            eng_entry = e;
+    }
+    /* the spare bytes: after the last name (the table ends in zeros) */
+    uint32_t end = strsz;
+    while (end > 0 && m_read_be(strs + end - 1, 1) == 0) end--;
+    uint32_t at = end + 1;
+    if (!eng || !eng_entry || at + ln + 1 > strsz || at > 0xFFFF) {
+        rt_log("lang: the game's message archive is not the one expected: its texts stay English");
+        return;
+    }
+    unsigned n_files = 0;
+    uint32_t count = (uint32_t)m_read_be(eng + 10, 2), first = (uint32_t)m_read_be(eng + 12, 4);
+    for (uint32_t i = first; i < first + count && i < nent; i++) {
+        uint32_t e = ent + i * 0x14;
+        if (m_read_be(e + 4, 2) >> 8 & 2) continue; /* . and .. */
+        char nm[32];
+        uint32_t no = (uint32_t)m_read_be(e + 6, 2);
+        size_t k = 0;
+        for (; k < sizeof nm - 1 && no + k < strsz && (nm[k] = (char)m_read_be(strs + no + k, 1)); k++) {}
+        nm[k] = 0;
+        char path[600];
+        snprintf(path, sizeof path, "%s/Message/%s", dir, nm);
+        FILE *f = fopen(path, "rb");
+        if (!f) continue;
+        uint8_t *b = NULL;
+        long n = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
+        if (n >= 0x20 && n < (1 << 20) && fseek(f, 0, SEEK_SET) == 0 && (b = malloc((size_t)n)) && fread(b, 1, (size_t)n, f) != (size_t)n)
+            free(b), b = NULL;
+        fclose(f);
+        if (!b || memcmp(b, "MESGbmg1", 8) && memcmp(b, "MGCLbmc1", 8)) { rt_log("lang: %s is not a message file", path); free(b); continue; }
+        uint32_t dst = charpack_reserve((uint32_t)n);
+        if (dst) {
+            m_load(dst, b, (size_t)n);
+            m_write_be(e + 8, 4, dst - data);
+            m_write_be(e + 12, 4, (uint32_t)n);
+            n_files++;
+        }
+        free(b);
+    }
+    if (!n_files) { rt_log("lang: no message files in %s/Message: unlock and Memory Card windows will be empty", dir); return; }
+    for (size_t k = 0; k <= ln; k++) m_write_be(strs + at + (uint32_t)k, 1, (uint8_t)low[k]);
+    uint16_t h = arc_hash(low);
+    m_write_be(eng + 4, 4, at), m_write_be(eng + 8, 2, h);
+    m_write_be(eng_entry + 6, 2, at), m_write_be(eng_entry + 2, 2, h);
+    rt_log("lang: %u message files (the unlock windows, Memory Card messages...) in %s", n_files, lang);
+}
+
 static void language_apply(void) {
     static bool said;
     /* the game's numbering (its name table at GM4E01 0x8033cde0): 0 English, 1 French, 2 German,
@@ -79,7 +171,8 @@ static void language_apply(void) {
     uint32_t v = GAME_LANG[g_language];
     bool known = m_read_be(LANG_GET, 4) == 0x806D9720u && m_read_be(LANG_GET + 4, 4) == 0x4E800020u;
     if (known) m_write_be(LANG_ADDR, 4, v);
-    if (known && !said) language_font();
+    static const char *const NAME[6] = {"English", "French", "German", "Italian", "Japanese", "Spanish"};
+    if (known && !said) language_font(), language_messages(v < 6 ? NAME[v] : NULL);
     if (!said) rt_log(known ? "lang: the game's language set to %u" : "lang: this game's code has no known language setting: %u not set", v);
     said = true;
 }
