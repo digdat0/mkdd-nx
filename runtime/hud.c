@@ -122,6 +122,8 @@ static void modern_tick(Ctx *c, uint8_t *M) {
     }
 }
 static void hud_kmh(Ctx *c, uint8_t *M, uint32_t race2d);
+static bool bomb_score_hide(Ctx *c, uint8_t *M, uint32_t self, uint32_t zone, uint8_t shown[12]);
+static void bomb_score_draw(Ctx *c, uint8_t *M, uint32_t self, const uint8_t shown[12]);
 static int player_kart(Ctx *c, uint8_t *M);
 static bool kart_is_player(Ctx *c, uint8_t *M, int kart);
 static void race_hud_call(Ctx *c, uint8_t *M, uint32_t fn, uint32_t self, uint32_t zone) {
@@ -177,8 +179,11 @@ static void race_hud_call(Ctx *c, uint8_t *M, uint32_t fn, uint32_t self, uint32
     mst(c, M, sp, 4, old);
     ctx_set_gpr(c, 1, sp);
     ctx_set_gpr(c, 3, self);
+    uint8_t star_shown[12];
+    bool score = bomb_score_hide(c, M, self, zone, star_shown);
     ctx_call_orig(c, fn); /* the recompiled function's entry would come back here */
     ctx_set_gpr(c, 1, old);
+    if (score) bomb_score_draw(c, M, self, star_shown);
     if (s_trick_hud && g_trick_live) trick_hud(c, M); /* over the race HUD, in its 2D projection */
     if (s_trick_views && g_trick_live) trick_hud_views(c, M, s_trick_views);
     hud_zone(0);
@@ -1266,6 +1271,7 @@ static const GTex *glyph(Ctx *c, uint8_t *M, char ch) {
     else if (ch >= '0' && ch <= '9') snprintf(n, sizeof n, "mariofont_number_%c.bti", ch);
     else if (ch == '.') snprintf(n, sizeof n, "mariofontperiod.bti");
     else if (ch == '/') snprintf(n, sizeof n, "mariofontslash.bti");
+    else if (ch == ':') snprintf(n, sizeof n, "mariofontcolon.bti");
     else return NULL;
     return gtex(c, M, n);
 }
@@ -1287,6 +1293,45 @@ static float text_draw(Ctx *c, uint8_t *M, const char *s, float x, float cy, flo
         x += (float)(g->x1 - g->x0 + 1) * k - 2.5f * k;
     }
     return x;
+}
+
+/* Bob-omb Blast's score on one screen when the win takes more than 4 hits (g_bomb_hits; battle.c keeps the game's
+ * 4 points as each kart's share): the 4 stars can't show it, so they are hidden (J2DPane +0xb0) while Race2D::draw
+ * runs and "SCORE:x/y" is drawn in their place after, x the player's hits, in the race letters, right-aligned to the
+ * first star's right edge and centred on their row (+0xb10: star centres, x y; +0xa50: 4 pictures in each of 3
+ * sets, 0x10 a set). Only once the stars show (+0x4ec1, J2DManager::endBombDemo), as the GameCube patch does. */
+#define SCORE_SIZE 0.6f /* the letters' cell height: a star's times this */
+static bool bomb_score_hide(Ctx *c, uint8_t *M, uint32_t self, uint32_t zone, uint8_t shown[12]) {
+    uint32_t need = g_bomb_hits, rm = ld32(c, M, (uint32_t)ctx_gpr(c, 13) - 0x5c38), ri = IS_RAM(rm) ? ld32(c, M, rm + 0x38) : 0;
+    if (zone != 1 || need <= 4 || need > 20 || !IS_RAM(self) || !IS_RAM(ri) || ld16(c, M, ri + 0x22) != 1 || ld32(c, M, 0x803B1464u) != 6 ||
+        !mld(c, M, self + 0x4ec1, 1) || view_kart(c, M, 0) < 0)
+        return false;
+    for (uint32_t k = 0; k < 12; k++) {
+        uint32_t pic = ld32(c, M, self + 0xa50 + 4 * k);
+        shown[k] = IS_RAM(pic) ? (uint8_t)mld(c, M, pic + 0xb0, 1) : 0;
+        if (IS_RAM(pic)) mst(c, M, pic + 0xb0, 1, 0);
+    }
+    return true;
+}
+static void bomb_score_draw(Ctx *c, uint8_t *M, uint32_t self, const uint8_t shown[12]) {
+    for (uint32_t k = 0; k < 12; k++) {
+        uint32_t pic = ld32(c, M, self + 0xa50 + 4 * k);
+        if (IS_RAM(pic)) mst(c, M, pic + 0xb0, 1, shown[k]);
+    }
+    uint32_t pic = ld32(c, M, self + 0xa60);
+    float sh = IS_RAM(pic) ? ldf(c, M, pic + 0x2c) - ldf(c, M, pic + 0x24) : 0;
+    if (!(sh > 4 && sh < 100)) sh = 24;
+    char s[16];
+    snprintf(s, sizeof s, "SCORE:%d/%u", battle_bomb_hits(view_kart(c, M, 0)), (unsigned)g_bomb_hits);
+    float k = sh * SCORE_SIZE / 32, w = text_width(c, M, s, k);
+    float x = ldf(c, M, self + 0xb10) + sh / 2 - w, cy = ldf(c, M, self + 0xb14);
+    static uint32_t logged;
+    if (logged != g_race_frames / 600) logged = g_race_frames / 600, rt_log("bob-omb score: %s at %.0f %.0f, star %.0f high", s, x, cy, sh);
+    uint32_t z = s_zone_now;
+    hud_gx(c, M);
+    pill_zone(6);
+    text_draw(c, M, s, x, cy, k, 0xFFFFFFFFu, 0xFFE070FFu);
+    pill_zone(z);
 }
 
 /* ---- the trick battle's results (after time up, before the game's battle menu) ----

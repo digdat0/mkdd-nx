@@ -31,6 +31,8 @@
     X(getPtr__6ResMgrFQ26ResMgr10KartDataId7EKartID, "rr", 'r', 1) \
     X(FUN_8018c878, "rrrrrr", '-', 1) \
     X(FUN_8018712c, "rrr", '-', 1) \
+    X(changeText__9SceneMenuFv, "r", '-', 1) \
+    X(setVSMGRank__6Goal2DFv, "r", '-', 1) \
     X(loadCrsData__6CourseFb, "rr", '-', 1) \
     X(FUN_802b1f60, "", 'r', 1) \
     X(FUN_80226f1c, "rrr", 'r', 1) \

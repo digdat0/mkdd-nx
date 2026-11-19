@@ -12,6 +12,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <mmsystem.h>
+#include <dwmapi.h>
 #include <dirent.h>
 #include <direct.h>
 #include <ctype.h>
@@ -245,10 +246,18 @@ void win_swap(void) {
     SwapBuffers(s_dc);
     static u64 last, period;
     if (!period) {
+        /* The exact rate from the compositor (59.94 is 60000/1001); EnumDisplaySettings rounds it down to 59, and
+         * holding the loop to 59 Hz made the game (59.94 frames a second) drop a frame about every second. Never
+         * slower than the game's own frame period: a refresh rate under it can only drop game frames. */
+        DWM_TIMING_INFO ti = {.cbSize = sizeof ti};
         DEVMODEA dm = {.dmSize = sizeof dm};
-        DWORD hz = EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1 ? dm.dmDisplayFrequency : 60;
-        period = 1000000000ull / hz;
-        rt_log("display: %lu Hz", hz);
+        u64 vi = 1000000000ull * 1001 / 60000;
+        if (SUCCEEDED(DwmGetCompositionTimingInfo(NULL, &ti)) && ti.rateRefresh.uiDenominator && ti.rateRefresh.uiNumerator > ti.rateRefresh.uiDenominator)
+            period = 1000000000ull * ti.rateRefresh.uiDenominator / ti.rateRefresh.uiNumerator;
+        else
+            period = 1000000000ull / (EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1 ? dm.dmDisplayFrequency : 60);
+        rt_log("display: %.3f Hz%s", 1e9 / (double)period, period > vi ? ", loop held at 59.94" : "");
+        if (period > vi) period = vi;
     }
     u64 now = armTicksToNs(armGetSystemTick());
     if (last && now - last < period * 19 / 20) {
@@ -492,8 +501,30 @@ static void audio_thread(void *arg) {
 }
 
 /* ---- pads -> the game (the parts of main_switch.c update_pads that apply to these controllers) ---- */
+/* Debug: while config/battle_test exists, "KIND STARTS" (as main_switch.c): A all the way into 1-player battles of
+ * that type (0 balloons, 1 Shine, 2 Bob-omb), arenas keeping STARTS starts (0 all), a screen every 15 s (logs/bt_N.ppm). */
+static void battle_test_load(void) {
+    FILE *f = fopen(CFG_DIR "/battle_test", "r");
+    if (!f) return;
+    int kind = -1, starts = 0;
+    if (fscanf(f, "%d %d", &kind, &starts) >= 1) g_bt_kind = kind, g_bt_starts = starts;
+    fclose(f);
+    rt_log("battle test: type %d, %d starts", kind, starts);
+}
+static void battle_test_step(PadStatus *s) {
+    static uint32_t t;
+    t++;
+    if (t > 600) s->button |= t < 720 ? (t % 60 < 10 ? PAD_START : 0) : t % 90 < 10 ? PAD_A : 0;
+    if (t % 900 == 0) {
+        static char path[64];
+        snprintf(path, sizeof path, "logs/bt_%03u.ppm", (unsigned)(t / 900));
+        render_capture(path);
+    }
+}
 static void update_pads(void) {
     input_poll();
+    static bool bt_loaded;
+    if (!bt_loaded) bt_loaded = true, battle_test_load();
     /* players: each controller's number (the first free one when it connected, or the launcher's
      * choice); player 1 also has the keyboard */
     int src_of[4] = {-1, -1, -1, -1};
@@ -615,6 +646,7 @@ static void update_pads(void) {
             if ((s.button & PAD_TRIGGER_R) && !s.trigger_r) s.trigger_r = 255;
             if ((s.button & PAD_TRIGGER_L) && !s.trigger_l) s.trigger_l = 255;
         }
+        if (p == 0 && g_bt_kind >= 0) battle_test_step(&s);
         /* DRIVER FPV / KART FPV buttons (as main_switch.c) */
         {
             static bool was_fp[4], was_kfp[4];

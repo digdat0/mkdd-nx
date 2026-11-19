@@ -703,6 +703,37 @@ uint64_t i_doItemCtrl__13RivalItemCtrlFv(Ctx *c, uint8_t *M, ARGS) {
  * kart has the points its share of them comes to (hits * win / g_bomb_hits). The game does each event; where the points
  * shouldn't change yet they are put back. */
 static int s_bomb_hits[8];
+int battle_bomb_hits(int kart) { return kart >= 0 && kart < 8 ? s_bomb_hits[kart] : 0; } /* hud.c's SCORE */
+/* The battle page's text ("The first player to get 3 points wins!"): SceneMenu::changeText puts the 2-player win
+ * score (r13 - 0x7974, 3; 3-4 players: r13 - 0x7972) into the text's number (a message parameter, not the score the
+ * game plays by). A 1-player battle (SceneMenu +0x20fc: players - 1) plays to g_bomb_hits: swapped in around the call. */
+uint64_t i_changeText__9SceneMenuFv(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    uint32_t at = (uint32_t)ctx_gpr(c, 13) - 0x7974, keep = ld16(c, M, at);
+    bool one = battle_on() && ram_ptr((uint32_t)a0) && ld32(c, M, (uint32_t)a0 + 0x20fc) == 0;
+    if (one) mst(c, M, at, 2, g_bomb_hits);
+    ctx_call_orig(c, g_native_addr[NAT_changeText__9SceneMenuFv]);
+    if (one) mst(c, M, at, 2, keep);
+    return 0;
+}
+/* A battle's end: Goal2D::setVSMGRank copies each player's place (KartChecker +0x88, 1-8) into the result table
+ * (0x803B0F34 +4 + 4 * kart, 0 a win) only when it is within the number of players: 1st or 2nd of 2. With one player
+ * and computer karts, any place but 1st was dropped and the stale 0 showed WIN. One screen: always the real place. */
+#define RESULT_RANK 0x803B0F38u
+#define STATUS2KART 0x803B0EC4u /* status2kart[screen] */
+uint64_t i_setVSMGRank__6Goal2DFv(Ctx *c, uint8_t *M, ARGS) {
+    UNUSED_ARGS;
+    ctx_call_orig(c, g_native_addr[NAT_setVSMGRank__6Goal2DFv]);
+    uint32_t rm = ld32(c, M, (uint32_t)ctx_gpr(c, 13) - 0x5c38), ri = ram_ptr(rm) ? ld32(c, M, rm + 0x38) : 0;
+    if (!battle_on() || g_trick_comp || !ram_ptr(ri) || ld16(c, M, ri + 0x22) != 1) return 0; /* a trick battle: its own results */
+    uint32_t k = ld32(c, M, STATUS2KART), chk = k < 8 ? ld32(c, M, rm + 0x48 + 4 * k) : 0;
+    uint32_t place = ram_ptr(chk) ? ld32(c, M, chk + 0x88) : 0;
+    if (place >= 1 && place <= 8) {
+        mst(c, M, RESULT_RANK + 4 * k, 4, place - 1);
+        rt_log("result: player kart %u placed %u", k, place);
+    }
+    return 0;
+}
 uint64_t i_FUN_8018712c(Ctx *c, uint8_t *M, ARGS) {
     UNUSED_ARGS;
     uint32_t self = (uint32_t)a0, ev = (uint32_t)a1, item = (uint32_t)a2, need = g_bomb_hits;

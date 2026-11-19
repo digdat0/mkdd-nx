@@ -91,6 +91,8 @@ uint64_t i_FUN_80115040(Ctx *c, uint8_t *M, ARGS);
 /* battle.c's natives */
 uint64_t i_FUN_8018c878(Ctx *c, uint8_t *M, ARGS);
 uint64_t i_FUN_8018712c(Ctx *c, uint8_t *M, ARGS);
+uint64_t i_changeText__9SceneMenuFv(Ctx *c, uint8_t *M, ARGS);
+uint64_t i_setVSMGRank__6Goal2DFv(Ctx *c, uint8_t *M, ARGS);
 uint64_t i_loadCrsData__6CourseFb(Ctx *c, uint8_t *M, ARGS);
 uint64_t i_FUN_802b1f60(Ctx *c, uint8_t *M, ARGS);
 uint64_t i_FUN_802b2174(Ctx *c, uint8_t *M, ARGS);

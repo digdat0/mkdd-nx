@@ -40,7 +40,7 @@ CF="-std=gnu11 -O2 -ffp-contract=off -fwrapv -fno-strict-aliasing -fno-math-errn
 RTF="$CF -Wall -Wno-unused-function"
 GENF="$CF -w -fomit-frame-pointer"
 jobs=()
-newer_h() { [ -n "$(find ../runtime ../switch . -maxdepth 1 -name '*.h' -newer "$1" 2>/dev/null | head -1)" ]; }
+newer_h() { [ -n "$(find ../runtime ../switch . "$OUT/version" -maxdepth 1 -name '*.h' -newer "$1" 2>/dev/null | head -1)" ]; }
 for f in ../runtime/*.c ../switch/tev_gen.c ../switch/menu.c ../switch/ui_font.c ../switch/pause_art.c ../switch/charpack_art.c \
          ../switch/hdtex.c ../switch/mods_setup.c main_win.c render_gl.c gl_load.c update_win.c launcher.c pad_sdl.c wincfg.c; do
     o=$OUT/obj/rt_$(basename "${f%.c}").o
