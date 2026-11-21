@@ -554,14 +554,33 @@ static int take_due_alarms(uint32_t out[][2], int max) {
     return n;
 }
 
+static void raise_vi(uint64_t now) {
+    sched_raise(IRQ_VI);
+    __atomic_fetch_add(&g_vi_count, 1, __ATOMIC_RELAXED);
+    s_last_vi_tb = now;
+    gx_scanout();
+}
+
+/* The host's screen refresh as the retrace (Windows, a 59-61 Hz screen with working vsync): the
+ * game's own 59.94 Hz against a 60 Hz screen drifts a whole frame every ~13 s, and while its frames
+ * land near the screen's refresh they alternate shown twice / skipped for seconds. Locked to the
+ * refresh, each game frame is shown once (the game runs 0.1% fast on a 60 Hz screen). The timer's
+ * retrace stays as the fallback, 1.5 periods after the last host one (a minimised window). */
+void sched_vi_host(void) {
+    pmutex_lock(&s_lock);
+    uint64_t now = sched_timebase();
+    if (now - s_last_vi_tb > VI_PERIOD / 2) {
+        raise_vi(now);
+        s_next_vi = now + VI_PERIOD * 3 / 2;
+    }
+    pmutex_unlock(&s_lock);
+}
+
 /* Generate time-driven interrupts; returns ns until the next event. Lock held. */
 static uint64_t tick(void) {
     uint64_t now = sched_timebase();
     if (now >= s_next_vi) {
-        sched_raise(IRQ_VI);
-        __atomic_fetch_add(&g_vi_count, 1, __ATOMIC_RELAXED);
-        s_last_vi_tb = now;
-        gx_scanout();
+        raise_vi(now);
         /* Keep a fixed cadence; if we fell more than a period behind, skip whole periods. */
         s_next_vi += VI_PERIOD;
         if (s_next_vi <= now) s_next_vi += (now - s_next_vi) / VI_PERIOD * VI_PERIOD + VI_PERIOD;

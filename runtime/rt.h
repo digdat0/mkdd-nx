@@ -91,6 +91,7 @@ void sched_raise(int irq);
 void sched_set_ai_period(uint64_t ticks);
 void sched_set_idle_stack(uint32_t sp);
 void sched_vi_beam(uint32_t *v, uint32_t *h);
+void sched_vi_host(void); /* a host screen refresh as the game's retrace (Windows) */
 extern volatile uint32_t g_vi_count;
 void sched_init(void);
 void sched_start_idle(void);

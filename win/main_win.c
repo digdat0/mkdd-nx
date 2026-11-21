@@ -242,6 +242,42 @@ void win_client_size(int *w, int *h) {
 }
 /* SwapBuffers with vsync on; when the driver does not wait (vsync forced off in its settings, some
  * windowed setups), the loop is held to the monitor's refresh rate here instead of spinning */
+static bool s_free_vi;
+/* The display's vertical blank, from the kernel display driver (gdi32's D3DKMT calls, what browsers
+ * time their frames by): exact whatever the compositor or the GL driver's vsync setting does. Opened
+ * for the monitor the window is on; false when it cannot be used (the timer limiter then). */
+typedef struct { HDC hdc; UINT adapter; LUID luid; UINT source; } KmtOpen;
+typedef struct { UINT adapter, device, source; } KmtWait;
+static bool wait_vblank(void) {
+    static LONG (APIENTRY *open_hdc)(KmtOpen *);
+    static LONG (APIENTRY *wait)(const KmtWait *);
+    static KmtWait w;
+    static HMONITOR mon;
+    static int fails;
+    if (fails >= 3) return false;
+    if (!open_hdc) {
+        HMODULE g = GetModuleHandleA("gdi32.dll");
+        open_hdc = g ? (void *)GetProcAddress(g, "D3DKMTOpenAdapterFromHdc") : NULL;
+        wait = g ? (void *)GetProcAddress(g, "D3DKMTWaitForVerticalBlankEvent") : NULL;
+        if (!open_hdc || !wait) { fails = 3; rt_log("display: no vertical blank wait, the loop is timed"); return false; }
+    }
+    HMONITOR m = MonitorFromWindow(s_wnd, MONITOR_DEFAULTTOPRIMARY);
+    if (m != mon || !w.adapter) {
+        MONITORINFOEXA mi = {.cbSize = sizeof mi};
+        KmtOpen o = {0};
+        if (GetMonitorInfoA(m, (MONITORINFO *)&mi) && (o.hdc = CreateDCA(NULL, mi.szDevice, NULL, NULL))) {
+            LONG st = open_hdc(&o);
+            DeleteDC(o.hdc);
+            if (st == 0) { w.adapter = o.adapter, w.source = o.source, mon = m; rt_log("display: frames timed by the vertical blank of %s", mi.szDevice); }
+            else w.adapter = 0;
+        }
+        if (!w.adapter) { fails++; return false; }
+    }
+    if (wait(&w) != 0) { w.adapter = 0; fails++; return false; }
+    fails = 0;
+    return true;
+}
+static unsigned s_slow_logs;
 void win_swap(void) {
     SwapBuffers(s_dc);
     static u64 last, period;
@@ -260,7 +296,30 @@ void win_swap(void) {
         if (period > vi) period = vi;
     }
     u64 now = armTicksToNs(armGetSystemTick());
-    if (last && now - last < period * 19 / 20) {
+    /* The driver did not wait for the screen (vsync off in its settings, or a windowed swap that
+     * returns at once): wait for the display's next vertical blank instead (wait_vblank). Only when
+     * that cannot be done does the timer below hold the loop. */
+    bool vblank = last && now - last < period * 19 / 20 && wait_vblank();
+    if (vblank) now = armTicksToNs(armGetSystemTick());
+    /* vsync works when the loop keeps the refresh period by itself; then a 59-61 Hz refresh drives
+     * the game's retrace (sched_vi_host) after a second of steady swaps. A long frame keeps the
+     * lock (the timer's retrace covers it); only a loop that needs the timer below drops it. */
+    static unsigned steady;
+    bool held = !vblank && last && now - last < period * 19 / 20; /* (after a vblank wait never: the timer would push the loop off the refresh) */
+    steady = held || !last ? 0 : steady + 1;
+    {
+        static unsigned n, nh, nl;
+        static u64 mn = ~0ull, mx;
+        if (last) {
+            u64 d = now - last;
+            nh += held, nl += d > period * 3 / 2, mn = d < mn ? d : mn, mx = d > mx ? d : mx;
+            if (++n == 300) {
+                rt_log("swap: 300 swaps, %u under the refresh (limiter), %u over 1.5 refreshes, %.2f-%.2f ms", nh, nl, mn / 1e6, mx / 1e6);
+                n = nh = nl = 0, mn = ~0ull, mx = 0;
+            }
+        }
+    }
+    if (held) {
         u64 target = last + period;
         while ((now = armTicksToNs(armGetSystemTick())) < target) {
             if (target - now > 2000000) Sleep(1);
@@ -268,6 +327,11 @@ void win_swap(void) {
         }
     }
     last = now;
+    static bool locked;
+    bool lock = !s_free_vi && steady >= 60 && period > 16390000 && period < 16950000; /* 59-61 Hz */
+    if (lock != locked) rt_log("display: game retrace %s the screen's refresh", lock ? "locked to" : "on its own clock, not");
+    locked = lock;
+    if (lock) sched_vi_host();
 }
 
 /* ---- input: SDL2 controllers (pad_sdl.c) + the keyboard -> Switch button bits ---- */
@@ -741,6 +805,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--launcher")) want_launcher = true;
         else if (!strcmp(argv[i], "--play")) no_launcher = true;
+        else if (!strcmp(argv[i], "--free-vi")) s_free_vi = true; /* testing: the game keeps its own 59.94 Hz clock */
         else if (!strcmp(argv[i], "--kbd-players") && i + 1 < argc) {
             int n = atoi(argv[++i]);
             s_kbd_players = n < 1 ? 1 : n > 4 ? 4 : n;
@@ -902,6 +967,15 @@ int main(int argc, char **argv) {
         u64 r0 = armGetSystemTick();
         if (g_log_mask) render_gpu_timer_begin();
         bool got = render_update(scale);
+        u64 r1 = armGetSystemTick();
+        /* pacing: a loop that shows no new game frame repeats one; a game frame never shown was skipped */
+        static uint64_t pace_seen;
+        static unsigned pace_rep, pace_skip;
+        {
+            uint64_t n = gx_frame_count();
+            if (got) { if (pace_seen && n > pace_seen + 1) pace_skip += (unsigned)(n - pace_seen - 1); pace_seen = n; }
+            else if (total_rendered) pace_rep++;
+        }
         if (got) {
             fps_frames++;
             if (++total_rendered == 1) {
@@ -939,9 +1013,21 @@ int main(int argc, char **argv) {
             menu_draw(w, h, s_fps, perf);
         } else menu_loading(w, h, "BOOTING", NULL, 0.8f);
         render_gpu_timer_end();
+        u64 r2 = armGetSystemTick();
         pf_main += armTicksToNs(armGetSystemTick() - r0);
         pf_loops++;
         gfx_swap();
+        {
+            /* a loop over 30 ms, by part: the frame start (pads, settings, stats; up to r0), game image, overlays, swap */
+            static u64 prev_end;
+            u64 r3 = armGetSystemTick();
+            if (prev_end && armTicksToNs(r3 - prev_end) > 30000000ull && s_slow_logs < 40) {
+                s_slow_logs++;
+                rt_log("slow loop: %.1f ms (start %.1f, game image %.1f, overlays %.1f, swap %.1f ms)", armTicksToNs(r3 - prev_end) / 1e6,
+                       armTicksToNs(r0 - prev_end) / 1e6, armTicksToNs(r1 - r0) / 1e6, armTicksToNs(r2 - r1) / 1e6, armTicksToNs(r3 - r2) / 1e6);
+            }
+            prev_end = r3;
+        }
         if (++frames % 300 == 0) {
             u64 now = armGetSystemTick();
             uint32_t nb, nv, nt;
@@ -949,8 +1035,9 @@ int main(int argc, char **argv) {
             unsigned progs;
             double cms;
             render_shader_stats(&progs, &cms);
-            rt_log("present: %.1f fps, last frame %u batches %u verts, %u textures; %u TEV programs (%.0f ms compiling), late audio buffers %llu",
-                   300.0 * 1e9 / (double)armTicksToNs(now - stat_tick), nb, nv, nt, progs, cms, (unsigned long long)g_audio_late_cb);
+            rt_log("present: %.1f fps (game frames repeated %u, skipped %u), last frame %u batches %u verts, %u textures; %u TEV programs (%.0f ms compiling), late audio buffers %llu",
+                   300.0 * 1e9 / (double)armTicksToNs(now - stat_tick), pace_rep, pace_skip, nb, nv, nt, progs, cms, (unsigned long long)g_audio_late_cb);
+            pace_rep = pace_skip = 0;
             double g_avg, g_max, g_img, g_out;
             if (render_gpu_timer_take(&g_avg, &g_max, &g_img, &g_out)) rt_log("gpu: %.1f ms per loop (game image %.1f, output %.1f; max %.1f)", g_avg, g_img, g_out, g_max);
             stat_tick = now;
